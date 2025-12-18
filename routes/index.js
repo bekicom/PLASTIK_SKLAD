@@ -4,13 +4,10 @@ const router = express.Router();
 // Controllers
 const authController = require("../controllers/auth.controller");
 const userController = require("../controllers/user.controller");
-const wConler = require("../controllers/warehouse.controller");
+const warehouseController = require("../controllers/warehouse.controller");
 const suler = require("../controllers/supplier.controller");
 const prller = require("../controllers/product.controller");
-
 const purchaseController = require("../controllers/purchase.controller");
-const warehouseController = require("../controllers/warehouse.controller");
-
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -37,37 +34,58 @@ router.post(
   "/warehouses/create",
   rAuth,
   rRole("ADMIN"),
-  wConler.createWarehouse
+  warehouseController.createWarehouse
 );
-router.get("/warehouses", rAuth, rRole("ADMIN"), wConler.getWarehouses);
-router.get("/warehouses/:id", rAuth, rRole("ADMIN"), wConler.getWarehouseById);
-router.put("/warehouses/:id", rAuth, rRole("ADMIN"), wConler.updateWarehouse);
+router.get(
+  "/warehouses",
+  rAuth,
+  rRole("ADMIN"),
+  warehouseController.getWarehouses
+);
+router.get(
+  "/warehouses/:id",
+  rAuth,
+  rRole("ADMIN"),
+  warehouseController.getWarehouseById
+);
+router.put(
+  "/warehouses/:id",
+  rAuth,
+  rRole("ADMIN"),
+  warehouseController.updateWarehouse
+);
 router.delete(
   "/warehouses/:id",
   rAuth,
   rRole("ADMIN"),
-  wConler.deleteWarehouse
+  warehouseController.deleteWarehouse
 );
+
+/**
+ * SUPPLIERS (ADMIN only)
+ * ⚠️ dashboard/detail doim /:id dan oldin
+ */
 router.get(
   "/suppliers/dashboard",
   rAuth,
   rRole("ADMIN"),
   suler.getSuppliersDashboard
 );
-
 router.get(
   "/suppliers/:id/detail",
   rAuth,
   rRole("ADMIN"),
   suler.getSupplierDetail
 );
-// 🔴 KEYIN CRUD
+
 router.post("/suppliers/create", rAuth, rRole("ADMIN"), suler.createSupplier);
 router.get("/suppliers", rAuth, rRole("ADMIN"), suler.getSuppliers);
 router.get("/suppliers/:id", rAuth, rRole("ADMIN"), suler.getSupplierById);
 router.put("/suppliers/:id", rAuth, rRole("ADMIN"), suler.updateSupplier);
 router.delete("/suppliers/:id", rAuth, rRole("ADMIN"), suler.deleteSupplier);
+
 router.post("/suppliers/:id/pay", rAuth, rRole("ADMIN"), suler.paySupplierDebt);
+
 /**
  * PRODUCTS (ADMIN only)
  */
@@ -76,6 +94,7 @@ router.get("/products", rAuth, rRole("ADMIN"), prller.getProducts);
 router.get("/products/:id", rAuth, rRole("ADMIN"), prller.getProductById);
 router.put("/products/:id", rAuth, rRole("ADMIN"), prller.updateProduct);
 router.delete("/products/:id", rAuth, rRole("ADMIN"), prller.deleteProduct);
+
 /**
  * PURCHASES (KIRIM) (ADMIN only)
  */
@@ -85,16 +104,5 @@ router.post(
   rRole("ADMIN"),
   purchaseController.createPurchase
 );
-
-/**
- * WAREHOUSES (ADMIN only)
- */
-router.post("/warehouses/create", rAuth, rRole("ADMIN"), warehouseController.createWarehouse);
-router.get("/warehouses", rAuth, rRole("ADMIN"), warehouseController.getWarehouses);
-router.get("/warehouses/:id", rAuth, rRole("ADMIN"), warehouseController.getWarehouseById);
-router.put("/warehouses/:id", rAuth, rRole("ADMIN"), warehouseController.updateWarehouse);
-router.delete("/warehouses/:id", rAuth, rRole("ADMIN"), warehouseController.deleteWarehouse);
-
-
 
 module.exports = router;
