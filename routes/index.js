@@ -9,6 +9,8 @@ const suler = require("../controllers/supplier.controller");
 const prller = require("../controllers/product.controller");
 
 const purchaseController = require("../controllers/purchase.controller");
+const warehouseController = require("../controllers/warehouse.controller");
+
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -83,5 +85,16 @@ router.post(
   rRole("ADMIN"),
   purchaseController.createPurchase
 );
+
+/**
+ * WAREHOUSES (ADMIN only)
+ */
+router.post("/warehouses/create", rAuth, rRole("ADMIN"), warehouseController.createWarehouse);
+router.get("/warehouses", rAuth, rRole("ADMIN"), warehouseController.getWarehouses);
+router.get("/warehouses/:id", rAuth, rRole("ADMIN"), warehouseController.getWarehouseById);
+router.put("/warehouses/:id", rAuth, rRole("ADMIN"), warehouseController.updateWarehouse);
+router.delete("/warehouses/:id", rAuth, rRole("ADMIN"), warehouseController.deleteWarehouse);
+
+
 
 module.exports = router;
