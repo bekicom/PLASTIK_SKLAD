@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 
 const Supplier = require("../modules/Suppliers/Supplier");
-const Product = require("../modules/Products/Product");
+const Product = require("../modules/products/Product");
 const Purchase = require("../modules/Purchases/Purchase");
 
 const UNITS = ["DONA", "PACHKA", "KG"];

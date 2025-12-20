@@ -1,4 +1,4 @@
-const Product = require("../modules/Products/Product");
+const Product = require("../modules/products/Product");
 
 const UNITS = ["DONA", "PACHKA", "KG"];
 const CUR = ["UZS", "USD"];
