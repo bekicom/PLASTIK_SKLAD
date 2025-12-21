@@ -1,8 +1,6 @@
 const express = require("express");
 const router = express.Router();
 
-
-
 // Controllers
 const authController = require("../controllers/auth.controller");
 const userController = require("../controllers/user.controller");
@@ -11,7 +9,7 @@ const supplierController = require("../controllers/supplier.controller");
 const productController = require("../controllers/product.controller");
 const purchaseController = require("../controllers/purchase.controller");
 const salesController = require("../controllers/sales.controller");
-
+const customerController = require("../controllers/customer.controller"); // ✅ NEW
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -209,7 +207,67 @@ router.post(
   purchaseController.createPurchase
 );
 
-/**        
+/**
+ * CUSTOMERS (HOZMAKLAR)
+ */
+
+// customer yaratish
+router.post(
+  "/customers/create",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.createCustomer
+);
+
+// customerlarni get qilish
+router.get(
+  "/customers",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomers
+);
+
+// bitta customer detail + summary
+router.get(
+  "/customers/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerById
+);
+
+// customer update qilish
+router.put(
+  "/customers/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.updateCustomer
+);
+
+// customer delete qilish (soft delete) (ADMIN only)
+router.delete(
+  "/customers/:id",
+  rAuth,
+  rRole("ADMIN"),
+  customerController.deleteCustomer
+);
+
+// customer sales history
+router.get(
+  "/customers/:id/sales",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerSales
+);
+
+// customer statement (kunma-kun hisobot)
+router.get(
+  "/customers/:id/statement",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerStatement
+);
+
+/**
  * SALES (SOTUV)
  */
 

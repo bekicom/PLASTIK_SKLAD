@@ -1,8 +1,9 @@
 const mongoose = require("mongoose");
 
 const Sale = require("../modules/sales/Sale");
-const Product = require("../modules/products/Product"); // ⚠️ sende papka "Products" bo'lsa shunday qoldir
+const Product = require("../modules/products/Product");
 const Warehouse = require("../modules/Warehouse/Warehouse");
+const Customer = require("../modules/Customer/Customer");
 
 // Counter (invoiceNo uchun)
 const Counter =
@@ -18,9 +19,17 @@ const Counter =
     )
   );
 
+/**
+ * Utils
+ */
 function safeNumber(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
+}
+
+function normalizePhone(phone) {
+  if (!phone) return undefined;
+  return String(phone).replace(/\s+/g, "").trim();
 }
 
 function calcItemsSubtotals(items) {
@@ -112,7 +121,8 @@ async function generateInvoiceNo(session) {
  * POST /sales/create
  * Body:
  * {
- *   customerSnapshot?: { name, phone },
+ *   customerId?: ObjectId,
+ *   customerSnapshot?: { name, phone, address, note },
  *   items: [{ productId, qty, price }],
  *   discount?,
  *   payments: [{ currency: "UZS"|"USD", method: "CASH"|"CARD"|"TRANSFER", amount }],
@@ -135,7 +145,7 @@ exports.createSale = async (req, res) => {
         .json({ message: "Items bo'sh bo'lishi mumkin emas" });
     }
 
-    // 1) Input validate (productId, qty, price)
+    // 1) validate items
     for (const [idx, it] of body.items.entries()) {
       if (!it.productId || !mongoose.isValidObjectId(it.productId)) {
         return res
@@ -154,7 +164,7 @@ exports.createSale = async (req, res) => {
       }
     }
 
-    // 2) Products fetch
+    // 2) fetch products
     const productIds = [...new Set(body.items.map((x) => String(x.productId)))];
 
     const products = await Product.find({ _id: { $in: productIds } })
@@ -162,13 +172,13 @@ exports.createSale = async (req, res) => {
       .session(session);
 
     const pMap = new Map(products.map((p) => [String(p._id), p]));
+
     for (const pid of productIds) {
-      if (!pMap.has(pid)) {
+      if (!pMap.has(pid))
         return res.status(400).json({ message: `Product topilmadi: ${pid}` });
-      }
     }
 
-    // 3) Stock group + check
+    // 3) group qty + check stock
     const grouped = new Map(); // productId -> totalQty
     for (const it of body.items) {
       const pid = String(it.productId);
@@ -186,7 +196,7 @@ exports.createSale = async (req, res) => {
       }
     }
 
-    // 4) Stock decrement (atomic)
+    // 4) decrement stock atomically
     for (const [pid, needQty] of grouped.entries()) {
       const updated = await Product.updateOne(
         { _id: pid, qty: { $gte: needQty } },
@@ -195,13 +205,13 @@ exports.createSale = async (req, res) => {
       );
 
       if (updated.modifiedCount !== 1) {
-        return res.status(400).json({
-          message: "Stock o'zgargan, qayta urinib ko'ring",
-        });
+        return res
+          .status(400)
+          .json({ message: "Stock o'zgargan, qayta urinib ko'ring" });
       }
     }
 
-    // 5) Currency bo'yicha warehouseId'larni DB dan topamiz (hardcode YO'Q)
+    // 5) currency -> warehouseId map
     const currenciesInSale = [
       ...new Set(products.map((p) => p.warehouse_currency)),
     ];
@@ -222,7 +232,7 @@ exports.createSale = async (req, res) => {
       }
     }
 
-    // 6) Sale items build (warehouseId AUTOMATIC)
+    // 6) build sale items with automatic warehouseId + currency
     const items = body.items.map((it) => {
       const p = pMap.get(String(it.productId));
       const currency = p.warehouse_currency;
@@ -231,7 +241,7 @@ exports.createSale = async (req, res) => {
         productId: it.productId,
         nameSnapshot: p.name,
         currency,
-        warehouseId: wMap.get(currency), // ✅ mana shu joyda wMap ishlaydi va doim defined
+        warehouseId: wMap.get(currency),
         qty: it.qty,
         price: it.price,
       };
@@ -239,7 +249,60 @@ exports.createSale = async (req, res) => {
 
     const itemsCalculated = calcItemsSubtotals(items);
 
-    // 7) Payments validate
+    // ✅ 7) CUSTOMER: create/find + attach (MANA SHU JOYDA!)
+    let customerId = undefined;
+    let customerSnapshot = body.customerSnapshot || undefined;
+
+    if (body.customerId) {
+      if (!mongoose.isValidObjectId(body.customerId)) {
+        return res.status(400).json({ message: "customerId noto'g'ri" });
+      }
+
+      const c = await Customer.findById(body.customerId).session(session);
+      if (!c) return res.status(400).json({ message: "Customer topilmadi" });
+
+      customerId = c._id;
+      customerSnapshot = {
+        name: c.name,
+        phone: c.phone,
+        address: c.address,
+        note: c.note,
+      };
+    } else if (customerSnapshot?.phone || customerSnapshot?.name) {
+      const phone = normalizePhone(customerSnapshot.phone);
+      const name = customerSnapshot.name
+        ? String(customerSnapshot.name).trim()
+        : undefined;
+
+      let c = null;
+      if (phone) c = await Customer.findOne({ phone }).session(session);
+      if (!c && name) c = await Customer.findOne({ name }).session(session);
+
+      if (!c) {
+        const createdCustomer = await Customer.create(
+          [
+            {
+              name: name || "Customer",
+              phone,
+              address: customerSnapshot.address?.trim(),
+              note: customerSnapshot.note?.trim(),
+            },
+          ],
+          { session }
+        );
+        c = createdCustomer[0];
+      }
+
+      customerId = c._id;
+      customerSnapshot = {
+        name: c.name,
+        phone: c.phone,
+        address: c.address,
+        note: c.note,
+      };
+    }
+
+    // 8) payments validate
     const discount = Math.max(0, safeNumber(body.discount));
     const payments = Array.isArray(body.payments) ? body.payments : [];
 
@@ -278,13 +341,18 @@ exports.createSale = async (req, res) => {
         {
           invoiceNo,
           soldBy,
-          customerSnapshot: body.customerSnapshot || undefined,
+
+          customerId: customerId || undefined, // ✅ MUHIM
+          customerSnapshot: customerSnapshot || undefined, // ✅ MUHIM
+
           items: itemsCalculated,
+
           totals: {
             subtotal: +subtotalAll.toFixed(2),
             discount: +discount.toFixed(2),
             grandTotal: +grandAll.toFixed(2),
           },
+
           currencyTotals,
           payments,
           note: body.note?.trim(),
@@ -322,9 +390,20 @@ exports.getSales = async (req, res) => {
 
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
+    if (
+      req.query.customerId &&
+      mongoose.isValidObjectId(req.query.customerId)
+    ) {
+      filter.customerId = req.query.customerId;
+    }
 
     const [rows, total] = await Promise.all([
-      Sale.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Sale.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("customerId", "name phone")
+        .lean(),
       Sale.countDocuments(filter),
     ]);
 
@@ -342,7 +421,9 @@ exports.getSaleById = async (req, res) => {
     if (!mongoose.isValidObjectId(id))
       return res.status(400).json({ message: "ID noto'g'ri" });
 
-    const sale = await Sale.findById(id).lean();
+    const sale = await Sale.findById(id)
+      .populate("customerId", "name phone address note")
+      .lean();
     if (!sale) return res.status(404).json({ message: "Sale topilmadi" });
 
     return res.json({ ok: true, item: sale });
@@ -373,7 +454,7 @@ exports.cancelSale = async (req, res) => {
         .json({ message: "Sale allaqachon bekor qilingan" });
     }
 
-    // stock qaytarish: sale.items bo'yicha product.qty ga qaytaramiz
+    // stock qaytarish
     const grouped = new Map(); // productId -> qty
     for (const it of sale.items) {
       const pid = String(it.productId);

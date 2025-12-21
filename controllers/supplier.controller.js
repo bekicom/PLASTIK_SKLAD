@@ -1,6 +1,39 @@
 const Supplier = require("../modules/Suppliers/Supplier");
 const Purchase = require("../modules/Purchases/Purchase");
 
+const CUR = ["UZS", "USD"];
+
+/** Helper: purchase totalsni items’dan hisoblaydi (rate’siz) */
+function calcPurchaseTotals(p) {
+  const items = Array.isArray(p.items) ? p.items : [];
+  let totalUzs = 0;
+  let totalUsd = 0;
+
+  for (const it of items) {
+    const Q = Number(it.qty || 0);
+    const BP = Number(it.buy_price || 0);
+    const row = Q * BP;
+
+    if (it.currency === "UZS") totalUzs += row;
+    if (it.currency === "USD") totalUsd += row;
+  }
+
+  const paidUzs = Number(p.paid_amount_uzs || 0);
+  const paidUsd = Number(p.paid_amount_usd || 0);
+
+  return {
+    uzs: {
+      total: totalUzs,
+      paid: paidUzs,
+      debt: Math.max(0, totalUzs - paidUzs),
+    },
+    usd: {
+      total: totalUsd,
+      paid: paidUsd,
+      debt: Math.max(0, totalUsd - paidUsd),
+    },
+  };
+}
 
 /**
  * POST /api/suppliers/create
@@ -22,7 +55,13 @@ exports.createSupplier = async (req, res) => {
         .json({ ok: false, message: "Bu telefon raqam band" });
     }
 
-    const supplier = await Supplier.create({ name, phone });
+    const supplier = await Supplier.create({
+      name: String(name).trim(),
+      phone: String(phone).trim(),
+      // schema’da bo‘lsa — defaults qo‘yib ketadi, bo‘lmasa ignore bo‘ladi
+      total_debt_uzs: 0,
+      total_debt_usd: 0,
+    });
 
     return res.status(201).json({
       ok: true,
@@ -104,10 +143,10 @@ exports.updateSupplier = async (req, res) => {
       });
       if (phoneExists)
         return res.status(409).json({ ok: false, message: "Bu telefon band" });
-      supplier.phone = phone;
+      supplier.phone = String(phone).trim();
     }
 
-    if (name !== undefined) supplier.name = name;
+    if (name !== undefined) supplier.name = String(name).trim();
 
     await supplier.save();
 
@@ -135,6 +174,7 @@ exports.deleteSupplier = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
+
 /**
  * GET /api/suppliers/dashboard
  */
@@ -153,6 +193,11 @@ exports.getSuppliersDashboard = async (req, res) => {
 
     const total_debt_uzs = suppliers.reduce(
       (sum, s) => sum + Number(s.total_debt_uzs || 0),
+      0
+    );
+
+    const total_debt_usd = suppliers.reduce(
+      (sum, s) => sum + Number(s.total_debt_usd || 0),
       0
     );
 
@@ -181,7 +226,8 @@ exports.getSuppliersDashboard = async (req, res) => {
       id: s._id,
       name: s.name,
       phone: s.phone,
-      total_debt_uzs: s.total_debt_uzs || 0,
+      total_debt_uzs: Number(s.total_debt_uzs || 0),
+      total_debt_usd: Number(s.total_debt_usd || 0),
       purchases_count: map[String(s._id)]?.purchases_count || 0,
       last_purchase_at: map[String(s._id)]?.last_purchase_at || null,
       createdAt: s.createdAt,
@@ -191,16 +237,23 @@ exports.getSuppliersDashboard = async (req, res) => {
       ok: true,
       total_suppliers,
       total_debt_uzs,
+      total_debt_usd,
       items,
     });
   } catch (error) {
-    return res.status(500).json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 
 /**
  * GET /api/suppliers/:id/detail
  * Query: page, limit, from, to
+ *
+ * ✅ FIX: history'da har purchase uchun totals (UZS+USD) hisoblab qaytaradi.
  */
 exports.getSupplierDetail = async (req, res) => {
   try {
@@ -212,21 +265,47 @@ exports.getSupplierDetail = async (req, res) => {
     }
 
     const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-    const limit = Math.min(Math.max(parseInt(req.query.limit || "20", 10), 1), 100);
+    const limit = Math.min(
+      Math.max(parseInt(req.query.limit || "20", 10), 1),
+      100
+    );
     const skip = (page - 1) * limit;
 
     const purchaseFilter = { supplier_id: id };
 
     if (req.query.from || req.query.to) {
       purchaseFilter.createdAt = {};
-      if (req.query.from) purchaseFilter.createdAt.$gte = new Date(req.query.from);
+      if (req.query.from)
+        purchaseFilter.createdAt.$gte = new Date(req.query.from);
       if (req.query.to) purchaseFilter.createdAt.$lte = new Date(req.query.to);
     }
 
-    const [items, total] = await Promise.all([
-      Purchase.find(purchaseFilter).sort({ createdAt: -1 }).skip(skip).limit(limit),
+    const [rows, total] = await Promise.all([
+      Purchase.find(purchaseFilter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
       Purchase.countDocuments(purchaseFilter),
     ]);
+
+    // ✅ har bir purchase uchun totals qo‘shamiz
+    const items = rows.map((p) => {
+      const totals = calcPurchaseTotals(p);
+
+      // eski fieldlarni ham "to‘g‘ri ko‘rinadigan" qilib override qilib yuboramiz:
+      // (front total_amount_uzs ni ko'rsatsa ham 0 bo'lib qolmasin UZS item bo'lsa)
+      return {
+        ...p,
+        total_amount_uzs: totals.uzs.total,
+        debt_amount_uzs: totals.uzs.debt,
+        // agar schema’da yo‘q bo‘lsa ham frontda ko‘rinsin:
+        total_amount_usd: totals.usd.total,
+        paid_amount_usd: totals.usd.paid,
+        debt_amount_usd: totals.usd.debt,
+        totals,
+      };
+    });
 
     return res.json({
       ok: true,
@@ -234,31 +313,44 @@ exports.getSupplierDetail = async (req, res) => {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-        total_debt_uzs: supplier.total_debt_uzs || 0,
+        total_debt_uzs: Number(supplier.total_debt_uzs || 0),
+        total_debt_usd: Number(supplier.total_debt_usd || 0),
         createdAt: supplier.createdAt,
       },
       purchases: { page, limit, total, items },
     });
   } catch (error) {
-    return res.status(500).json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 
 /**
  * POST /api/suppliers/:id/pay
- * Body: { amount_uzs, note? }
+ * Body: { amount, currency: "UZS"|"USD", note? }
+ *
+ * ✅ FIX: bitta endpoint bilan UZS yoki USD qarz to‘lovi
  */
 exports.paySupplierDebt = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount_uzs, note } = req.body;
+    const { amount, currency = "UZS", note } = req.body;
 
-    const amount = Number(amount_uzs);
-
-    if (!amount_uzs || Number.isNaN(amount) || amount <= 0) {
+    if (!CUR.includes(currency)) {
       return res.status(400).json({
         ok: false,
-        message: "amount_uzs noto‘g‘ri (0 dan katta bo‘lsin)",
+        message: "currency noto‘g‘ri (UZS/USD)",
+      });
+    }
+
+    const payAmount = Number(amount);
+    if (!amount || Number.isNaN(payAmount) || payAmount <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "amount noto‘g‘ri (0 dan katta bo‘lsin)",
       });
     }
 
@@ -267,24 +359,32 @@ exports.paySupplierDebt = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
     }
 
-    const currentDebt = Number(supplier.total_debt_uzs || 0);
+    const debtField = currency === "UZS" ? "total_debt_uzs" : "total_debt_usd";
+    const currentDebt = Number(supplier[debtField] || 0);
 
     if (currentDebt <= 0) {
       return res.status(400).json({
         ok: false,
-        message: "Bu zavodda qarz yo‘q",
+        message: `Bu zavodda ${currency} qarz yo‘q`,
       });
     }
 
-    // Qancha qismi qarzga tushadi (overpay bo'lsa ham)
-    const applied = Math.min(amount, currentDebt);
-    const change = Math.max(0, amount - currentDebt);
+    const applied = Math.min(payAmount, currentDebt);
+    const change = Math.max(0, payAmount - currentDebt);
 
-    supplier.total_debt_uzs = currentDebt - applied;
+    supplier[debtField] = currentDebt - applied;
 
+    // payment_history strukturasi schema’ga bog‘liq:
+    // UZS bo‘lsa amount_uzs, USD bo‘lsa amount_usd yozamiz
+    supplier.payment_history = supplier.payment_history || [];
     supplier.payment_history.push({
-      amount_uzs: applied,
-      note: `${note || "Qarz to‘lovi"}${change > 0 ? ` (Ortiqcha: ${change})` : ""}`,
+      amount_uzs: currency === "UZS" ? applied : undefined,
+      amount_usd: currency === "USD" ? applied : undefined,
+      currency,
+      note: `${note || "Qarz to‘lovi"}${
+        change > 0 ? ` (Ortiqcha: ${change})` : ""
+      }`,
+      createdAt: new Date(),
     });
 
     await supplier.save();
@@ -296,13 +396,15 @@ exports.paySupplierDebt = async (req, res) => {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-        total_debt_uzs: supplier.total_debt_uzs,
+        total_debt_uzs: Number(supplier.total_debt_uzs || 0),
+        total_debt_usd: Number(supplier.total_debt_usd || 0),
       },
       payment: {
-        paid_amount_uzs: applied,
-        previous_debt_uzs: currentDebt,
-        remaining_debt_uzs: supplier.total_debt_uzs,
-        change_uzs: change,
+        currency,
+        paid_amount: applied,
+        previous_debt: currentDebt,
+        remaining_debt: supplier[debtField],
+        change,
       },
     });
   } catch (error) {

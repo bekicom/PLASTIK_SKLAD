@@ -37,10 +37,7 @@ const purchaseSchema = new mongoose.Schema(
       trim: true,
     },
 
-    usd_rate: {
-      type: Number,
-      default: 0,
-    },
+
 
     paid_amount_uzs: {
       type: Number,

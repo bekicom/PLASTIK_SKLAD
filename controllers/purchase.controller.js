@@ -7,26 +7,18 @@ const Purchase = require("../modules/Purchases/Purchase");
 const UNITS = ["DONA", "PACHKA", "KG"];
 const CUR = ["UZS", "USD"];
 
-/**
- * POST /api/purchases/create
- * Body:
- * {
- *   supplier_id,
- *   batch_no,
- *   usd_rate,
- *   paid_amount_uzs,
- *   items: [
- *     { name, model, color, category, unit, qty, buy_price, sell_price, currency }
- *   ]
- * }
- */
 exports.createPurchase = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { supplier_id, batch_no, usd_rate, paid_amount_uzs, items } =
-      req.body;
+    const {
+      supplier_id,
+      batch_no,
+      paid_amount_uzs = 0,
+      paid_amount_usd = 0,
+      items,
+    } = req.body;
 
     if (!supplier_id || !batch_no) {
       await session.abortTransaction();
@@ -48,10 +40,20 @@ exports.createPurchase = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Supplier topilmadi" });
     }
 
-    const rate = Number(usd_rate || 0);
-    const paid = Number(paid_amount_uzs || 0);
+    const paidUzs = Number(paid_amount_uzs || 0);
+    const paidUsd = Number(paid_amount_usd || 0);
 
-    let total_uzs = 0;
+    if (paidUzs < 0 || paidUsd < 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        ok: false,
+        message: "paid_amount_uzs yoki paid_amount_usd manfiy bo‘lmasin",
+      });
+    }
+
+    let totalUzs = 0;
+    let totalUsd = 0;
+
     const purchaseItems = [];
     const affectedProducts = [];
 
@@ -102,43 +104,39 @@ exports.createPurchase = async (req, res) => {
       const BP = Number(buy_price);
       const SP = Number(sell_price);
 
-      if (Q <= 0) {
+      if (!Number.isFinite(Q) || Q <= 0) {
         await session.abortTransaction();
         return res
           .status(400)
           .json({ ok: false, message: "qty 0 dan katta bo‘lsin" });
       }
 
-      // UZSga hisoblash (rasmdagi Umumiy summa)
-      let row_total_uzs = 0;
-      if (currency === "USD") {
-        if (!rate || rate <= 0) {
-          await session.abortTransaction();
-          return res.status(400).json({
-            ok: false,
-            message: "USD item bor, usd_rate majburiy",
-          });
-        }
-        row_total_uzs = Q * BP * rate;
-      } else {
-        row_total_uzs = Q * BP;
+      if (!Number.isFinite(BP) || BP < 0 || !Number.isFinite(SP) || SP < 0) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          ok: false,
+          message: "buy_price va sell_price 0 dan kichik bo‘lmasin",
+        });
       }
 
-      total_uzs += row_total_uzs;
+      // ✅ item totalni o'z valyutasida hisoblaymiz
+      const row_total = Q * BP;
 
-      // Productni shu supplierga bog‘lab: topamiz yoki yaratamiz, qty qo‘shamiz
-      // Product modelda: supplier_id + name+model+color+warehouse_currency unique
+      if (currency === "UZS") totalUzs += row_total;
+      if (currency === "USD") totalUsd += row_total;
+
+      // Product update/upsert
       const filter = {
         supplier_id,
-        name: name.trim(),
-        model: (model || "").trim(),
-        color: (color || "").trim(),
-        warehouse_currency: currency, // UZS/USD ombor
+        name: String(name).trim(),
+        model: String(model || "").trim(),
+        color: String(color || "").trim(),
+        warehouse_currency: currency,
       };
 
       const update = {
         $set: {
-          category: (category || "").trim(),
+          category: String(category || "").trim(),
           unit,
           buy_price: BP,
           sell_price: SP,
@@ -164,37 +162,59 @@ exports.createPurchase = async (req, res) => {
         buy_price: BP,
         sell_price: SP,
         currency,
-        row_total_uzs,
+
+        // eski maydonni saqlamoqchi bo'lsang:
+        row_total_uzs: currency === "UZS" ? row_total : 0,
+        // tavsiya: yangi maydon qo'shsang yanada toza bo'ladi:
+        // row_total,
       });
     }
 
-    const debt = total_uzs - paid;
+    // ✅ endi debtlar manfiy chiqmaydi:
+    // paid > total bo'lsa bu "avans" bo'ladi; qarzni 0 qilamiz
+    const debtUzs = Math.max(0, totalUzs - paidUzs);
+    const debtUsd = Math.max(0, totalUsd - paidUsd);
 
-    // Supplier qarzini yangilash
+    // Supplier debt update
     supplier.total_debt_uzs = Math.max(
       0,
-      Number(supplier.total_debt_uzs || 0) + debt
+      Number(supplier.total_debt_uzs || 0) + (totalUzs - paidUzs)
+    );
+    supplier.total_debt_usd = Math.max(
+      0,
+      Number(supplier.total_debt_usd || 0) + (totalUsd - paidUsd)
     );
 
-    if (paid > 0) {
+    // payment history (xohlasang alohida yozamiz)
+    if (paidUzs > 0) {
       supplier.payment_history.push({
-        amount_uzs: paid,
-        note: `Kirim to‘lovi (batch: ${batch_no})`,
+        amount_uzs: paidUzs,
+        note: `Kirim to‘lovi UZS (batch: ${batch_no})`,
+      });
+    }
+    if (paidUsd > 0) {
+      supplier.payment_history.push({
+        amount_usd: paidUsd,
+        note: `Kirim to‘lovi USD (batch: ${batch_no})`,
       });
     }
 
     await supplier.save({ session });
 
-    // Kirim hujjatini saqlash (history)
     const purchase = await Purchase.create(
       [
         {
           supplier_id,
-          batch_no,
-          usd_rate: rate,
-          paid_amount_uzs: paid,
-          total_amount_uzs: total_uzs,
-          debt_amount_uzs: debt,
+          batch_no: String(batch_no).trim(),
+
+          paid_amount_uzs: paidUzs,
+          total_amount_uzs: totalUzs,
+          debt_amount_uzs: debtUzs,
+
+          paid_amount_usd: paidUsd,
+          total_amount_usd: totalUsd,
+          debt_amount_usd: debtUsd,
+
           items: purchaseItems,
         },
       ],
@@ -208,23 +228,22 @@ exports.createPurchase = async (req, res) => {
       message: "Kirim saqlandi",
       purchase: purchase[0],
       totals: {
-        total_amount_uzs: total_uzs,
-        paid_amount_uzs: paid,
-        debt_amount_uzs: debt,
-        usd_rate: rate,
+        uzs: { total: totalUzs, paid: paidUzs, debt: debtUzs },
+        usd: { total: totalUsd, paid: paidUsd, debt: debtUsd },
       },
       supplier: {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
         total_debt_uzs: supplier.total_debt_uzs,
+        total_debt_usd: supplier.total_debt_usd,
       },
       products: affectedProducts,
     });
   } catch (error) {
     await session.abortTransaction();
 
-    if (error.code === 11000) {
+    if (error?.code === 11000) {
       return res
         .status(409)
         .json({ ok: false, message: "Duplicate product (unique index)" });
