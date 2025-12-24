@@ -157,7 +157,6 @@ exports.getCustomers = async (req, res) => {
   }
 };
 
-
 /**
  * GET /customers/:id
  * Customer detail + summary (COMPLETED sales only)
