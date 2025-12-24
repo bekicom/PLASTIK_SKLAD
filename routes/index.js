@@ -10,6 +10,7 @@ const productController = require("../controllers/product.controller");
 const purchaseController = require("../controllers/purchase.controller");
 const salesController = require("../controllers/sales.controller");
 const customerController = require("../controllers/customer.controller"); // ✅ NEW
+const agentOrderController = require("../controllers/agentOrder.controller");
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -301,6 +302,18 @@ router.post(
   rAuth,
   rRole("ADMIN"),
   salesController.cancelSale
+);
+
+
+/**
+ * AGENT ORDERS (ZAKAS)
+ * Agent faqat zakas yaratadi
+ */
+router.post(
+  "/agent/orders",
+  rAuth,
+  rRole("AGENT"),
+  agentOrderController.createAgentOrder
 );
 
 module.exports = router;
