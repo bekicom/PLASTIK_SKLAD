@@ -1,7 +1,48 @@
 const Supplier = require("../modules/Suppliers/Supplier");
+const mongoose = require("mongoose");
 const Purchase = require("../modules/Purchases/Purchase");
 
 const CUR = ["UZS", "USD"];
+function parseDate(d, endOfDay = false) {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+  if (endOfDay) dt.setHours(23, 59, 59, 999);
+  else dt.setHours(0, 0, 0, 0);
+  return dt;
+}
+
+
+function calcPurchaseTotals(p) {
+  const items = Array.isArray(p.items) ? p.items : [];
+  let totalUzs = 0;
+  let totalUsd = 0;
+
+  for (const it of items) {
+    const Q = Number(it.qty || 0);
+    const BP = Number(it.buy_price || 0);
+    const row = Q * BP;
+
+    if (it.currency === "UZS") totalUzs += row;
+    if (it.currency === "USD") totalUsd += row;
+  }
+
+  const paidUzs = Number(p.paid_amount_uzs || 0);
+  const paidUsd = Number(p.paid_amount_usd || 0);
+
+  return {
+    uzs: {
+      total: totalUzs,
+      paid: paidUzs,
+      debt: Math.max(0, totalUzs - paidUzs),
+    },
+    usd: {
+      total: totalUsd,
+      paid: paidUsd,
+      debt: Math.max(0, totalUsd - paidUsd),
+    },
+  };
+}
 
 /** Helper: purchase totalsni items’dan hisoblaydi (rate’siz) */
 function calcPurchaseTotals(p) {
@@ -258,8 +299,13 @@ exports.getSuppliersDashboard = async (req, res) => {
 exports.getSupplierDetail = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "supplier id noto‘g‘ri" });
+    }
 
-    const supplier = await Supplier.findById(id);
+    const supplier = await Supplier.findById(id).lean();
     if (!supplier) {
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
     }
@@ -271,35 +317,33 @@ exports.getSupplierDetail = async (req, res) => {
     );
     const skip = (page - 1) * limit;
 
-    const purchaseFilter = { supplier_id: id };
+    const fromDate = parseDate(req.query.from, false);
+    const toDate = parseDate(req.query.to, true);
 
-    if (req.query.from || req.query.to) {
-      purchaseFilter.createdAt = {};
-      if (req.query.from)
-        purchaseFilter.createdAt.$gte = new Date(req.query.from);
-      if (req.query.to) purchaseFilter.createdAt.$lte = new Date(req.query.to);
+    const filter = { supplier_id: new mongoose.Types.ObjectId(id) };
+    if (fromDate || toDate) {
+      filter.createdAt = {};
+      if (fromDate) filter.createdAt.$gte = fromDate;
+      if (toDate) filter.createdAt.$lte = toDate;
     }
 
     const [rows, total] = await Promise.all([
-      Purchase.find(purchaseFilter)
+      Purchase.find(filter)
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .lean(),
-      Purchase.countDocuments(purchaseFilter),
+      Purchase.countDocuments(filter),
     ]);
 
-    // ✅ har bir purchase uchun totals qo‘shamiz
+    // ✅ items + totals
     const items = rows.map((p) => {
       const totals = calcPurchaseTotals(p);
-
-      // eski fieldlarni ham "to‘g‘ri ko‘rinadigan" qilib override qilib yuboramiz:
-      // (front total_amount_uzs ni ko'rsatsa ham 0 bo'lib qolmasin UZS item bo'lsa)
       return {
         ...p,
         total_amount_uzs: totals.uzs.total,
+        paid_amount_uzs: totals.uzs.paid,
         debt_amount_uzs: totals.uzs.debt,
-        // agar schema’da yo‘q bo‘lsa ham frontda ko‘rinsin:
         total_amount_usd: totals.usd.total,
         paid_amount_usd: totals.usd.paid,
         debt_amount_usd: totals.usd.debt,
@@ -307,14 +351,27 @@ exports.getSupplierDetail = async (req, res) => {
       };
     });
 
+    // ✅ MUHIM: supplier debt’ni real purchase’lardan hisoblaymiz
+    // (supplier.total_debt_usd DB’da 0 bo‘lib qolsa ham bu doim to‘g‘ri bo‘ladi)
+    let computedDebtUzs = 0;
+    let computedDebtUsd = 0;
+
+    for (const p of items) {
+      computedDebtUzs += Number(p.debt_amount_uzs || 0);
+      computedDebtUsd += Number(p.debt_amount_usd || 0);
+    }
+
     return res.json({
       ok: true,
       supplier: {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-        total_debt_uzs: Number(supplier.total_debt_uzs || 0),
-        total_debt_usd: Number(supplier.total_debt_usd || 0),
+
+        // ✅ real debt (purchase'lardan)
+        total_debt_uzs: computedDebtUzs,
+        total_debt_usd: computedDebtUsd,
+
         createdAt: supplier.createdAt,
       },
       purchases: { page, limit, total, items },
@@ -327,6 +384,7 @@ exports.getSupplierDetail = async (req, res) => {
     });
   }
 };
+
 
 /**
  * POST /api/suppliers/:id/pay

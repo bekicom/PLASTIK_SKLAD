@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
-
+const Order = require("../modules/orders/Order");
 function normalizePhone(phone) {
   if (!phone) return "";
   return String(phone).replace(/\s+/g, "").trim();
@@ -424,5 +424,97 @@ exports.getCustomerStatement = async (req, res) => {
       message: "Statement xato",
       error: err.message,
     });
+  }
+};
+
+exports.getCustomerSummary = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "customer id noto‘g‘ri" });
+    }
+
+    const customer = await Customer.findById(id).select(
+      "name phone address note createdAt"
+    );
+    if (!customer) {
+      return res.status(404).json({ ok: false, message: "Customer topilmadi" });
+    }
+
+    // 1) Agent orderlar bo‘yicha summary
+    const [orderAgg] = await Order.aggregate([
+      { $match: { customer_id: new mongoose.Types.ObjectId(id) } },
+      {
+        $group: {
+          _id: "$customer_id",
+          ordersCount: { $sum: 1 },
+          newCount: { $sum: { $cond: [{ $eq: ["$status", "NEW"] }, 1, 0] } },
+          confirmedCount: {
+            $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
+          },
+          canceledCount: {
+            $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] },
+          },
+
+          totalUZS: { $sum: { $ifNull: ["$total_uzs", 0] } },
+          totalUSD: { $sum: { $ifNull: ["$total_usd", 0] } },
+
+          lastOrderAt: { $max: "$createdAt" },
+        },
+      },
+    ]);
+
+    // 2) Sales bo‘yicha summary (agar Sale modelda customer_id bo‘lsa)
+    const [saleAgg] = await Sale.aggregate([
+      { $match: { customer_id: new mongoose.Types.ObjectId(id) } },
+      {
+        $group: {
+          _id: "$customer_id",
+          salesCount: { $sum: 1 },
+          // ⚠️ Sale modelingizda total field nomi boshqacha bo‘lsa o‘zgartiring
+          salesTotalSum: { $sum: { $ifNull: ["$total", 0] } },
+          lastSaleAt: { $max: "$createdAt" },
+        },
+      },
+    ]);
+
+    // 3) Oxirgi orderlar ro‘yxati (history)
+    const lastOrders = await Order.find({ customer_id: id })
+      .populate("agent_id", "name phone login")
+      .sort({ createdAt: -1 })
+      .limit(20);
+
+    return res.json({
+      ok: true,
+      data: {
+        customer,
+        orders: {
+          ordersCount: orderAgg?.ordersCount || 0,
+          newCount: orderAgg?.newCount || 0,
+          confirmedCount: orderAgg?.confirmedCount || 0,
+          canceledCount: orderAgg?.canceledCount || 0,
+          totals: {
+            UZS: orderAgg?.totalUZS || 0,
+            USD: orderAgg?.totalUSD || 0,
+          },
+          lastOrderAt: orderAgg?.lastOrderAt || null,
+        },
+        sales: {
+          salesCount: saleAgg?.salesCount || 0,
+          total: saleAgg?.salesTotalSum || 0,
+          lastSaleAt: saleAgg?.lastSaleAt || null,
+        },
+        history: {
+          lastOrders,
+        },
+      },
+    });
+  } catch (error) {
+    return res
+      .status(500)
+      .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };

@@ -37,13 +37,19 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+    currency_snapshot: {
+      type: String,
+      enum: ["UZS", "USD"],
+      required: true,
+    },
   },
+
   { _id: false }
 );
 
 const OrderSchema = new mongoose.Schema(
   {
-    // kim zakas berdi
+    // kim zakas berdi (AGENT)
     agent_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -51,10 +57,10 @@ const OrderSchema = new mongoose.Schema(
       index: true,
     },
 
-    // qaysi ombordan
-    warehouse_id: {
+    // ✅ qaysi hozmak (Customer)
+    customer_id: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: "Warehouse",
+      ref: "Customer",
       required: true,
       index: true,
     },
@@ -96,6 +102,9 @@ const OrderSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
+    total_uzs: { type: Number, default: 0, min: 0 },
+    total_usd: { type: Number, default: 0, min: 0 },
+
     cancelReason: {
       type: String,
       trim: true,
@@ -108,6 +117,9 @@ const OrderSchema = new mongoose.Schema(
 // indexlar (tezkor filter uchun)
 OrderSchema.index({ createdAt: -1 });
 OrderSchema.index({ agent_id: 1, createdAt: -1 });
-OrderSchema.index({ warehouse_id: 1, createdAt: -1 });
+OrderSchema.index({ customer_id: 1, createdAt: -1 }); // ✅ foydali
+
+// ❌ warehouse_id index olib tashlandi, chunki schema’da yo‘q
+// OrderSchema.index({ warehouse_id: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Order", OrderSchema);

@@ -11,6 +11,9 @@ const purchaseController = require("../controllers/purchase.controller");
 const salesController = require("../controllers/sales.controller");
 const customerController = require("../controllers/customer.controller"); // ✅ NEW
 const agentOrderController = require("../controllers/agentOrder.controller");
+const agentStatsController = require("../controllers/agentOrder.controller");
+
+
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -267,6 +270,13 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   customerController.getCustomerStatement
 );
+// customer summary (to‘liq tarix)
+router.get(
+  "/customers/:id/summary",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerSummary
+);
 
 /**
  * SALES (SOTUV)
@@ -304,7 +314,6 @@ router.post(
   salesController.cancelSale
 );
 
-
 /**
  * AGENT ORDERS (ZAKAS)
  * Agent faqat zakas yaratadi
@@ -315,5 +324,27 @@ router.post(
   rRole("AGENT"),
   agentOrderController.createAgentOrder
 );
+
+router.get(
+  "/agents/summary",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentOrderController.getAgentsSummary
+);
+
+router.get(
+  "/agents/:id/orders",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentOrderController.getAgentOrders
+);
+
+router.get(
+  "/agents/:id/customers",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentOrderController.getAgentCustomersStats
+);
+
 
 module.exports = router;

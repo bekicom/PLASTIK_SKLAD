@@ -19,6 +19,7 @@ const supplierSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    total_debt_usd: { type: Number, default: 0, min: 0 },
 
     payment_history: [
       {
