@@ -4,14 +4,36 @@ const SaleReturn = require("../modules/returns/SaleReturn");
 const Sale = require("../modules/sales/Sale");
 const Warehouse = require("../modules/Warehouse/Warehouse");
 
-// Sizda stock qayerda yuradi — shu funksiya ichini moslab qo‘yasiz
+/**
+ * Warehouse stock update (default variant)
+ * Assumption: Warehouse schema has: products: [{ product_id, qty }]
+ * Agar sende boshqacha bo‘lsa, shu funksiyani moslab qo‘yamiz.
+ */
 async function updateWarehouseStock({
   session,
   warehouseId,
   productId,
   qtyPlus,
 }) {
-  // TODO: sizdagi stock modelga moslab yozamiz
+  const inc = Number(qtyPlus || 0);
+  if (!Number.isFinite(inc) || inc <= 0) return true;
+
+  // mavjud bo‘lsa inc
+  const r1 = await Warehouse.updateOne(
+    { _id: warehouseId, "products.product_id": productId },
+    { $inc: { "products.$.qty": inc } },
+    { session }
+  );
+
+  // mavjud bo‘lmasa push
+  if (r1.modifiedCount === 0) {
+    await Warehouse.updateOne(
+      { _id: warehouseId, "products.product_id": { $ne: productId } },
+      { $push: { products: { product_id: productId, qty: inc } } },
+      { session }
+    );
+  }
+
   return true;
 }
 
@@ -22,36 +44,34 @@ function safeNum(n, def = 0) {
 
 function asId(x) {
   if (!x) return null;
-  if (typeof x === "object" && x._id) return x._id; // populate bo‘lsa
+  if (typeof x === "object" && x._id) return x._id;
   return x;
 }
 
 /**
  * POST /returns/create
+ * Body: { sale_id, warehouse_id, items:[{product_id, qty, reason?}], note? }
  */
 exports.createReturn = async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
-    await session.withTransaction(async () => {
-      // ✅ AUTH: req.user bo‘lishi shart
-      const userId = req.user?._id || req.user?.id || req.userId;
+    let responseData = null;
 
+    await session.withTransaction(async () => {
+      const userId = req.user?._id || req.user?.id || req.userId;
       if (!userId) {
         throw new Error(
-          "Auth error: userId topilmadi (Authorization header yuborilganmi?)"
+          "Auth error: userId topilmadi (Authorization yuborilganmi?)"
         );
       }
 
-      const { sale_id, warehouse_id, refund_type, refund_amount, items, note } =
-        req.body || {};
+      const { sale_id, warehouse_id, items, note } = req.body || {};
 
       if (!mongoose.isValidObjectId(sale_id))
         throw new Error("sale_id noto‘g‘ri");
       if (!mongoose.isValidObjectId(warehouse_id))
         throw new Error("warehouse_id noto‘g‘ri");
-      if (!["CASH", "BALANCE", "NO_REFUND"].includes(refund_type))
-        throw new Error("refund_type noto‘g‘ri");
       if (!Array.isArray(items) || items.length === 0)
         throw new Error("items majburiy");
 
@@ -66,11 +86,10 @@ exports.createReturn = async (req, res) => {
         throw new Error("Sale.customerId topilmadi yoki noto‘g‘ri");
       }
 
-      // ✅ Sale items map: productId + warehouseId bo‘yicha
       const saleItems = Array.isArray(sale.items) ? sale.items : [];
       if (saleItems.length === 0) throw new Error("Sale.items bo‘sh");
 
-      // Key: `${productId}|${warehouseId}`
+      // Sale items map: productId|warehouseId -> saleItem
       const saleItemMap = new Map();
       for (const it of saleItems) {
         const pId = asId(it.productId);
@@ -79,25 +98,7 @@ exports.createReturn = async (req, res) => {
         saleItemMap.set(`${String(pId)}|${String(wId)}`, it);
       }
 
-      // ✅ Oldingi returnlar bo‘yicha qaytgan qty (productId + warehouseId)
-      const prevReturns = await SaleReturn.find({ sale_id: sale._id })
-        .select("items warehouse_id")
-        .lean()
-        .session(session);
-
-      const returnedQtyMap = new Map();
-      for (const r of prevReturns) {
-        const rWhId = asId(r.warehouse_id);
-        for (const ri of r.items || []) {
-          const key = `${String(ri.product_id)}|${String(rWhId)}`;
-          returnedQtyMap.set(
-            key,
-            safeNum(returnedQtyMap.get(key), 0) + safeNum(ri.qty, 0)
-          );
-        }
-      }
-
-      // ✅ Validatsiya + hisob
+      // ✅ Normalizatsiya + subtotal hisob
       const normalizedItems = [];
       let returnSubtotal = 0;
 
@@ -109,7 +110,6 @@ exports.createReturn = async (req, res) => {
           throw new Error("items.product_id noto‘g‘ri");
         if (qty <= 0) throw new Error("items.qty 0 dan katta bo‘lishi kerak");
 
-        // 🔥 shu warehouse bo‘yicha topamiz
         const saleKey = `${String(productId)}|${String(wh._id)}`;
         const saleIt = saleItemMap.get(saleKey);
 
@@ -119,43 +119,31 @@ exports.createReturn = async (req, res) => {
           );
         }
 
-        const soldQty = safeNum(saleIt.qty, 0);
-        const alreadyReturned = safeNum(returnedQtyMap.get(saleKey), 0);
+        // ✅ LIMIT YO‘Q (sening talabing)
+        // oldingi limit tekshiruvi olib tashlandi
 
-        if (alreadyReturned + qty > soldQty) {
-          throw new Error(
-            `Qaytarish limiti oshib ketdi. Sold: ${soldQty}, Returned: ${alreadyReturned}, New: ${qty}`
-          );
-        }
+        const price = safeNum(
+          saleIt.price ?? saleIt.price_snapshot ?? saleIt.priceSnapshot,
+          0
+        );
 
-        const price = safeNum(saleIt.price, 0);
         const subtotal = price * qty;
 
-        // ✅ MUHIM: SaleReturn schema items.price REQUIRED -> price qo‘shildi
         normalizedItems.push({
           product_id: productId,
           qty,
-          price, // ✅ required
-          subtotal, // ✅ required
+          price,
+          subtotal,
           reason: row?.reason ? String(row.reason).trim() : undefined,
-
-          // ixtiyoriy snapshotlar (schema’da bo‘lsa saqlanadi)
-          name_snapshot: saleIt.nameSnapshot,
-          unit_snapshot: saleIt.unitSnapshot,
+          name_snapshot: saleIt.nameSnapshot || saleIt.name_snapshot,
+          unit_snapshot: saleIt.unitSnapshot || saleIt.unit_snapshot,
+          price_snapshot: price,
         });
 
         returnSubtotal += subtotal;
       }
 
-      // ✅ refund policy
-      const refundAmt = safeNum(refund_amount, 0);
-      if (refund_type === "NO_REFUND" && refundAmt > 0)
-        throw new Error("NO_REFUND bo‘lsa refund_amount 0 bo‘lishi kerak");
-      if (refundAmt < 0) throw new Error("refund_amount noto‘g‘ri");
-      if (refundAmt > returnSubtotal)
-        throw new Error("refund_amount returnSubtotal dan oshmasin");
-
-      // ✅ Return hujjati
+      // ✅ Return hujjati yaratamiz
       const [created] = await SaleReturn.create(
         [
           {
@@ -164,16 +152,14 @@ exports.createReturn = async (req, res) => {
             warehouse_id: wh._id,
             items: normalizedItems,
             returnSubtotal,
-            refund_type,
-            refund_amount: refundAmt,
             note: note ? String(note).trim() : undefined,
-            createdBy: userId, // ✅ required
+            createdBy: userId,
           },
         ],
         { session }
       );
 
-      // ✅ Stockni omborga qaytaramiz
+      // ✅ Omborga qayta kirim (stock +)
       for (const it of normalizedItems) {
         await updateWarehouseStock({
           session,
@@ -183,36 +169,63 @@ exports.createReturn = async (req, res) => {
         });
       }
 
-      // ✅ Sale returnStatus (shu warehouse bo‘yicha)
-      let totalSold = 0;
-      for (const it of saleItems) {
+      // ✅ Sale.items dan qaytgan qty ni kamaytiramiz (tarixda ko‘rinmasin)
+      const retMap = new Map(); // productId|warehouseId -> returnedQty
+      for (const it of normalizedItems) {
+        const key = `${String(it.product_id)}|${String(wh._id)}`;
+        retMap.set(key, safeNum(retMap.get(key), 0) + safeNum(it.qty, 0));
+      }
+
+      const newSaleItems = [];
+      for (const it of sale.items || []) {
+        const pId = asId(it.productId);
         const wId = asId(it.warehouseId);
-        if (String(wId) === String(wh._id)) totalSold += safeNum(it.qty, 0);
+        const key = `${String(pId)}|${String(wId)}`;
+
+        const retQty = safeNum(retMap.get(key), 0);
+        if (retQty <= 0) {
+          newSaleItems.push(it);
+          continue;
+        }
+
+        const oldQty = safeNum(it.qty, 0);
+        const newQty = oldQty - retQty;
+
+        // qty 0 yoki manfiy bo‘lsa — item sale’dan tushadi
+        if (newQty > 0) {
+          it.qty = newQty;
+
+          const price = safeNum(
+            it.price ?? it.price_snapshot ?? it.priceSnapshot,
+            0
+          );
+          if (it.subtotal !== undefined) it.subtotal = price * newQty;
+
+          newSaleItems.push(it);
+        }
       }
 
-      let totalReturnedAll = 0;
-      for (const [k, v] of returnedQtyMap.entries()) {
-        if (k.endsWith(`|${String(wh._id)}`)) totalReturnedAll += safeNum(v, 0);
+      sale.items = newSaleItems;
+
+      // ✅ returnStatus + yashirish
+      if (!sale.items || sale.items.length === 0) {
+        sale.returnStatus = "FULL_RETURN";
+        sale.isHidden = true; // ✅ sotuv tarixida ko‘rinmasin
+      } else {
+        sale.returnStatus = "PARTIAL_RETURN";
+        // Agar partial ham tarixdan yo‘qolsin desang:
+        // sale.isHidden = true;
       }
 
-      let newReturned = 0;
-      for (const it of normalizedItems) newReturned += safeNum(it.qty, 0);
-
-      const totalReturnedNow = totalReturnedAll + newReturned;
-
-      let returnStatus = "PARTIAL_RETURN";
-      if (totalReturnedNow <= 0) returnStatus = "NO_RETURN";
-      else if (totalSold > 0 && totalReturnedNow >= totalSold)
-        returnStatus = "FULL_RETURN";
-
-      sale.returnStatus = returnStatus;
       await sale.save({ session });
 
-      return res.status(201).json({
-        ok: true,
-        message: "Vozvrat yaratildi",
-        data: created,
-      });
+      responseData = created;
+    });
+
+    return res.status(201).json({
+      ok: true,
+      message: "Vozvrat yaratildi",
+      data: responseData,
     });
   } catch (err) {
     return res.status(400).json({
@@ -223,6 +236,3 @@ exports.createReturn = async (req, res) => {
     session.endSession();
   }
 };
-
-
-

@@ -40,20 +40,9 @@ const SaleReturnSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-
     items: { type: [SaleReturnItemSchema], required: true },
-
     returnSubtotal: { type: Number, required: true, min: 0 },
-
-    refund_type: {
-      type: String,
-      enum: ["CASH", "BALANCE", "NO_REFUND"],
-      required: true,
-    },
-    refund_amount: { type: Number, default: 0, min: 0 },
-
     note: { type: String, trim: true },
-
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

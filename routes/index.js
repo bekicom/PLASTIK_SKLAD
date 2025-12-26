@@ -15,6 +15,7 @@ const agentOrderController = require("../controllers/agentOrder.controller");
 const cashierOrderController = require("../controllers/cashierOrder.controller");
 const returnController = require("../controllers/return.controller");
 
+
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
 
@@ -387,6 +388,13 @@ router.get(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   salesController.getSaleById
+);
+
+router.post(
+  "/returns/create",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  returnController.createReturn
 );
 
 
