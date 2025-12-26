@@ -11,7 +11,8 @@ const purchaseController = require("../controllers/purchase.controller");
 const salesController = require("../controllers/sales.controller");
 const customerController = require("../controllers/customer.controller"); // ✅ NEW
 const agentOrderController = require("../controllers/agentOrder.controller");
-const agentStatsController = require("../controllers/agentOrder.controller");
+// const agentStatsController = require("../controllers/agentOrder.controller");
+const cashierOrderController = require("../controllers/cashierOrder.controller");
 
 
 
@@ -328,22 +329,51 @@ router.post(
 router.get(
   "/agents/summary",
   rAuth,
-  rRole("ADMIN", "CASHIER"),
+    rRole("ADMIN","AGENT","CASHIER"),
   agentOrderController.getAgentsSummary
 );
 
 router.get(
   "/agents/:id/orders",
   rAuth,
-  rRole("ADMIN", "CASHIER"),
+  rRole("ADMIN","AGENT",   "CASHIER"),
   agentOrderController.getAgentOrders
 );
 
 router.get(
   "/agents/:id/customers",
   rAuth,
-  rRole("ADMIN", "CASHIER"),
+  rRole("ADMIN","AGENT",   "CASHIER"),
   agentOrderController.getAgentCustomersStats
+);
+
+
+/**
+ * CASHIER ORDERS (AGENT ZAKAS QABUL QILISH)
+ */
+
+// NEW zakaslar ro‘yxati
+router.get(
+  "/orders/new",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashierOrderController.getNewOrders
+);
+
+// zakasni tasdiqlash (ombordan qty kamayadi)
+router.post(
+  "/orders/:id/confirm",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashierOrderController.confirmOrder
+);
+
+// zakasni bekor qilish
+router.post(
+  "/orders/:id/cancel",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashierOrderController.cancelOrder
 );
 
 

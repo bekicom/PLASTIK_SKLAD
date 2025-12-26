@@ -14,7 +14,6 @@ exports.rAuth = (req, res, next) => {
     const token = header.split(" ")[1];
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // token ichidan user ma'lumotini requestga biriktiramiz
     req.user = decoded; // { id, login, role, iat, exp }
     next();
   } catch (error) {

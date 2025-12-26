@@ -2,22 +2,7 @@ const mongoose = require("mongoose");
 const Order = require("../modules/orders/Order");
 const Product = require("../modules/products/Product");
 const Customer = require("../modules/Customer/Customer");
-
-// ⚠️ Sizda User modeli qayerda?
-// Oldin routerda ../controllers/user.controller ishlatyapsiz, lekin user modeli pathi sizda boshqacha bo‘lishi mumkin.
-// Siz yuborgan snippet’da: "../modules/Users/User" deb turibdi.
-// Shu path to‘g‘ri bo‘lsa qoldiring, bo‘lmasa moslang.
-const User = require("../modules/Users/User");
-
-function safeNumber(n, def = 0) {
-  const x = Number(n);
-  return Number.isFinite(x) ? x : def;
-}
-
-function normalizePhone(phone) {
-  if (!phone) return undefined;
-  return String(phone).replace(/\s+/g, "").trim();
-}
+const User = require("../modules/Users/User"); // path to‘g‘riligini tekshir
 
 function parseDate(d, endOfDay = false) {
   if (!d) return null;
@@ -28,28 +13,32 @@ function parseDate(d, endOfDay = false) {
   return dt;
 }
 
+function getUserId(req) {
+  return req.user?.id || req.user?._id;
+}
+
 /**
  * POST /agent/orders
  * (AGENT)
  * body:
  * {
- *   customer_id?: "...",              // eski customer bo‘lsa
- *   customer_name?: "Ali",            // yangi customer bo‘lsa
- *   customer_phone?: "99890...",      // yangi customer bo‘lsa
+ *   customer_id: "...",
  *   note?: "...",
  *   items: [{ product_id, qty }]
  * }
+ *
+ * ✅ Yangi order yaratilganda CASHIER'ga socket orqali yuboradi: "order:new"
  */
 exports.createAgentOrder = async (req, res) => {
   try {
-    if (!req.user || !req.user.id) {
+    const agentId = getUserId(req);
+    if (!agentId) {
       return res.status(401).json({
         ok: false,
         message: "Token kerak (Authorization: Bearer ...)",
       });
     }
 
-    const agentId = req.user.id;
     const { customer_id, items, note } = req.body || {};
 
     if (!customer_id || !mongoose.isValidObjectId(customer_id)) {
@@ -64,35 +53,38 @@ exports.createAgentOrder = async (req, res) => {
         .json({ ok: false, message: "items bo‘sh bo‘lishi mumkin emas" });
     }
 
-    const customer = await Customer.findById(customer_id);
+    const customer = await Customer.findById(customer_id).lean();
     if (!customer) {
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
     }
 
-    // product_id lar
-    const ids = [];
+    const productIds = [];
     for (const it of items) {
       if (!it?.product_id || !mongoose.isValidObjectId(it.product_id)) {
-        return res
-          .status(400)
-          .json({ ok: false, message: "items ichida product_id noto‘g‘ri" });
+        return res.status(400).json({
+          ok: false,
+          message: "items ichida product_id noto‘g‘ri",
+        });
       }
-      ids.push(String(it.product_id));
+      productIds.push(String(it.product_id));
     }
-    const productIds = [...new Set(ids)];
+    const uniqueProductIds = [...new Set(productIds)];
 
-    // ✅ Productdan kerakli fieldlar: sell_price, warehouse_currency
     const products = await Product.find({
-      _id: { $in: productIds },
-      is_active: { $ne: false }, // agar bunday field bo‘lmasa olib tashla
-    }).select("name unit sell_price warehouse_currency");
+      _id: { $in: uniqueProductIds },
+      is_active: { $ne: false },
+    })
+      .select("name unit sell_price warehouse_currency")
+      .lean();
 
-    if (products.length !== productIds.length) {
+    if (products.length !== uniqueProductIds.length) {
       return res.status(400).json({
         ok: false,
         message: "Ba’zi productlar topilmadi yoki aktiv emas",
       });
     }
+
+    const productMap = new Map(products.map((p) => [String(p._id), p]));
 
     const orderItems = [];
     let total_uzs = 0;
@@ -101,17 +93,20 @@ exports.createAgentOrder = async (req, res) => {
     for (const it of items) {
       const qty = Number(it.qty);
       if (!Number.isFinite(qty) || qty <= 0) {
-        return res
-          .status(400)
-          .json({
-            ok: false,
-            message: "qty noto‘g‘ri (0 dan katta bo‘lishi kerak)",
-          });
+        return res.status(400).json({
+          ok: false,
+          message: "qty noto‘g‘ri (0 dan katta bo‘lishi kerak)",
+        });
       }
 
-      const p = products.find(
-        (x) => x._id.toString() === String(it.product_id)
-      );
+      const p = productMap.get(String(it.product_id));
+      if (!p) {
+        return res.status(400).json({
+          ok: false,
+          message: "Product topilmadi",
+          product_id: it.product_id,
+        });
+      }
 
       const currency = String(p.warehouse_currency || "").toUpperCase();
       if (currency !== "UZS" && currency !== "USD") {
@@ -122,10 +117,7 @@ exports.createAgentOrder = async (req, res) => {
         });
       }
 
-      // ✅ SOTUV NARXI
       const price = Number(p.sell_price || 0);
-
-      // ✅ narx 0 bo‘lsa zakasni bloklaymiz (tavsiya)
       if (!Number.isFinite(price) || price <= 0) {
         return res.status(400).json({
           ok: false,
@@ -147,33 +139,55 @@ exports.createAgentOrder = async (req, res) => {
         name_snapshot: p.name,
         unit_snapshot: p.unit,
         qty,
-        price_snapshot: price, // ✅ sell_price dan
+        price_snapshot: price,
         subtotal,
-        currency_snapshot: currency, // ✅ UZS/USD
+        currency_snapshot: currency,
       });
     }
 
-    const order = await Order.create({
+    const orderDoc = await Order.create({
       agent_id: agentId,
       customer_id: customer._id,
       items: orderItems,
-
-      // ✅ totals
       total_uzs,
       total_usd,
-
-      // eski total ni xohlasang olib tashla yoki 0 qoldir
-      // total: 0,
-
       note: note?.trim(),
       status: "NEW",
     });
+
+    /**
+     * ✅ SOCKET: faqat signal yuboramiz (frontend refetch qiladi)
+     */
+    const io = req.app?.get("io");
+
+    // Diagnostika (server console'da ko‘rasan)
+    console.log(
+      "[createAgentOrder] io exists?",
+      !!io,
+      "order:",
+      String(orderDoc._id)
+    );
+
+    if (io) {
+      const payload = {
+        id: String(orderDoc._id),
+        status: "NEW",
+        createdAt: orderDoc.createdAt,
+      };
+
+      // 1) Asosiy: cashier room
+      io.to("cashiers").emit("order:new", payload);
+
+      // 2) TEST uchun: hamma ulanganlarga ham yuboramiz (muammo roomdamikan bilish uchun)
+      // Agar shu ishlasa-yu room ishlamasa => cashier roomga ulanmagan.
+      io.emit("order:new:debug", payload);
+    }
 
     return res.status(201).json({
       ok: true,
       message: "Zakas yuborildi",
       data: {
-        order,
+        order: orderDoc,
         totals: { UZS: total_uzs, USD: total_usd },
       },
     });
@@ -185,7 +199,6 @@ exports.createAgentOrder = async (req, res) => {
     });
   }
 };
-
 
 
 /**
@@ -206,34 +219,27 @@ exports.getAgentsSummary = async (req, res) => {
       if (toDate) match.createdAt.$lte = toDate;
     }
 
-    // ✅ faqat AGENT userlar
-    const agents = await User.find({ role: "AGENT" }).select(
-      "name phone login role createdAt"
-    );
+    // faqat AGENT userlar
+    const agents = await User.find({ role: "AGENT" })
+      .select("name phone login role createdAt")
+      .lean();
 
     const agentIds = agents.map((a) => a._id);
 
-    // ✅ endi total_uzs / total_usd bo‘yicha yig‘amiz
     const agg = await Order.aggregate([
       { $match: { ...match, agent_id: { $in: agentIds } } },
       {
         $group: {
           _id: "$agent_id",
-
           ordersCount: { $sum: 1 },
-
           confirmedCount: {
             $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
           },
-
           canceledCount: {
             $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] },
           },
-
-          // ✅ UZS/USD totals
           totalUZS: { $sum: { $ifNull: ["$total_uzs", 0] } },
           totalUSD: { $sum: { $ifNull: ["$total_usd", 0] } },
-
           confirmedUZS: {
             $sum: {
               $cond: [
@@ -243,7 +249,6 @@ exports.getAgentsSummary = async (req, res) => {
               ],
             },
           },
-
           confirmedUSD: {
             $sum: {
               $cond: [
@@ -253,7 +258,6 @@ exports.getAgentsSummary = async (req, res) => {
               ],
             },
           },
-
           lastOrderAt: { $max: "$createdAt" },
         },
       },
@@ -269,8 +273,6 @@ exports.getAgentsSummary = async (req, res) => {
           ordersCount: s.ordersCount || 0,
           confirmedCount: s.confirmedCount || 0,
           canceledCount: s.canceledCount || 0,
-
-          // ✅ yangi ko‘rinish
           totals: {
             UZS: s.totalUZS || 0,
             USD: s.totalUSD || 0,
@@ -279,7 +281,6 @@ exports.getAgentsSummary = async (req, res) => {
             UZS: s.confirmedUZS || 0,
             USD: s.confirmedUSD || 0,
           },
-
           lastOrderAt: s.lastOrderAt || null,
         },
       };
@@ -294,7 +295,6 @@ exports.getAgentsSummary = async (req, res) => {
     });
   }
 };
-
 
 /**
  * GET /agents/:id/orders?from=&to=&status=&customer_id=
@@ -313,9 +313,9 @@ exports.getAgentOrders = async (req, res) => {
     const toDate = parseDate(to, true);
 
     const filter = { agent_id: id };
-
-    if (status) filter.status = status;
-    if (customer_id) filter.customer_id = customer_id;
+    if (status) filter.status = String(status).toUpperCase();
+    if (customer_id && mongoose.isValidObjectId(customer_id))
+      filter.customer_id = customer_id;
 
     if (fromDate || toDate) {
       filter.createdAt = {};
@@ -338,6 +338,8 @@ exports.getAgentOrders = async (req, res) => {
 /**
  * GET /agents/:id/customers?from=&to=
  * ADMIN/CASHIER
+ *
+ * ✅ eski total ishlatmasdan, total_uzs + total_usd bilan
  */
 exports.getAgentCustomersStats = async (req, res) => {
   try {
@@ -353,12 +355,7 @@ exports.getAgentCustomersStats = async (req, res) => {
 
     const match = {
       agent_id: new mongoose.Types.ObjectId(id),
-
-      // ✅ customer_id null bo‘lgan eski orderlarni chiqarib tashlaymiz
       customer_id: { $ne: null },
-
-      // ✅ agar ba’zi orderlarda customer_id umuman yo‘q bo‘lsa ham chiqarib tashlaydi
-      // customer_id: { $exists: true, $ne: null },
     };
 
     if (fromDate || toDate) {
@@ -370,7 +367,6 @@ exports.getAgentCustomersStats = async (req, res) => {
     const items = await Order.aggregate([
       { $match: match },
 
-      // ✅ customer_id bo‘yicha gruppa
       {
         $group: {
           _id: "$customer_id",
@@ -378,15 +374,37 @@ exports.getAgentCustomersStats = async (req, res) => {
           confirmedCount: {
             $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
           },
-          totalSum: { $sum: "$total" },
-          confirmedSum: {
-            $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, "$total", 0] },
+          canceledCount: {
+            $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] },
           },
+
+          // ✅ totals (UZS/USD)
+          totalUZS: { $sum: { $ifNull: ["$total_uzs", 0] } },
+          totalUSD: { $sum: { $ifNull: ["$total_usd", 0] } },
+
+          confirmedUZS: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", "CONFIRMED"] },
+                { $ifNull: ["$total_uzs", 0] },
+                0,
+              ],
+            },
+          },
+          confirmedUSD: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", "CONFIRMED"] },
+                { $ifNull: ["$total_usd", 0] },
+                0,
+              ],
+            },
+          },
+
           lastOrderAt: { $max: "$createdAt" },
         },
       },
 
-      // ✅ customers collectiondan customer info olib kelish
       {
         $lookup: {
           from: "customers",
@@ -395,8 +413,6 @@ exports.getAgentCustomersStats = async (req, res) => {
           as: "customer",
         },
       },
-
-      // ✅ customer topilmasa ham item chiqaveradi (xohlasang false qilamiz)
       { $unwind: { path: "$customer", preserveNullAndEmptyArrays: true } },
 
       {
@@ -409,8 +425,9 @@ exports.getAgentCustomersStats = async (req, res) => {
           },
           ordersCount: 1,
           confirmedCount: 1,
-          totalSum: 1,
-          confirmedSum: 1,
+          canceledCount: 1,
+          totals: { UZS: "$totalUZS", USD: "$totalUSD" },
+          confirmedTotals: { UZS: "$confirmedUZS", USD: "$confirmedUSD" },
           lastOrderAt: 1,
         },
       },
