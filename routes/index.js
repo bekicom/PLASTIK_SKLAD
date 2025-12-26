@@ -13,8 +13,7 @@ const customerController = require("../controllers/customer.controller"); // ✅
 const agentOrderController = require("../controllers/agentOrder.controller");
 // const agentStatsController = require("../controllers/agentOrder.controller");
 const cashierOrderController = require("../controllers/cashierOrder.controller");
-
-
+const returnController = require("../controllers/return.controller");
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -300,12 +299,12 @@ router.get(
 );
 
 // bitta saleni get qilish
-router.get(
-  "/sales/:id",
-  rAuth,
-  rRole("ADMIN", "CASHIER"),
-  salesController.getSaleById
-);
+// router.get(
+//   "/sales/:id",
+//   rAuth,
+//   rRole("ADMIN", "CASHIER"),
+//   salesController.getSaleById
+// );
 
 // saleni cancel qilish
 router.post(
@@ -329,24 +328,23 @@ router.post(
 router.get(
   "/agents/summary",
   rAuth,
-    rRole("ADMIN","AGENT","CASHIER"),
+  rRole("ADMIN", "AGENT", "CASHIER"),
   agentOrderController.getAgentsSummary
 );
 
 router.get(
   "/agents/:id/orders",
   rAuth,
-  rRole("ADMIN","AGENT",   "CASHIER"),
+  rRole("ADMIN", "AGENT", "CASHIER"),
   agentOrderController.getAgentOrders
 );
 
 router.get(
   "/agents/:id/customers",
   rAuth,
-  rRole("ADMIN","AGENT",   "CASHIER"),
+  rRole("ADMIN", "AGENT", "CASHIER"),
   agentOrderController.getAgentCustomersStats
 );
-
 
 /**
  * CASHIER ORDERS (AGENT ZAKAS QABUL QILISH)
@@ -375,6 +373,25 @@ router.post(
   rRole("ADMIN", "CASHIER"),
   cashierOrderController.cancelOrder
 );
+
+
+router.get(
+  "/sales/search-by-product",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  salesController.searchSalesByProduct
+);
+
+router.get(
+  "/sales/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  salesController.getSaleById
+);
+
+
+
+
 
 
 module.exports = router;

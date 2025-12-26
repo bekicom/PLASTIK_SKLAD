@@ -31,6 +31,10 @@ function normalizePhone(phone) {
   if (!phone) return undefined;
   return String(phone).replace(/\s+/g, "").trim();
 }
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 
 function calcItemsSubtotals(items) {
   return items.map((it) => {
@@ -381,15 +385,12 @@ exports.createSale = async (req, res) => {
 
 exports.getSales = async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page || "1", 10));
-    const limit = Math.min(
-      100,
-      Math.max(1, parseInt(req.query.limit || "20", 10))
-    );
-    const skip = (page - 1) * limit;
-
     const filter = {};
-    if (req.query.status) filter.status = req.query.status;
+
+    if (req.query.status) {
+      filter.status = req.query.status;
+    }
+
     if (
       req.query.customerId &&
       mongoose.isValidObjectId(req.query.customerId)
@@ -397,23 +398,25 @@ exports.getSales = async (req, res) => {
       filter.customerId = req.query.customerId;
     }
 
-    const [rows, total] = await Promise.all([
-      Sale.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .populate("customerId", "name phone")
-        .lean(),
-      Sale.countDocuments(filter),
-    ]);
+    const rows = await Sale.find(filter)
+      .sort({ createdAt: -1 })
+      .populate("customerId", "name phone")
+      .lean();
 
-    return res.json({ ok: true, page, limit, total, items: rows });
+    return res.json({
+      ok: true,
+      total: rows.length,
+      items: rows,
+    });
   } catch (err) {
-    return res
-      .status(500)
-      .json({ message: "Sales olishda xato", error: err.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Sales olishda xato",
+      error: err.message,
+    });
   }
 };
+
 
 exports.getSaleById = async (req, res) => {
   try {
@@ -482,5 +485,71 @@ exports.cancelSale = async (req, res) => {
     return res
       .status(500)
       .json({ message: "Sale cancel xato", error: err.message });
+  }
+};
+
+exports.searchSalesByProduct = async (req, res) => {
+  try {
+    const q = String(req.query.q || "").trim();
+    if (!q) {
+      return res.status(400).json({
+        ok: false,
+        message: "q (product nomi) majburiy",
+      });
+    }
+
+    const rx = new RegExp(escapeRegex(q), "i");
+
+    const filter = {
+      "items.nameSnapshot": rx,
+    };
+
+    // ixtiyoriy filterlar (hozir yoki keyin ishlatish mumkin)
+    if (req.query.status) {
+      filter.status = String(req.query.status);
+    }
+
+    if (
+      req.query.customerId &&
+      mongoose.isValidObjectId(req.query.customerId)
+    ) {
+      filter.customerId = new mongoose.Types.ObjectId(req.query.customerId);
+    }
+
+    // ❌ limit yo‘q
+    // ❌ pagination yo‘q
+    const rows = await Sale.find(filter)
+      .sort({ createdAt: -1 })
+      .select(
+        "invoiceNo createdAt status customerSnapshot customerId totals currencyTotals items"
+      )
+      .lean();
+
+    const items = rows.map((s) => ({
+      _id: s._id,
+      invoiceNo: s.invoiceNo,
+      createdAt: s.createdAt,
+      status: s.status,
+      customerSnapshot: s.customerSnapshot,
+      customerId: s.customerId,
+      totals: s.totals,
+      currencyTotals: s.currencyTotals,
+      matchedItems: (s.items || []).filter((it) =>
+        rx.test(String(it.nameSnapshot || ""))
+      ),
+    }));
+
+    return res.json({
+      ok: true,
+      q,
+      total: items.length,
+      items,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Product bo‘yicha sales qidirishda xato",
+      error: err.message,
+    });
   }
 };
