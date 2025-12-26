@@ -11,9 +11,9 @@ const purchaseController = require("../controllers/purchase.controller");
 const salesController = require("../controllers/sales.controller");
 const customerController = require("../controllers/customer.controller"); // ✅ NEW
 const agentOrderController = require("../controllers/agentOrder.controller");
-// const agentStatsController = require("../controllers/agentOrder.controller");
 const cashierOrderController = require("../controllers/cashierOrder.controller");
 const returnController = require("../controllers/return.controller");
+const expenseController = require("../controllers/expense.controller");
 
 
 // Middlewares
@@ -399,6 +399,20 @@ router.post(
 
 
 
+// CREATE
+router.post("/expenses", rAuth, expenseController.createExpense);
+
+// READ (LIST)
+router.get("/expenses", rAuth, expenseController.getExpenses);
+
+// READ (ONE)
+router.get("/expenses/:id", rAuth, expenseController.getExpenseById);
+
+// UPDATE
+router.put("/expenses/:id", rAuth, expenseController.updateExpense);
+
+// DELETE
+router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
 
 
 
