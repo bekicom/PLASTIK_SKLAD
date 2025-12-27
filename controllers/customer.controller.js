@@ -518,3 +518,5 @@ exports.getCustomerSummary = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
+
+// dswdsd

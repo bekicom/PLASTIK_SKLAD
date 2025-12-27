@@ -174,7 +174,7 @@ router.post(
 );
 
 // productlarni get qilish
-router.get("/products", rAuth, rRole("ADMIN"), productController.getProducts);
+router.get("/products", rAuth, rRole("ADMIN", "AGENT"), productController.getProducts);
 
 // bitta productni get qilish
 router.get(
