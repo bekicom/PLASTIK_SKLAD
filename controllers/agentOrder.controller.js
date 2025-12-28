@@ -58,6 +58,7 @@ exports.createAgentOrder = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
     }
 
+    // ✅ product_id larni tekshiramiz
     const productIds = [];
     for (const it of items) {
       if (!it?.product_id || !mongoose.isValidObjectId(it.product_id)) {
@@ -117,8 +118,9 @@ exports.createAgentOrder = async (req, res) => {
         });
       }
 
-      const price = Number(p.sell_price || 0);
-      if (!Number.isFinite(price) || price <= 0) {
+      // ✅ Product’dagi asosiy narx
+      const basePrice = Number(p.sell_price || 0);
+      if (!Number.isFinite(basePrice) || basePrice <= 0) {
         return res.status(400).json({
           ok: false,
           message:
@@ -126,6 +128,33 @@ exports.createAgentOrder = async (req, res) => {
           product_id: p._id,
           product_name: p.name,
           currency,
+        });
+      }
+
+      // ✅ Agent yuborgan narx (ixtiyoriy). Bermasa basePrice ishlaydi
+      let price =
+        it.price !== undefined && it.price !== null
+          ? Number(it.price)
+          : basePrice;
+
+      if (!Number.isFinite(price) || price <= 0) {
+        return res.status(400).json({
+          ok: false,
+          message: "items.price noto‘g‘ri (0 dan katta bo‘lishi kerak)",
+          product_id: p._id,
+          product_name: p.name,
+        });
+      }
+
+      // ✅ Agent faqat arzonlatishi mumkin (qimmatlatish yo‘q)
+      if (price > basePrice) {
+        return res.status(400).json({
+          ok: false,
+          message: "Agent narxi product narxidan katta bo‘lishi mumkin emas",
+          product_id: p._id,
+          product_name: p.name,
+          max_price: basePrice,
+          sent_price: price,
         });
       }
 
@@ -139,7 +168,7 @@ exports.createAgentOrder = async (req, res) => {
         name_snapshot: p.name,
         unit_snapshot: p.unit,
         qty,
-        price_snapshot: price,
+        price_snapshot: price, // ✅ agent price yoki basePrice
         subtotal,
         currency_snapshot: currency,
       });
@@ -156,11 +185,10 @@ exports.createAgentOrder = async (req, res) => {
     });
 
     /**
-     * ✅ SOCKET: faqat signal yuboramiz (frontend refetch qiladi)
+     * ✅ SOCKET: cashierlarga yuboramiz
      */
     const io = req.app?.get("io");
 
-    // Diagnostika (server console'da ko‘rasan)
     console.log(
       "[createAgentOrder] io exists?",
       !!io,
@@ -207,7 +235,7 @@ exports.createAgentOrder = async (req, res) => {
             unit: it.unit_snapshot,
             currency: it.currency_snapshot,
             qty: Number(it.qty || 0),
-            price: Number(it.price_snapshot || 0),
+            price: Number(it.price_snapshot || 0), // ✅ agent narxi ham ko‘rinadi
             subtotal: Number(it.subtotal || 0),
           })),
 
@@ -219,8 +247,6 @@ exports.createAgentOrder = async (req, res) => {
       };
 
       io.to("cashiers").emit("order:new", payload);
-
-      // debug ham xuddi shu payload bo‘lsin
       io.emit("order:new:debug", payload);
     }
 
@@ -240,6 +266,7 @@ exports.createAgentOrder = async (req, res) => {
     });
   }
 };
+
 
 /**
  * GET /agents/summary?from=&to=

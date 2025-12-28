@@ -14,6 +14,9 @@ const agentOrderController = require("../controllers/agentOrder.controller");
 const cashierOrderController = require("../controllers/cashierOrder.controller");
 const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
+const analyticsRoutes = require("../modules/analytics/analytics.routes");
+
+
 
 
 // Middlewares
@@ -418,7 +421,7 @@ router.put("/expenses/:id", rAuth, expenseController.updateExpense);
 
 // DELETE
 router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
-
+router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
 
 
 module.exports = router;
