@@ -5,6 +5,9 @@ const Sale = require("../modules/sales/Sale");
 const Customer = require("../modules/Customer/Customer");
 const Warehouse = require("../modules/Warehouse/Warehouse");
 
+/* =======================
+   HELPERS
+======================= */
 function parseDate(d, endOfDay = false) {
   if (!d) return null;
   const dt = new Date(d);
@@ -24,7 +27,72 @@ function normCurrency(c) {
 }
 
 /**
- * GET /orders/new?from=&to=&agent_id=&customer_id=
+ * ✅ Order’ni to‘liq qilib socket uchun tayyorlash
+ */
+async function getOrderFull(orderId) {
+  const doc = await Order.findById(orderId)
+    .populate("agent_id", "name phone login")
+    .populate("customer_id", "name phone address note")
+    .lean();
+
+  if (!doc) return null;
+
+  return {
+    _id: String(doc._id),
+    status: doc.status,
+    note: doc.note || null,
+
+    customer: doc.customer_id
+      ? {
+          _id: String(doc.customer_id._id),
+          name: doc.customer_id.name,
+          phone: doc.customer_id.phone,
+          address: doc.customer_id.address,
+          note: doc.customer_id.note,
+        }
+      : null,
+
+    agent: doc.agent_id
+      ? {
+          _id: String(doc.agent_id._id),
+          name: doc.agent_id.name,
+          phone: doc.agent_id.phone,
+          login: doc.agent_id.login,
+        }
+      : null,
+
+    items: (doc.items || []).map((it) => ({
+      productId: String(it.product_id),
+      name: it.name_snapshot,
+      unit: it.unit_snapshot,
+      currency: it.currency_snapshot,
+      qty: Number(it.qty || 0),
+      price: Number(it.price_snapshot || 0),
+      subtotal: Number(it.subtotal || 0),
+    })),
+
+    totals: {
+      UZS: Number(doc.total_uzs || 0),
+      USD: Number(doc.total_usd || 0),
+    },
+
+    createdAt: doc.createdAt,
+    updatedAt: doc.updatedAt,
+
+    confirmedAt: doc.confirmedAt || null,
+    confirmedBy: doc.confirmedBy || null,
+
+    canceledAt: doc.canceledAt || null,
+    canceledBy: doc.canceledBy || null,
+    cancelReason: doc.cancelReason || null,
+  };
+}
+
+/* =======================
+   GET NEW ORDERS
+======================= */
+/**
+ * GET /orders/new?from=&to=&agent_id=&customer_id=&page=&limit=
  * ADMIN/CASHIER
  */
 exports.getNewOrders = async (req, res) => {
@@ -59,7 +127,8 @@ exports.getNewOrders = async (req, res) => {
         .populate("customer_id", "name phone address")
         .sort({ createdAt: -1 })
         .skip(skip)
-        .limit(limit),
+        .limit(limit)
+        .lean(),
       Order.countDocuments(filter),
     ]);
 
@@ -73,12 +142,16 @@ exports.getNewOrders = async (req, res) => {
   }
 };
 
+/* =======================
+   CONFIRM ORDER
+======================= */
 /**
  * POST /orders/:id/confirm
  * ADMIN/CASHIER
- * NOTE: tasdiqlansa ombordan qty kamayadi va order CONFIRMED bo'ladi.
  *
- * ✅ Socket event: order:updated + order:confirmed
+ * ✅ SOCKET:
+ *  - order:updated (to‘liq order)
+ *  - order:confirmed (to‘liq order + sale info)
  */
 exports.confirmOrder = async (req, res) => {
   const session = await mongoose.startSession();
@@ -115,9 +188,7 @@ exports.confirmOrder = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
     }
 
-    /** ===============================
-     * 1. OMBORDAN QTY KAMAYTIRISH
-     * =============================== */
+    /** 1) OMBORDAN QTY KAMAYTIRISH */
     for (const it of order.items) {
       const updated = await Product.findOneAndUpdate(
         { _id: it.product_id, qty: { $gte: it.qty } },
@@ -134,9 +205,7 @@ exports.confirmOrder = async (req, res) => {
       }
     }
 
-    /** ===============================
-     * 2. SALE ITEMS YASASH
-     * =============================== */
+    /** 2) SALE ITEMS + TOTALS */
     const saleItems = [];
     const currencyTotals = {
       UZS: {
@@ -156,14 +225,6 @@ exports.confirmOrder = async (req, res) => {
     };
 
     for (const it of order.items) {
-      const product = await Product.findById(it.product_id).session(session);
-      if (!product) {
-        await session.abortTransaction();
-        return res
-          .status(404)
-          .json({ ok: false, message: "Product topilmadi" });
-      }
-
       const cur = normCurrency(it.currency_snapshot);
       if (!cur) {
         await session.abortTransaction();
@@ -185,7 +246,7 @@ exports.confirmOrder = async (req, res) => {
       }
 
       saleItems.push({
-        productId: product._id,
+        productId: it.product_id,
         nameSnapshot: it.name_snapshot,
         warehouseId: warehouse._id,
         currency: cur,
@@ -205,10 +266,8 @@ exports.confirmOrder = async (req, res) => {
       grandTotal: currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
     };
 
-    /** ===============================
-     * 3. SALE CREATE
-     * =============================== */
-    const sale = await Sale.create(
+    /** 3) SALE CREATE */
+    const [sale] = await Sale.create(
       [
         {
           invoiceNo: `INV-${Date.now()}`,
@@ -230,9 +289,7 @@ exports.confirmOrder = async (req, res) => {
       { session }
     );
 
-    /** ===============================
-     * 4. ORDER UPDATE
-     * =============================== */
+    /** 4) ORDER UPDATE */
     order.status = "CONFIRMED";
     order.confirmedAt = new Date();
     order.confirmedBy = cashierId;
@@ -240,20 +297,19 @@ exports.confirmOrder = async (req, res) => {
 
     await session.commitTransaction();
 
-    // ✅ SOCKET: cashierlar uchun update
+    /** ✅ SOCKET (TO‘LIQ DATA) */
     const io = req.app?.get("io");
     if (io) {
+      const fullOrder = await getOrderFull(order._id);
+
       io.to("cashiers").emit("order:updated", {
-        id: order._id,
-        status: "CONFIRMED",
-        confirmedAt: order.confirmedAt,
-        confirmedBy: cashierId,
+        action: "CONFIRMED",
+        order: fullOrder,
       });
 
       io.to("cashiers").emit("order:confirmed", {
-        id: order._id,
-        saleId: sale?.[0]?._id,
-        invoiceNo: sale?.[0]?.invoiceNo,
+        order: fullOrder,
+        sale: { _id: String(sale._id), invoiceNo: sale.invoiceNo },
       });
     }
 
@@ -261,7 +317,7 @@ exports.confirmOrder = async (req, res) => {
       ok: true,
       message: "Zakas tasdiqlandi, sale yaratildi",
       order,
-      sale: sale[0],
+      sale,
     });
   } catch (error) {
     await session.abortTransaction();
@@ -275,12 +331,16 @@ exports.confirmOrder = async (req, res) => {
   }
 };
 
+/* =======================
+   CANCEL ORDER
+======================= */
 /**
  * POST /orders/:id/cancel
  * ADMIN/CASHIER
- * body: { reason }
  *
- * ✅ Socket event: order:updated + order:canceled
+ * ✅ SOCKET:
+ *  - order:updated (to‘liq order)
+ *  - order:canceled (to‘liq order)
  */
 exports.cancelOrder = async (req, res) => {
   try {
@@ -293,8 +353,9 @@ exports.cancelOrder = async (req, res) => {
     }
 
     const order = await Order.findById(id);
-    if (!order)
+    if (!order) {
       return res.status(404).json({ ok: false, message: "Zakas topilmadi" });
+    }
 
     if (order.status !== "NEW") {
       return res.status(400).json({
@@ -312,20 +373,18 @@ exports.cancelOrder = async (req, res) => {
 
     await order.save();
 
-    // ✅ SOCKET
+    /** ✅ SOCKET (TO‘LIQ DATA) */
     const io = req.app?.get("io");
     if (io) {
+      const fullOrder = await getOrderFull(order._id);
+
       io.to("cashiers").emit("order:updated", {
-        id: order._id,
-        status: "CANCELED",
-        canceledAt: order.canceledAt,
-        canceledBy: cashierId,
-        cancelReason: order.cancelReason,
+        action: "CANCELED",
+        order: fullOrder,
       });
 
       io.to("cashiers").emit("order:canceled", {
-        id: order._id,
-        cancelReason: order.cancelReason,
+        order: fullOrder,
       });
     }
 

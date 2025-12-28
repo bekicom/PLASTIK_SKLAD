@@ -7,6 +7,11 @@ function normalizePhone(phone) {
   return String(phone).replace(/\s+/g, "").trim();
 }
 
+function safeNum(n, def = 0) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : def;
+}
+
 function safeTrim(v, maxLen) {
   if (v === undefined || v === null) return undefined;
   const s = String(v).trim();
@@ -519,4 +524,173 @@ exports.getCustomerSummary = async (req, res) => {
   }
 };
 
-// dswdsd
+exports.payCustomerDebt = async (req, res) => {
+  const session = await mongoose.startSession();
+
+  try {
+    let out = null;
+
+    await session.withTransaction(async () => {
+      const { id } = req.params;
+      const { amount, currency = "UZS", note } = req.body || {};
+      const userId = req.user?._id || req.user?.id || req.userId;
+
+      if (!mongoose.isValidObjectId(id))
+        throw new Error("customer id noto‘g‘ri");
+      if (!["UZS", "USD"].includes(currency))
+        throw new Error("currency noto‘g‘ri (UZS/USD)");
+
+      const payAmount = Number(amount);
+      if (!Number.isFinite(payAmount) || payAmount <= 0) {
+        throw new Error("amount noto‘g‘ri (0 dan katta bo‘lsin)");
+      }
+
+      const customer = await Customer.findById(id).session(session);
+      if (!customer) throw new Error("Customer topilmadi");
+
+      // ✅ Sale bo‘yicha match (SIZDA customerId)
+      const matchBase = {
+        customerId: new mongoose.Types.ObjectId(id),
+        status: "COMPLETED",
+      };
+
+      const debtPath = `$currencyTotals.${currency}.debtAmount`;
+      const paidPath = `$currencyTotals.${currency}.paidAmount`;
+      const grandPath = `$currencyTotals.${currency}.grandTotal`;
+
+      // ✅ Avval umumiy qarzni Sale’dan hisoblaymiz
+      const [sumAgg] = await Sale.aggregate([
+        { $match: matchBase },
+        {
+          $group: {
+            _id: null,
+            grand: { $sum: { $ifNull: [grandPath, 0] } },
+            paid: { $sum: { $ifNull: [paidPath, 0] } },
+            debt: { $sum: { $ifNull: [debtPath, 0] } },
+            salesCount: { $sum: 1 },
+          },
+        },
+      ]).session(session);
+
+      const currentDebt = safeNum(sumAgg?.debt, 0);
+      if (currentDebt <= 0)
+        throw new Error(`Bu hozmakda ${currency} qarz yo‘q`);
+
+      const appliedTotal = Math.min(payAmount, currentDebt);
+      const change = Math.max(0, payAmount - currentDebt);
+
+      // ✅ FIFO uchun qarzi bor sale’lar
+      const debtFieldSale = `currencyTotals.${currency}.debtAmount`;
+      const paidFieldSale = `currencyTotals.${currency}.paidAmount`;
+
+      const sales = await Sale.find({
+        ...matchBase,
+        [debtFieldSale]: { $gt: 0 },
+      })
+        .sort({ createdAt: 1 })
+        .select("invoiceNo createdAt currencyTotals")
+        .lean()
+        .session(session);
+
+      let remaining = appliedTotal;
+      const bulkOps = [];
+      const allocations = [];
+
+      for (const s of sales) {
+        if (remaining <= 0) break;
+
+        const cur = (s.currencyTotals && s.currencyTotals[currency]) || {};
+        const debt = safeNum(cur.debtAmount, 0);
+        const paid = safeNum(cur.paidAmount, 0);
+        if (debt <= 0) continue;
+
+        const apply = Math.min(remaining, debt);
+        remaining -= apply;
+
+        const newPaid = paid + apply;
+        const newDebt = Math.max(0, debt - apply);
+
+        allocations.push({
+          sale_id: s._id,
+          invoiceNo: s.invoiceNo,
+          applied: apply,
+          before_debt: debt,
+          after_debt: newDebt,
+          sale_createdAt: s.createdAt,
+        });
+
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: s._id },
+            update: {
+              $set: {
+                [paidFieldSale]: newPaid,
+                [debtFieldSale]: newDebt,
+              },
+            },
+          },
+        });
+      }
+
+      if (bulkOps.length) await Sale.bulkWrite(bulkOps, { session });
+
+      // ✅ Customer.total_debt_* ni sinxron qilib qo‘yamiz (majburiy emas, lekin qulay)
+      const debtFieldCustomer =
+        currency === "UZS" ? "total_debt_uzs" : "total_debt_usd";
+      customer[debtFieldCustomer] = Math.max(0, currentDebt - appliedTotal);
+
+      // ✅ payment_history bo‘lsa yozamiz (senda qo‘shilgan bo‘lsa)
+      if (Array.isArray(customer.payment_history)) {
+        customer.payment_history.push({
+          currency,
+          amount_uzs: currency === "UZS" ? appliedTotal : 0,
+          amount_usd: currency === "USD" ? appliedTotal : 0,
+          note: `${note || "Qarz to‘lovi"}${
+            change > 0 ? ` (Ortiqcha: ${change})` : ""
+          }`,
+          date: new Date(),
+          allocations: allocations.map((a) => ({
+            sale_id: a.sale_id,
+            applied: a.applied,
+            before_debt: a.before_debt,
+            after_debt: a.after_debt,
+          })),
+          createdBy: userId, // agar schema’da yo‘q bo‘lsa olib tashla
+        });
+      }
+
+      await customer.save({ session });
+
+      out = {
+        ok: true,
+        message: "To‘lov qabul qilindi (FIFO)",
+        customer: {
+          id: customer._id,
+          name: customer.name,
+          phone: customer.phone,
+          total_debt_uzs: safeNum(customer.total_debt_uzs, 0),
+          total_debt_usd: safeNum(customer.total_debt_usd, 0),
+        },
+        payment: {
+          currency,
+          requested_amount: payAmount,
+          applied_amount: appliedTotal,
+          change,
+          previous_debt: currentDebt,
+          remaining_debt: Math.max(0, currentDebt - appliedTotal),
+        },
+        allocations,
+      };
+    });
+
+    return res.json(out);
+  } catch (err) {
+    return res
+      .status(400)
+      .json({ ok: false, message: err?.message || "To‘lovda xato" });
+  } finally {
+    session.endSession();
+  }
+};
+
+

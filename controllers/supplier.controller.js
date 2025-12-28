@@ -11,8 +11,6 @@ function parseDate(d, endOfDay = false) {
   else dt.setHours(0, 0, 0, 0);
   return dt;
 }
-
-
 function calcPurchaseTotals(p) {
   const items = Array.isArray(p.items) ? p.items : [];
   let totalUzs = 0;
@@ -43,8 +41,6 @@ function calcPurchaseTotals(p) {
     },
   };
 }
-
-/** Helper: purchase totalsni items’dan hisoblaydi (rate’siz) */
 function calcPurchaseTotals(p) {
   const items = Array.isArray(p.items) ? p.items : [];
   let totalUzs = 0;
@@ -75,10 +71,6 @@ function calcPurchaseTotals(p) {
     },
   };
 }
-
-/**
- * POST /api/suppliers/create
- */
 exports.createSupplier = async (req, res) => {
   try {
     const { name, phone } = req.body;
@@ -115,11 +107,6 @@ exports.createSupplier = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
-
-/**
- * GET /api/suppliers
- * Query: q, page, limit
- */
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;
@@ -148,10 +135,6 @@ exports.getSuppliers = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
-
-/**
- * GET /api/suppliers/:id
- */
 exports.getSupplierById = async (req, res) => {
   try {
     const supplier = await Supplier.findById(req.params.id);
@@ -165,10 +148,6 @@ exports.getSupplierById = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
-
-/**
- * PUT /api/suppliers/:id
- */
 exports.updateSupplier = async (req, res) => {
   try {
     const { name, phone } = req.body;
@@ -198,10 +177,6 @@ exports.updateSupplier = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
-
-/**
- * DELETE /api/suppliers/:id
- */
 exports.deleteSupplier = async (req, res) => {
   try {
     const supplier = await Supplier.findByIdAndDelete(req.params.id);
@@ -215,10 +190,6 @@ exports.deleteSupplier = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
-
-/**
- * GET /api/suppliers/dashboard
- */
 exports.getSuppliersDashboard = async (req, res) => {
   try {
     const { q } = req.query;
@@ -289,13 +260,6 @@ exports.getSuppliersDashboard = async (req, res) => {
     });
   }
 };
-
-/**
- * GET /api/suppliers/:id/detail
- * Query: page, limit, from, to
- *
- * ✅ FIX: history'da har purchase uchun totals (UZS+USD) hisoblab qaytaradi.
- */
 exports.getSupplierDetail = async (req, res) => {
   try {
     const { id } = req.params;
@@ -384,14 +348,6 @@ exports.getSupplierDetail = async (req, res) => {
     });
   }
 };
-
-
-/**
- * POST /api/suppliers/:id/pay
- * Body: { amount, currency: "UZS"|"USD", note? }
- *
- * ✅ FIX: bitta endpoint bilan UZS yoki USD qarz to‘lovi
- */
 exports.paySupplierDebt = async (req, res) => {
   try {
     const { id } = req.params;
@@ -405,7 +361,7 @@ exports.paySupplierDebt = async (req, res) => {
     }
 
     const payAmount = Number(amount);
-    if (!amount || Number.isNaN(payAmount) || payAmount <= 0) {
+    if (!Number.isFinite(payAmount) || payAmount <= 0) {
       return res.status(400).json({
         ok: false,
         message: "amount noto‘g‘ri (0 dan katta bo‘lsin)",
@@ -432,17 +388,16 @@ exports.paySupplierDebt = async (req, res) => {
 
     supplier[debtField] = currentDebt - applied;
 
-    // payment_history strukturasi schema’ga bog‘liq:
-    // UZS bo‘lsa amount_uzs, USD bo‘lsa amount_usd yozamiz
+    // ✅ payment_history: schema'ga mos (date bor)
     supplier.payment_history = supplier.payment_history || [];
     supplier.payment_history.push({
-      amount_uzs: currency === "UZS" ? applied : undefined,
-      amount_usd: currency === "USD" ? applied : undefined,
-      currency,
+      currency, // ✅ endi bor
+      amount_uzs: currency === "UZS" ? applied : 0,
+      amount_usd: currency === "USD" ? applied : 0,
       note: `${note || "Qarz to‘lovi"}${
         change > 0 ? ` (Ortiqcha: ${change})` : ""
       }`,
-      createdAt: new Date(),
+      date: new Date(), // ✅ createdAt emas, date
     });
 
     await supplier.save();
@@ -461,7 +416,7 @@ exports.paySupplierDebt = async (req, res) => {
         currency,
         paid_amount: applied,
         previous_debt: currentDebt,
-        remaining_debt: supplier[debtField],
+        remaining_debt: Number(supplier[debtField] || 0),
         change,
       },
     });

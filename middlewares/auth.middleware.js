@@ -1,20 +1,50 @@
 const jwt = require("jsonwebtoken");
 
+/**
+ * rAuth
+ * - Authorization: Bearer <token> tekshiradi
+ * - tokenni verify qiladi
+ * - req.user va req.userId ni set qiladi
+ */
 exports.rAuth = (req, res, next) => {
   try {
-    const header = req.headers.authorization;
+    const header = req.headers.authorization || "";
 
-    if (!header || !header.startsWith("Bearer ")) {
+    if (!header.startsWith("Bearer ")) {
       return res.status(401).json({
         ok: false,
         message: "Token kerak (Authorization: Bearer ...)",
       });
     }
 
-    const token = header.split(" ")[1];
+    const token = header.slice(7).trim();
+    if (!token) {
+      return res.status(401).json({
+        ok: false,
+        message: "Token bo‘sh (Authorization: Bearer ...)",
+      });
+    }
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    req.user = decoded; // { id, login, role, iat, exp }
+    // decoded odatda: { id, login, role, iat, exp }
+    const userId = decoded?.id || decoded?._id || decoded?.userId;
+
+    if (!userId) {
+      return res.status(401).json({
+        ok: false,
+        message: "Token ichida user id topilmadi (token noto‘g‘ri)",
+      });
+    }
+
+    // ✅ hamma controllerlar uchun qulay format
+    req.user = {
+      ...decoded,
+      _id: userId, // ✅ controllerlar req.user._id bilan ishlayversin
+    };
+
+    req.userId = userId; // ✅ fallback (ba’zi joylarda kerak bo‘ladi)
+
     next();
   } catch (error) {
     return res.status(401).json({
@@ -25,16 +55,22 @@ exports.rAuth = (req, res, next) => {
   }
 };
 
+/**
+ * rRole
+ * - req.user.role bo‘yicha tekshiradi
+ */
 exports.rRole = (...roles) => {
   return (req, res, next) => {
-    if (!req.user?.role) {
+    const role = req.user?.role;
+
+    if (!role) {
       return res.status(403).json({
         ok: false,
         message: "Role topilmadi (token yangilang)",
       });
     }
 
-    if (!roles.includes(req.user.role)) {
+    if (!roles.includes(role)) {
       return res.status(403).json({
         ok: false,
         message: "Sizda ruxsat yo‘q",

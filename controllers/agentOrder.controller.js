@@ -169,17 +169,58 @@ exports.createAgentOrder = async (req, res) => {
     );
 
     if (io) {
+      const fullOrder = await Order.findById(orderDoc._id)
+        .populate("agent_id", "name phone login")
+        .populate("customer_id", "name phone address note")
+        .lean();
+
       const payload = {
-        id: String(orderDoc._id),
-        status: "NEW",
-        createdAt: orderDoc.createdAt,
+        action: "NEW",
+        order: {
+          _id: String(fullOrder._id),
+          status: fullOrder.status,
+          createdAt: fullOrder.createdAt,
+          note: fullOrder.note || null,
+
+          agent: fullOrder.agent_id
+            ? {
+                _id: String(fullOrder.agent_id._id),
+                name: fullOrder.agent_id.name,
+                phone: fullOrder.agent_id.phone,
+                login: fullOrder.agent_id.login,
+              }
+            : null,
+
+          customer: fullOrder.customer_id
+            ? {
+                _id: String(fullOrder.customer_id._id),
+                name: fullOrder.customer_id.name,
+                phone: fullOrder.customer_id.phone,
+                address: fullOrder.customer_id.address,
+                note: fullOrder.customer_id.note,
+              }
+            : null,
+
+          items: (fullOrder.items || []).map((it) => ({
+            productId: String(it.product_id),
+            name: it.name_snapshot,
+            unit: it.unit_snapshot,
+            currency: it.currency_snapshot,
+            qty: Number(it.qty || 0),
+            price: Number(it.price_snapshot || 0),
+            subtotal: Number(it.subtotal || 0),
+          })),
+
+          totals: {
+            UZS: Number(fullOrder.total_uzs || 0),
+            USD: Number(fullOrder.total_usd || 0),
+          },
+        },
       };
 
-      // 1) Asosiy: cashier room
       io.to("cashiers").emit("order:new", payload);
 
-      // 2) TEST uchun: hamma ulanganlarga ham yuboramiz (muammo roomdamikan bilish uchun)
-      // Agar shu ishlasa-yu room ishlamasa => cashier roomga ulanmagan.
+      // debug ham xuddi shu payload bo‘lsin
       io.emit("order:new:debug", payload);
     }
 
@@ -199,7 +240,6 @@ exports.createAgentOrder = async (req, res) => {
     });
   }
 };
-
 
 /**
  * GET /agents/summary?from=&to=
