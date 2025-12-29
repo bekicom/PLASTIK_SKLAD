@@ -1,4 +1,4 @@
-const Supplier = require("../modules/Suppliers/Supplier");
+const Supplier = require("../modules/suppliers/Supplier");
 const mongoose = require("mongoose");
 const Purchase = require("../modules/Purchases/Purchase");
 
