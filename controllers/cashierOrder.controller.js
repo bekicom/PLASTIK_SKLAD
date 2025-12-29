@@ -99,19 +99,15 @@ exports.getNewOrders = async (req, res) => {
   try {
     const { from, to, agent_id, customer_id } = req.query;
 
-    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit || "20", 10), 1),
-      100
-    );
-    const skip = (page - 1) * limit;
-
     const filter = { status: "NEW" };
 
-    if (agent_id && mongoose.isValidObjectId(agent_id))
+    if (agent_id && mongoose.isValidObjectId(agent_id)) {
       filter.agent_id = agent_id;
-    if (customer_id && mongoose.isValidObjectId(customer_id))
+    }
+
+    if (customer_id && mongoose.isValidObjectId(customer_id)) {
       filter.customer_id = customer_id;
+    }
 
     const fromDate = parseDate(from, false);
     const toDate = parseDate(to, true);
@@ -121,18 +117,17 @@ exports.getNewOrders = async (req, res) => {
       if (toDate) filter.createdAt.$lte = toDate;
     }
 
-    const [items, total] = await Promise.all([
-      Order.find(filter)
-        .populate("agent_id", "name phone login")
-        .populate("customer_id", "name phone address")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Order.countDocuments(filter),
-    ]);
+    const items = await Order.find(filter)
+      .populate("agent_id", "name phone login")
+      .populate("customer_id", "name phone address")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    return res.json({ ok: true, page, limit, total, items });
+    return res.json({
+      ok: true,
+      total: items.length,
+      items,
+    });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -142,17 +137,6 @@ exports.getNewOrders = async (req, res) => {
   }
 };
 
-/* =======================
-   CONFIRM ORDER
-======================= */
-/**
- * POST /orders/:id/confirm
- * ADMIN/CASHIER
- *
- * ✅ SOCKET:
- *  - order:updated (to‘liq order)
- *  - order:confirmed (to‘liq order + sale info)
- */
 exports.confirmOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();

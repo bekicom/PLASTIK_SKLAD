@@ -177,7 +177,7 @@ router.post(
 );
 
 // productlarni get qilish
-router.get("/products", rAuth, rRole("ADMIN", "AGENT"), productController.getProducts);
+router.get("/products", rAuth, rRole("ADMIN", "CASHIER", "AGENT"), productController.getProducts);
 
 // bitta productni get qilish
 router.get(
@@ -231,7 +231,7 @@ router.post(
 router.get(
   "/customers",
   rAuth,
-  rRole("ADMIN", "CASHIER"),
+  rRole("ADMIN", "AGENT", "CASHIER"),
   customerController.getCustomers
 );
 
@@ -263,7 +263,7 @@ router.delete(
 router.get(
   "/customers/:id/sales",
   rAuth,
-  rRole("ADMIN", "CASHIER"),
+  rRole("ADMIN","AGENT", "CASHIER"),
   customerController.getCustomerSales
 );
 
