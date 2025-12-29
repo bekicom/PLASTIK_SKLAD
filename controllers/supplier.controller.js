@@ -1,6 +1,6 @@
 const Supplier = require("../modules/suppliers/Supplier");
 const mongoose = require("mongoose");
-const Purchase = require("../modules/Purchases/Purchase");
+const Purchase = require("../modules/purchases/Purchase");
 
 const CUR = ["UZS", "USD"];
 function parseDate(d, endOfDay = false) {
