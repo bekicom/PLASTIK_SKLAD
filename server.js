@@ -4,6 +4,7 @@ const mongoose = require("mongoose");
 const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
+const path = require("path");
 
 const routes = require("./routes");
 
@@ -44,7 +45,7 @@ const io = new Server(server, {
 
 // ✅ Controllerlarda ishlatish uchun
 app.set("io", io);
-
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 io.on("connection", (socket) => {
   // ✅ TEST: ulangan hammani cashiers roomga qo‘shamiz
   socket.join("cashiers");

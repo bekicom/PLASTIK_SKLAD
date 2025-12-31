@@ -15,7 +15,7 @@ const cashierOrderController = require("../controllers/cashierOrder.controller")
 const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
-
+const uploadProductImages = require("../middlewares/uploadProductImage");
 
 
 
@@ -173,8 +173,10 @@ router.post(
   "/products/create",
   rAuth,
   rRole("ADMIN"),
+  uploadProductImages.array("images", 5),
   productController.createProduct
 );
+
 
 // productlarni get qilish
 router.get("/products", rAuth, rRole("ADMIN", "CASHIER", "AGENT"), productController.getProducts);
@@ -211,7 +213,8 @@ router.delete(
 router.post(
   "/purchases/create",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN","CASHIER"),
+  uploadProductImages.single("image"), // ✅ front image key = "image"
   purchaseController.createPurchase
 );
 

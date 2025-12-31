@@ -3,8 +3,23 @@ const Product = require("../modules/products/Product");
 const UNITS = ["DONA", "PACHKA", "KG"];
 const CUR = ["UZS", "USD"];
 
+function toStr(v) {
+  return v === undefined || v === null ? "" : String(v);
+}
+
+function normalizeText(v) {
+  return toStr(v).trim();
+}
+
+function safeNumber(v, def = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+
 /**
  * POST /api/products/create
+ * Content-Type: multipart/form-data
+ * files: images (max 5)
  */
 exports.createProduct = async (req, res) => {
   try {
@@ -48,17 +63,23 @@ exports.createProduct = async (req, res) => {
         .json({ ok: false, message: "warehouse_currency noto‘g‘ri (UZS/USD)" });
     }
 
+    // ✅ Rasmlar (multer) -> URLlar
+    const images = (req.files || []).map(
+      (f) => `/uploads/products/${f.filename}`
+    );
+
     const product = await Product.create({
       supplier_id,
-      name: name.trim(),
-      model: (model || "").trim(),
-      color: (color || "").trim(),
-      category: (category || "").trim(),
+      name: normalizeText(name),
+      model: normalizeText(model),
+      color: normalizeText(color),
+      category: normalizeText(category),
       unit,
       warehouse_currency,
-      qty: qty || 0,
-      buy_price,
-      sell_price,
+      qty: qty !== undefined ? safeNumber(qty, 0) : 0,
+      buy_price: safeNumber(buy_price, 0),
+      sell_price: safeNumber(sell_price, 0),
+      images, // ✅ shu yerga yozildi
     });
 
     return res.status(201).json({
@@ -145,7 +166,10 @@ exports.getProductById = async (req, res) => {
 
 /**
  * PUT /api/products/:id
- * supplier_id ni bu yerda o'zgartirmaymiz (xohlasang keyin qo'shamiz)
+ * Content-Type: multipart/form-data
+ * files: images (max 5)
+ *
+ * Default: yangi rasm yuborilsa -> eski rasmlarga qo‘shib qo‘yadi
  */
 exports.updateProduct = async (req, res) => {
   try {
@@ -178,16 +202,26 @@ exports.updateProduct = async (req, res) => {
         .json({ ok: false, message: "warehouse_currency noto‘g‘ri (UZS/USD)" });
     }
 
-    if (name !== undefined) product.name = name;
-    if (model !== undefined) product.model = model;
-    if (color !== undefined) product.color = color;
-    if (category !== undefined) product.category = category;
+    if (name !== undefined) product.name = normalizeText(name);
+    if (model !== undefined) product.model = normalizeText(model);
+    if (color !== undefined) product.color = normalizeText(color);
+    if (category !== undefined) product.category = normalizeText(category);
     if (unit !== undefined) product.unit = unit;
     if (warehouse_currency !== undefined)
       product.warehouse_currency = warehouse_currency;
-    if (qty !== undefined) product.qty = qty;
-    if (buy_price !== undefined) product.buy_price = buy_price;
-    if (sell_price !== undefined) product.sell_price = sell_price;
+    if (qty !== undefined) product.qty = safeNumber(qty, product.qty);
+    if (buy_price !== undefined)
+      product.buy_price = safeNumber(buy_price, product.buy_price);
+    if (sell_price !== undefined)
+      product.sell_price = safeNumber(sell_price, product.sell_price);
+
+    // ✅ Yangi rasmlar kelsa: qo‘shamiz
+    const newImages = (req.files || []).map(
+      (f) => `/uploads/products/${f.filename}`
+    );
+    if (newImages.length) {
+      product.images = [...(product.images || []), ...newImages].slice(0, 5); // max 5
+    }
 
     await product.save();
 

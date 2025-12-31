@@ -1,5 +1,6 @@
-const mongoose = require("mongoose");
+// controllers/purchase.controller.js (faqat createPurchase)
 
+const mongoose = require("mongoose");
 const Supplier = require("../modules/suppliers/Supplier");
 const Product = require("../modules/products/Product");
 const Purchase = require("../modules/purchases/Purchase");
@@ -7,18 +8,54 @@ const Purchase = require("../modules/purchases/Purchase");
 const UNITS = ["DONA", "PACHKA", "KG"];
 const CUR = ["UZS", "USD"];
 
+function toStr(v) {
+  return v === undefined || v === null ? "" : String(v);
+}
+function trimStr(v) {
+  return toStr(v).trim();
+}
+function safeNumber(v, def = 0) {
+  const n = Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+function isValidObjectId(id) {
+  return mongoose.isValidObjectId(id);
+}
+
+// images normalize (max 5)
+function normalizeImages(images) {
+  if (!Array.isArray(images)) return [];
+  const clean = images
+    .map((u) => (typeof u === "string" ? u.trim() : ""))
+    .filter(Boolean);
+  return Array.from(new Set(clean)).slice(0, 5);
+}
+
 exports.createPurchase = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
+    // ✅ multipart bo‘lgani uchun req.body string bo‘lib keladi
     const {
       supplier_id,
       batch_no,
       paid_amount_uzs = 0,
-      paid_amount_usd = 0,
-      items,
-    } = req.body;
+
+      // frontchi bitta product field yuboradi:
+      name,
+      model,
+      color,
+      category,
+      unit,
+      qty,
+      buy_price,
+      sell_price,
+      currency,
+
+      // agar oldin ham items yuborib qolsa (JSON string) qo‘llab-quvvatlaymiz:
+      items: itemsRaw,
+    } = req.body || {};
 
     if (!supplier_id || !batch_no) {
       await session.abortTransaction();
@@ -27,11 +64,11 @@ exports.createPurchase = async (req, res) => {
         .json({ ok: false, message: "supplier_id va batch_no majburiy" });
     }
 
-    if (!Array.isArray(items) || items.length === 0) {
+    if (!isValidObjectId(supplier_id)) {
       await session.abortTransaction();
       return res
         .status(400)
-        .json({ ok: false, message: "items bo‘sh bo‘lmasin" });
+        .json({ ok: false, message: "supplier_id noto‘g‘ri" });
     }
 
     const supplier = await Supplier.findById(supplier_id).session(session);
@@ -40,36 +77,31 @@ exports.createPurchase = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Supplier topilmadi" });
     }
 
-    const paidUzs = Number(paid_amount_uzs || 0);
-    const paidUsd = Number(paid_amount_usd || 0);
-
-    if (paidUzs < 0 || paidUsd < 0) {
+    const paidUzs = safeNumber(paid_amount_uzs, 0);
+    if (paidUzs < 0) {
       await session.abortTransaction();
       return res.status(400).json({
         ok: false,
-        message: "paid_amount_uzs yoki paid_amount_usd manfiy bo‘lmasin",
+        message: "paid_amount_uzs manfiy bo‘lmasin",
       });
     }
 
-    let totalUzs = 0;
-    let totalUsd = 0;
+    // ✅ 1) items ni olish: avval itemsRaw bo‘lsa parse qilamiz, bo‘lmasa bitta item yasaymiz
+    let items = null;
 
-    const purchaseItems = [];
-    const affectedProducts = [];
+    if (itemsRaw) {
+      // itemsRaw JSON string bo‘lishi mumkin
+      try {
+        const parsed =
+          typeof itemsRaw === "string" ? JSON.parse(itemsRaw) : itemsRaw;
+        if (Array.isArray(parsed) && parsed.length) items = parsed;
+      } catch (e) {
+        // parse bo‘lmasa, items ni e’tiborsiz qoldirib bitta item yasaymiz
+      }
+    }
 
-    for (const it of items) {
-      const {
-        name,
-        model,
-        color,
-        category,
-        unit,
-        qty,
-        buy_price,
-        sell_price,
-        currency,
-      } = it;
-
+    // ✅ Bitta item yasash (frontchi xohlagani)
+    if (!items) {
       if (
         !name ||
         !unit ||
@@ -82,36 +114,83 @@ exports.createPurchase = async (req, res) => {
         return res.status(400).json({
           ok: false,
           message:
-            "Har bir item: name, unit, qty, buy_price, sell_price, currency majburiy",
+            "name, unit, qty, buy_price, sell_price, currency majburiy (yoki items yubor)",
         });
       }
 
-      if (!UNITS.includes(unit)) {
+      items = [
+        {
+          name,
+          model,
+          color,
+          category,
+          unit,
+          qty,
+          buy_price,
+          sell_price,
+          currency,
+          // images ni keyin qo‘shamiz
+        },
+      ];
+    }
+
+    // ✅ file bo‘lsa URL yasaymiz
+    const imageUrl = req.file ? `/uploads/products/${req.file.filename}` : null;
+
+    let totalUzs = 0;
+    const purchaseItems = [];
+    const affectedProducts = [];
+
+    for (const it of items) {
+      const itName = trimStr(it?.name);
+      const itModel = trimStr(it?.model);
+      const itColor = trimStr(it?.color);
+      const itCategory = trimStr(it?.category);
+
+      const itUnit = trimStr(it?.unit);
+      const itCurrency = trimStr(it?.currency);
+
+      const Q = safeNumber(it?.qty, NaN);
+      const BP = safeNumber(it?.buy_price, NaN);
+      const SP = safeNumber(it?.sell_price, NaN);
+
+      if (
+        !itName ||
+        !itUnit ||
+        !itCurrency ||
+        !Number.isFinite(Q) ||
+        !Number.isFinite(BP) ||
+        !Number.isFinite(SP)
+      ) {
+        await session.abortTransaction();
+        return res.status(400).json({
+          ok: false,
+          message:
+            "Item: name, unit, currency, qty, buy_price, sell_price majburiy",
+        });
+      }
+
+      if (!UNITS.includes(itUnit)) {
         await session.abortTransaction();
         return res
           .status(400)
           .json({ ok: false, message: "unit noto‘g‘ri (DONA/PACHKA/KG)" });
       }
 
-      if (!CUR.includes(currency)) {
+      if (!CUR.includes(itCurrency)) {
         await session.abortTransaction();
         return res
           .status(400)
           .json({ ok: false, message: "currency noto‘g‘ri (UZS/USD)" });
       }
 
-      const Q = Number(qty);
-      const BP = Number(buy_price);
-      const SP = Number(sell_price);
-
-      if (!Number.isFinite(Q) || Q <= 0) {
+      if (Q <= 0) {
         await session.abortTransaction();
         return res
           .status(400)
           .json({ ok: false, message: "qty 0 dan katta bo‘lsin" });
       }
-
-      if (!Number.isFinite(BP) || BP < 0 || !Number.isFinite(SP) || SP < 0) {
+      if (BP < 0 || SP < 0) {
         await session.abortTransaction();
         return res.status(400).json({
           ok: false,
@@ -119,25 +198,23 @@ exports.createPurchase = async (req, res) => {
         });
       }
 
-      // ✅ item totalni o'z valyutasida hisoblaymiz
+      // ✅ total UZS faqat currency=UZS bo‘lsa hisoblaymiz (modelda faqat UZS bor)
       const row_total = Q * BP;
+      if (itCurrency === "UZS") totalUzs += row_total;
 
-      if (currency === "UZS") totalUzs += row_total;
-      if (currency === "USD") totalUsd += row_total;
-
-      // Product update/upsert
+      // Product upsert (sizning eski logika)
       const filter = {
-        supplier_id,
-        name: String(name).trim(),
-        model: String(model || "").trim(),
-        color: String(color || "").trim(),
-        warehouse_currency: currency,
+        supplier_id: new mongoose.Types.ObjectId(supplier_id),
+        name: itName,
+        model: itModel,
+        color: itColor,
+        warehouse_currency: itCurrency,
       };
 
       const update = {
         $set: {
-          category: String(category || "").trim(),
-          unit,
+          category: itCategory,
+          unit: itUnit,
           buy_price: BP,
           sell_price: SP,
         },
@@ -151,70 +228,64 @@ exports.createPurchase = async (req, res) => {
         session,
       });
 
-      affectedProducts.push(productDoc);
+      // ✅ images: item.images + (agar 1 ta file kelsa) imageUrl
+      const incomingImages = normalizeImages(it?.images);
+      if (imageUrl) incomingImages.unshift(imageUrl);
+      const cleanImages = normalizeImages(incomingImages);
+
+      let finalProduct = productDoc;
+
+      if (cleanImages.length) {
+        const merged = Array.from(
+          new Set([...(productDoc.images || []), ...cleanImages])
+        ).slice(0, 5);
+        finalProduct = await Product.findByIdAndUpdate(
+          productDoc._id,
+          { $set: { images: merged } },
+          { new: true, session }
+        );
+      }
+
+      affectedProducts.push(finalProduct);
 
       purchaseItems.push({
-        product_id: productDoc._id,
-        name: productDoc.name,
-        model: productDoc.model,
-        unit,
+        product_id: finalProduct._id,
+        name: finalProduct.name,
+        model: finalProduct.model,
+        unit: itUnit,
         qty: Q,
         buy_price: BP,
         sell_price: SP,
-        currency,
-
-        // eski maydonni saqlamoqchi bo'lsang:
-        row_total_uzs: currency === "UZS" ? row_total : 0,
-        // tavsiya: yangi maydon qo'shsang yanada toza bo'ladi:
-        // row_total,
+        currency: itCurrency,
+        row_total_uzs: itCurrency === "UZS" ? row_total : 0,
       });
     }
 
-    // ✅ endi debtlar manfiy chiqmaydi:
-    // paid > total bo'lsa bu "avans" bo'ladi; qarzni 0 qilamiz
     const debtUzs = Math.max(0, totalUzs - paidUzs);
-    const debtUsd = Math.max(0, totalUsd - paidUsd);
 
     // Supplier debt update
     supplier.total_debt_uzs = Math.max(
       0,
-      Number(supplier.total_debt_uzs || 0) + (totalUzs - paidUzs)
-    );
-    supplier.total_debt_usd = Math.max(
-      0,
-      Number(supplier.total_debt_usd || 0) + (totalUsd - paidUsd)
+      safeNumber(supplier.total_debt_uzs, 0) + (totalUzs - paidUzs)
     );
 
-    // payment history (xohlasang alohida yozamiz)
     if (paidUzs > 0) {
       supplier.payment_history.push({
         amount_uzs: paidUzs,
-        note: `Kirim to‘lovi UZS (batch: ${batch_no})`,
-      });
-    }
-    if (paidUsd > 0) {
-      supplier.payment_history.push({
-        amount_usd: paidUsd,
-        note: `Kirim to‘lovi USD (batch: ${batch_no})`,
+        note: `Kirim to‘lovi UZS (batch: ${trimStr(batch_no)})`,
       });
     }
 
     await supplier.save({ session });
 
-    const purchase = await Purchase.create(
+    const purchaseArr = await Purchase.create(
       [
         {
           supplier_id,
-          batch_no: String(batch_no).trim(),
-
+          batch_no: trimStr(batch_no),
           paid_amount_uzs: paidUzs,
           total_amount_uzs: totalUzs,
           debt_amount_uzs: debtUzs,
-
-          paid_amount_usd: paidUsd,
-          total_amount_usd: totalUsd,
-          debt_amount_usd: debtUsd,
-
           items: purchaseItems,
         },
       ],
@@ -226,18 +297,8 @@ exports.createPurchase = async (req, res) => {
     return res.status(201).json({
       ok: true,
       message: "Kirim saqlandi",
-      purchase: purchase[0],
-      totals: {
-        uzs: { total: totalUzs, paid: paidUzs, debt: debtUzs },
-        usd: { total: totalUsd, paid: paidUsd, debt: debtUsd },
-      },
-      supplier: {
-        id: supplier._id,
-        name: supplier.name,
-        phone: supplier.phone,
-        total_debt_uzs: supplier.total_debt_uzs,
-        total_debt_usd: supplier.total_debt_usd,
-      },
+      purchase: purchaseArr[0],
+      totals: { uzs: { total: totalUzs, paid: paidUzs, debt: debtUzs } },
       products: affectedProducts,
     });
   } catch (error) {
