@@ -107,13 +107,6 @@ exports.getProducts = async (req, res) => {
   try {
     const { q, currency, category, supplier_id } = req.query;
 
-    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit || "20", 10), 1),
-      100
-    );
-    const skip = (page - 1) * limit;
-
     const filter = {};
 
     if (supplier_id) filter.supplier_id = supplier_id;
@@ -125,22 +118,18 @@ exports.getProducts = async (req, res) => {
       filter.$or = [{ name: r }, { model: r }, { color: r }, { category: r }];
     }
 
-    const [items, total] = await Promise.all([
-      Product.find(filter)
-        .populate("supplier_id", "name phone")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit),
-      Product.countDocuments(filter),
-    ]);
+    const items = await Product.find(filter)
+      .populate("supplier_id", "name phone")
+      .sort({ createdAt: -1 });
 
-    return res.json({ ok: true, page, limit, total, items });
+    return res.json({ ok: true, total: items.length, items });
   } catch (error) {
     return res
       .status(500)
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
+
 
 /**
  * GET /api/products/:id
