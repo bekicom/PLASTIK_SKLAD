@@ -1,4 +1,6 @@
 const Product = require("../modules/products/Product");
+const fs = require("fs");
+const path = require("path");
 
 const UNITS = ["DONA", "PACHKA", "KG"];
 const CUR = ["UZS", "USD"];
@@ -242,5 +244,50 @@ exports.deleteProduct = async (req, res) => {
     return res
       .status(500)
       .json({ ok: false, message: "Server xatoligi", error: error.message });
+  }
+};
+
+exports.replaceProductImage = async (req, res) => {
+  try {
+    const product = await Product.findById(req.params.id);
+    if (!product) {
+      return res.status(404).json({ ok: false, message: "Product topilmadi" });
+    }
+
+    if (!req.file) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "Yangi rasm yuborilmadi" });
+    }
+
+    // 🔥 Eski rasmlarni o‘chiramiz
+    for (const img of product.images || []) {
+      const filePath = path.join(
+        __dirname,
+        "..",
+        img.replace("/uploads/", "uploads/")
+      );
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    }
+
+    // ✅ Yangi rasm
+    const newImage = `/uploads/products/${req.file.filename}`;
+    product.images = [newImage];
+
+    await product.save();
+
+    return res.json({
+      ok: true,
+      message: "Rasm almashtirildi",
+      images: product.images,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };

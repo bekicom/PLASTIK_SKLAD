@@ -204,6 +204,13 @@ router.delete(
   rRole("ADMIN"),
   productController.deleteProduct
 );
+router.put(
+  "/products/:id/image",
+  rAuth,
+  rRole("ADMIN"),
+  uploadProductImages.single("image"),
+  productController.replaceProductImage
+);
 
 /**
  * PURCHASES (KIRIM) (ADMIN only)
