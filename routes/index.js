@@ -16,6 +16,8 @@ const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
+const withdrawalController = require("../controllers/withdrawal.controller");
+
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -441,5 +443,25 @@ router.put("/expenses/:id", rAuth, expenseController.updateExpense);
 // DELETE
 router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
 router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
+
+
+/**
+ * INVESTOR WITHDRAWALS (FOYDADAN AYRILMAYDI)
+ */
+
+router.post(
+  "/withdrawals/create",
+  rAuth,
+  rRole("ADMIN"),
+  withdrawalController.createWithdrawal
+);
+
+router.get(
+  "/withdrawals",
+  rAuth,
+  rRole("ADMIN"),
+  withdrawalController.getWithdrawals
+);
+
 
 module.exports = router;
