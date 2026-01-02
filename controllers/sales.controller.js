@@ -35,15 +35,21 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-
 function calcItemsSubtotals(items) {
   return items.map((it) => {
     const qty = safeNumber(it.qty);
-    const price = safeNumber(it.price);
-    const subtotal = +(qty * price).toFixed(6);
-    return { ...it, qty, price, subtotal };
+    const sell_price = safeNumber(it.sell_price);
+    const subtotal = +(qty * sell_price).toFixed(6);
+
+    return {
+      ...it,
+      qty,
+      sell_price,
+      subtotal,
+    };
   });
 }
+
 
 function calcCurrencyTotals(items, discount = 0, payments = []) {
   const totals = {
@@ -172,7 +178,7 @@ exports.createSale = async (req, res) => {
     const productIds = [...new Set(body.items.map((x) => String(x.productId)))];
 
     const products = await Product.find({ _id: { $in: productIds } })
-      .select("_id name warehouse_currency qty")
+      .select("_id name warehouse_currency qty bay_price ")
       .session(session);
 
     const pMap = new Map(products.map((p) => [String(p._id), p]));
@@ -237,19 +243,23 @@ exports.createSale = async (req, res) => {
     }
 
     // 6) build sale items with automatic warehouseId + currency
-    const items = body.items.map((it) => {
-      const p = pMap.get(String(it.productId));
-      const currency = p.warehouse_currency;
+  const items = body.items.map((it) => {
+    const p = pMap.get(String(it.productId));
+    const currency = p.warehouse_currency;
 
-      return {
-        productId: it.productId,
-        nameSnapshot: p.name,
-        currency,
-        warehouseId: wMap.get(currency),
-        qty: it.qty,
-        price: it.price,
-      };
-    });
+    return {
+      productId: it.productId,
+      nameSnapshot: p.name,
+      currency,
+      warehouseId: wMap.get(currency),
+
+      qty: it.qty,
+
+      sell_price: safeNumber(it.price), // 🔥 sotuv narxi
+      buy_price: safeNumber(p.buy_price), // 🔥 tannarx (snapshot)
+    };
+  });
+
 
     const itemsCalculated = calcItemsSubtotals(items);
 

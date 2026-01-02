@@ -21,12 +21,8 @@ const productSchema = new mongoose.Schema(
       trim: true,
     },
     images: {
-      type: [String],
-      default: [],
-      validate: {
-        validator: (arr) => arr.length <= 5,
-        message: "Ko‘pi bilan 5 ta rasm bo‘lishi mumkin",
-      },
+      type: String,
+      default: null,
     },
 
     color: {

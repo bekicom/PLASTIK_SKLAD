@@ -228,23 +228,7 @@ exports.createPurchase = async (req, res) => {
         session,
       });
 
-      // ✅ images: item.images + (agar 1 ta file kelsa) imageUrl
-      const incomingImages = normalizeImages(it?.images);
-      if (imageUrl) incomingImages.unshift(imageUrl);
-      const cleanImages = normalizeImages(incomingImages);
-
-      let finalProduct = productDoc;
-
-      if (cleanImages.length) {
-        const merged = Array.from(
-          new Set([...(productDoc.images || []), ...cleanImages])
-        ).slice(0, 5);
-        finalProduct = await Product.findByIdAndUpdate(
-          productDoc._id,
-          { $set: { images: merged } },
-          { new: true, session }
-        );
-      }
+  
 
       affectedProducts.push(finalProduct);
 
@@ -318,4 +302,34 @@ exports.createPurchase = async (req, res) => {
   } finally {
     session.endSession();
   }
+};
+
+exports.addProductImage = async (req, res) => {
+  const { id } = req.params;
+
+  if (!mongoose.isValidObjectId(id)) {
+    return res.status(400).json({ message: "product id noto‘g‘ri" });
+  }
+
+  if (!req.file) {
+    return res.status(400).json({ message: "Rasm yuborilmadi" });
+  }
+
+  const imageUrl = `/uploads/products/${req.file.filename}`;
+
+  const product = await Product.findByIdAndUpdate(
+    id,
+    { $addToSet: { images: imageUrl } }, // dublikat bo‘lmaydi
+    { new: true }
+  );
+
+  if (!product) {
+    return res.status(404).json({ message: "Product topilmadi" });
+  }
+
+  return res.json({
+    ok: true,
+    message: "Rasm qo‘shildi",
+    product,
+  });
 };

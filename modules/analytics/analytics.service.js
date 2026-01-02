@@ -23,11 +23,13 @@ async function getOverview({ from, to, tz, warehouseId }) {
     status: "COMPLETED",
   };
 
-  // optional: warehouse filter Sale.items ichida
   if (warehouseId && mongoose.isValidObjectId(warehouseId)) {
     saleMatch["items.warehouseId"] = new mongoose.Types.ObjectId(warehouseId);
   }
 
+  // =====================
+  // SALES SUMMARY
+  // =====================
   const salesAgg = await Sale.aggregate([
     { $match: saleMatch },
     {
@@ -61,6 +63,53 @@ async function getOverview({ from, to, tz, warehouseId }) {
     usd_discount: 0,
   };
 
+  // =====================
+  // PROFIT (FOYDA)
+  // =====================
+  const profitAgg = await Sale.aggregate([
+    { $match: saleMatch },
+    { $unwind: "$items" },
+    {
+      $group: {
+        _id: null,
+        UZS: {
+          $sum: {
+            $cond: [
+              { $eq: ["$items.currency", "UZS"] },
+              {
+                $multiply: [
+                  { $subtract: ["$items.sell_price", "$items.buy_price"] },
+                  "$items.qty",
+                ],
+              },
+              0,
+            ],
+          },
+        },
+        USD: {
+          $sum: {
+            $cond: [
+              { $eq: ["$items.currency", "USD"] },
+              {
+                $multiply: [
+                  { $subtract: ["$items.sell_price", "$items.buy_price"] },
+                  "$items.qty",
+                ],
+              },
+              0,
+            ],
+          },
+        },
+      },
+    },
+    { $project: { _id: 0 } },
+  ]);
+
+  const profit = profitAgg[0] || { UZS: 0, USD: 0 };
+
+  // =====================
+  // EXPENSES
+  // =====================
   const expensesAgg = await Expense.aggregate([
     { $match: buildDateMatch(from, to, "expense_date") },
     {
@@ -80,6 +129,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
       expenses.USD = { total: r.total || 0, count: r.count || 0 };
   }
 
+  // =====================
+  // ORDERS
+  // =====================
   const ordersAgg = await Order.aggregate([
     { $match: buildDateMatch(from, to, "createdAt") },
     {
@@ -107,6 +159,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
     }
   }
 
+  // =====================
+  // DEBTS
+  // =====================
   const [custDebt] = await Customer.aggregate([
     { $match: { isActive: true } },
     {
@@ -130,6 +185,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
     { $project: { _id: 0 } },
   ]);
 
+  // =====================
+  // CASHFLOW
+  // =====================
   const cashflow = {
     UZS: (sales.uzs_paid || 0) - (expenses.UZS.total || 0),
     USD: (sales.usd_paid || 0) - (expenses.USD.total || 0),
@@ -138,6 +196,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   return {
     range: { from, to, tz, warehouseId },
     sales,
+    profit, // 🔥 JAMI FOYDA
     expenses,
     orders,
     debts: {
@@ -148,6 +207,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 }
 
+// ⬇️ QOLGAN FUNKSIYALAR O‘ZGARMADI
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
 
@@ -258,7 +318,6 @@ async function getTop({ from, to, tz, type, limit }) {
     ]);
   }
 
-  // default products
   return Sale.aggregate([
     {
       $match: { ...buildDateMatch(from, to, "createdAt"), status: "COMPLETED" },
@@ -340,11 +399,6 @@ async function getStock() {
   return { byCurrency, low };
 }
 
-/**
- * ✅ ENG MUHIM QATOR:
- * Controller service.getOverview() chaqiryapti.
- * Shuning uchun bularni export qilamiz.
- */
 module.exports = {
   getOverview,
   getTimeSeries,

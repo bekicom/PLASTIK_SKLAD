@@ -17,8 +17,6 @@ const expenseController = require("../controllers/expense.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
 
-
-
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
 
@@ -177,9 +175,13 @@ router.post(
   productController.createProduct
 );
 
-
 // productlarni get qilish
-router.get("/products", rAuth, rRole("ADMIN", "CASHIER", "AGENT"), productController.getProducts);
+router.get(
+  "/products",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "AGENT"),
+  productController.getProducts
+);
 
 // bitta productni get qilish
 router.get(
@@ -217,13 +219,23 @@ router.put(
  */
 
 // purchase (kirim) yaratish
+// purchase (kirim) yaratish
 router.post(
   "/purchases/create",
   rAuth,
-  rRole("ADMIN","CASHIER"),
-  uploadProductImages.single("image"), // ✅ front image key = "image"
+  rRole("ADMIN", "CASHIER"),
+  uploadProductImages.any(), // 🔥 HAMMA FILE FIELD QABUL QILINADI
   purchaseController.createPurchase
 );
+router.post(
+  "/products/:id/image",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  uploadProductImages.single("image"),
+  purchaseController.addProductImage
+);
+
+
 
 /**
  * CUSTOMERS (HOZMAKLAR)
@@ -273,7 +285,7 @@ router.delete(
 router.get(
   "/customers/:id/sales",
   rAuth,
-  rRole("ADMIN","AGENT", "CASHIER"),
+  rRole("ADMIN", "AGENT", "CASHIER"),
   customerController.getCustomerSales
 );
 
@@ -393,7 +405,6 @@ router.post(
   cashierOrderController.cancelOrder
 );
 
-
 router.get(
   "/sales/search-by-product",
   rAuth,
@@ -415,8 +426,6 @@ router.post(
   returnController.createReturn
 );
 
-
-
 // CREATE
 router.post("/expenses", rAuth, expenseController.createExpense);
 
@@ -432,6 +441,5 @@ router.put("/expenses/:id", rAuth, expenseController.updateExpense);
 // DELETE
 router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
 router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
-
 
 module.exports = router;
