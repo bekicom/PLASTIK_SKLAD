@@ -8,16 +8,14 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
     },
 
-    // snapshot (tarix saqlash uchun)
-    name_snapshot: {
-      type: String,
-      required: true,
-      trim: true,
-    },
-
-    unit_snapshot: {
-      type: String, // kg / dona
-      trim: true,
+    // 🔒 TO‘LIQ PRODUCT SNAPSHOT (TARIX UCHUN)
+    product_snapshot: {
+      name: { type: String, required: true, trim: true },
+      model: { type: String, default: null, trim: true },
+      color: { type: String, default: null, trim: true },
+      category: { type: String, default: null, trim: true },
+      unit: { type: String, required: true, trim: true },
+      images: [{ type: String }],
     },
 
     qty: {
@@ -37,19 +35,18 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
       min: 0,
     },
+
     currency_snapshot: {
       type: String,
       enum: ["UZS", "USD"],
       required: true,
     },
   },
-
   { _id: false }
 );
 
 const OrderSchema = new mongoose.Schema(
   {
-    // kim zakas berdi (AGENT)
     agent_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -57,7 +54,6 @@ const OrderSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ✅ qaysi hozmak (Customer)
     customer_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
@@ -76,6 +72,9 @@ const OrderSchema = new mongoose.Schema(
       min: 0,
     },
 
+    total_uzs: { type: Number, default: 0, min: 0 },
+    total_usd: { type: Number, default: 0, min: 0 },
+
     status: {
       type: String,
       enum: ["NEW", "CONFIRMED", "CANCELED"],
@@ -89,21 +88,17 @@ const OrderSchema = new mongoose.Schema(
       maxlength: 500,
     },
 
-    // kassir tasdiqlaganda
     confirmedAt: Date,
     confirmedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
 
-    // bekor qilinsa
     canceledAt: Date,
     canceledBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
     },
-    total_uzs: { type: Number, default: 0, min: 0 },
-    total_usd: { type: Number, default: 0, min: 0 },
 
     cancelReason: {
       type: String,
@@ -114,12 +109,9 @@ const OrderSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// indexlar (tezkor filter uchun)
+// indexlar
 OrderSchema.index({ createdAt: -1 });
 OrderSchema.index({ agent_id: 1, createdAt: -1 });
-OrderSchema.index({ customer_id: 1, createdAt: -1 }); // ✅ foydali
-
-// ❌ warehouse_id index olib tashlandi, chunki schema’da yo‘q
-// OrderSchema.index({ warehouse_id: 1, createdAt: -1 });
+OrderSchema.index({ customer_id: 1, createdAt: -1 });
 
 module.exports = mongoose.model("Order", OrderSchema);

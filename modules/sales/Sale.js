@@ -10,15 +10,17 @@ const saleItemSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Fakturada product nomi keyin o'zgarsa ham, eski nom saqlanib qoladi
-    nameSnapshot: {
-      type: String,
-      required: true,
-      trim: true,
-      maxlength: 200,
+    // 🔒 TO‘LIQ PRODUCT SNAPSHOT (ORDER bilan 1:1)
+    productSnapshot: {
+      name: { type: String, required: true, trim: true, maxlength: 200 },
+      model: { type: String, default: null, trim: true },
+      color: { type: String, default: null, trim: true },
+      category: { type: String, default: null, trim: true },
+      unit: { type: String, required: true, trim: true },
+      images: [{ type: String }],
     },
 
-    // Qaysi ombordan chiqdi (USD yoki UZS warehouse)
+    // Qaysi ombordan chiqdi
     warehouseId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Warehouse",
@@ -39,8 +41,15 @@ const saleItemSchema = new mongoose.Schema(
       min: 0.0001,
     },
 
-    // 1 dona narx (shu item.currency bo'yicha)
-    price: {
+    // 1 dona sotuv narxi
+    sell_price: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    // 🔥 tannarx (hisobot uchun)
+    buy_price: {
       type: Number,
       required: true,
       min: 0,
@@ -66,7 +75,6 @@ const saleSchema = new mongoose.Schema(
       maxlength: 50,
     },
 
-    // Kassir (User)
     soldBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -74,15 +82,12 @@ const saleSchema = new mongoose.Schema(
       index: true,
     },
 
-    // Customer tanlangan bo'lsa
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
-      required: false,
       index: true,
     },
 
-    // Customer sale paytida tez kiritilsa (tezkor)
     customerSnapshot: {
       name: { type: String, trim: true, maxlength: 120 },
       phone: { type: String, trim: true, maxlength: 30 },
@@ -95,19 +100,16 @@ const saleSchema = new mongoose.Schema(
       required: true,
       validate: {
         validator: (v) => Array.isArray(v) && v.length > 0,
-        message: "Items bo'sh bo'lishi mumkin emas",
+        message: "Items bo‘sh bo‘lishi mumkin emas",
       },
     },
 
     totals: {
-      // barcha item subtotallari yig'indisi (currency aralash bo'lishi mumkin)
-      // shuning uchun quyida currencyTotals ham bor
       subtotal: { type: Number, required: true, min: 0 },
       discount: { type: Number, default: 0, min: 0 },
       grandTotal: { type: Number, required: true, min: 0 },
     },
 
-    // currency bo'yicha ajratib totals saqlab qo'yamiz (USD/UZS aralash savdo bo'lsa kerak bo'ladi)
     currencyTotals: {
       UZS: {
         subtotal: { type: Number, default: 0, min: 0 },
@@ -125,7 +127,6 @@ const saleSchema = new mongoose.Schema(
       },
     },
 
-    // To'lovlarni ham currency bo'yicha ajratamiz
     payments: [
       {
         currency: {
@@ -143,7 +144,6 @@ const saleSchema = new mongoose.Schema(
       },
     ],
 
-    // umumiy status
     status: {
       type: String,
       enum: ["COMPLETED", "CANCELED"],
@@ -169,7 +169,6 @@ saleSchema.index({ createdAt: -1 });
 saleSchema.index({ soldBy: 1, createdAt: -1 });
 saleSchema.index({ customerId: 1, createdAt: -1 });
 saleSchema.index({ status: 1, createdAt: -1 });
-// Qaysi ombordan ko'p sotilganini tez olish uchun
 saleSchema.index({ "items.warehouseId": 1, createdAt: -1 });
-module.exports = mongoose.models.Sale || mongoose.model("Sale", saleSchema);
 
+module.exports = mongoose.models.Sale || mongoose.model("Sale", saleSchema);

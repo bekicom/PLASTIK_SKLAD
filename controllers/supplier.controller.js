@@ -71,9 +71,15 @@ function calcPurchaseTotals(p) {
     },
   };
 }
+
 exports.createSupplier = async (req, res) => {
   try {
-    const { name, phone } = req.body;
+    const {
+      name,
+      phone,
+      initial_debt_uzs = 0,
+      initial_debt_usd = 0,
+    } = req.body;
 
     if (!name || !phone) {
       return res
@@ -88,12 +94,38 @@ exports.createSupplier = async (req, res) => {
         .json({ ok: false, message: "Bu telefon raqam band" });
     }
 
+    const debtUzs = Math.max(0, Number(initial_debt_uzs) || 0);
+    const debtUsd = Math.max(0, Number(initial_debt_usd) || 0);
+
+    const payment_history = [];
+
+    if (debtUzs > 0) {
+      payment_history.push({
+        currency: "UZS",
+        amount_uzs: debtUzs,
+        amount_usd: 0,
+        note: "Boshlang‘ich qarz (UZS)",
+      });
+    }
+
+    if (debtUsd > 0) {
+      payment_history.push({
+        currency: "USD",
+        amount_uzs: 0,
+        amount_usd: debtUsd,
+        note: "Boshlang‘ich qarz (USD)",
+      });
+    }
+
     const supplier = await Supplier.create({
       name: String(name).trim(),
       phone: String(phone).trim(),
-      // schema’da bo‘lsa — defaults qo‘yib ketadi, bo‘lmasa ignore bo‘ladi
-      total_debt_uzs: 0,
-      total_debt_usd: 0,
+
+      // 🔥 BOSHLANG‘ICH QARZ
+      total_debt_uzs: debtUzs,
+      total_debt_usd: debtUsd,
+
+      payment_history,
     });
 
     return res.status(201).json({
@@ -107,6 +139,10 @@ exports.createSupplier = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
+
+
+
+
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;

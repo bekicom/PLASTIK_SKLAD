@@ -28,28 +28,69 @@ function asObjectId(id) {
  */
 exports.createCustomer = async (req, res) => {
   try {
-    const { name, phone, address, note } = req.body || {};
+    const {
+      name,
+      phone,
+      address,
+      note,
 
-    const n = safeTrim(name, 120);
-    if (!n) {
+      initial_debt_uzs = 0,
+      initial_debt_usd = 0,
+    } = req.body;
+
+    if (!name) {
       return res.status(400).json({ ok: false, message: "name majburiy" });
     }
 
-    const p = normalizePhone(phone);
-    const doc = await Customer.create({
-      name: n,
-      phone: p || undefined,
-      address: safeTrim(address, 250) || undefined,
-      note: safeTrim(note, 300) || undefined,
+    const debtUzs = Math.max(0, Number(initial_debt_uzs) || 0);
+    const debtUsd = Math.max(0, Number(initial_debt_usd) || 0);
+
+    const payment_history = [];
+
+    if (debtUzs > 0) {
+      payment_history.push({
+        currency: "UZS",
+        amount_uzs: debtUzs,
+        amount_usd: 0,
+        note: "Boshlang‘ich qarz (UZS)",
+        allocations: [],
+      });
+    }
+
+    if (debtUsd > 0) {
+      payment_history.push({
+        currency: "USD",
+        amount_uzs: 0,
+        amount_usd: debtUsd,
+        note: "Boshlang‘ich qarz (USD)",
+        allocations: [],
+      });
+    }
+
+    const customer = await Customer.create({
+      name: name.trim(),
+      phone: phone?.trim(),
+      address: address?.trim(),
+      note: note?.trim(),
+
+      // 🔥 BOSHLANG‘ICH QARZ
+      total_debt_uzs: debtUzs,
+      total_debt_usd: debtUsd,
+
+      payment_history,
     });
 
-    return res
-      .status(201)
-      .json({ ok: true, message: "Customer yaratildi", data: doc });
-  } catch (err) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Customer create xato", error: err.message });
+    return res.status(201).json({
+      ok: true,
+      message: "Mijoz yaratildi",
+      customer,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 

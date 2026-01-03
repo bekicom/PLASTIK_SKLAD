@@ -26,22 +26,80 @@ function normCurrency(c) {
   return x === "UZS" || x === "USD" ? x : null;
 }
 
-/**
- * ✅ Order’ni to‘liq qilib socket uchun tayyorlash
- */
+/* =======================
+   GET ORDER FULL (SOCKET)
+======================= */
+async function getOrderFull(orderId) {
+  if (!mongoose.isValidObjectId(orderId)) return null;
+
+  const order = await Order.findById(orderId)
+    .populate("agent_id", "name phone login")
+    .populate("customer_id", "name phone address note")
+    .lean();
+
+  if (!order) return null;
+
+  return {
+    _id: order._id,
+    status: order.status,
+    createdAt: order.createdAt,
+    note: order.note || null,
+
+    agent: order.agent_id
+      ? {
+          _id: order.agent_id._id,
+          name: order.agent_id.name,
+          phone: order.agent_id.phone,
+          login: order.agent_id.login,
+        }
+      : null,
+
+    customer: order.customer_id
+      ? {
+          _id: order.customer_id._id,
+          name: order.customer_id.name,
+          phone: order.customer_id.phone,
+          address: order.customer_id.address,
+          note: order.customer_id.note,
+        }
+      : null,
+
+    items: (order.items || []).map((it) => ({
+      productId: it.product_id,
+      product: {
+        name: it.product_snapshot?.name,
+        model: it.product_snapshot?.model,
+        color: it.product_snapshot?.color,
+        category: it.product_snapshot?.category,
+        unit: it.product_snapshot?.unit,
+        images: it.product_snapshot?.images || [],
+      },
+      currency: it.currency_snapshot,
+      qty: Number(it.qty),
+      price: Number(it.price_snapshot),
+      subtotal: Number(it.subtotal),
+    })),
+
+    totals: {
+      UZS: Number(order.total_uzs || 0),
+      USD: Number(order.total_usd || 0),
+    },
+  };
+}
+
+/* =======================
+   GET NEW ORDERS
+======================= */
 exports.getNewOrders = async (req, res) => {
   try {
     const { from, to, agent_id, customer_id } = req.query;
-
     const filter = { status: "NEW" };
 
-    if (agent_id && mongoose.isValidObjectId(agent_id)) {
+    if (agent_id && mongoose.isValidObjectId(agent_id))
       filter.agent_id = agent_id;
-    }
 
-    if (customer_id && mongoose.isValidObjectId(customer_id)) {
+    if (customer_id && mongoose.isValidObjectId(customer_id))
       filter.customer_id = customer_id;
-    }
 
     const fromDate = parseDate(from, false);
     const toDate = parseDate(to, true);
@@ -57,61 +115,7 @@ exports.getNewOrders = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const items = rows.map((order) => ({
-      _id: order._id,
-      status: order.status,
-      createdAt: order.createdAt,
-      note: order.note || null,
-
-      agent: order.agent_id
-        ? {
-            _id: order.agent_id._id,
-            name: order.agent_id.name,
-            phone: order.agent_id.phone,
-            login: order.agent_id.login,
-          }
-        : null,
-
-      customer: order.customer_id
-        ? {
-            _id: order.customer_id._id,
-            name: order.customer_id.name,
-            phone: order.customer_id.phone,
-            address: order.customer_id.address,
-            note: order.customer_id.note,
-          }
-        : null,
-
-      items: (order.items || []).map((it) => ({
-        productId: it.product_id,
-
-        // ✅ TO‘LIQ PRODUCT MA’LUMOT
-        product: {
-          name: it.product_snapshot?.name,
-          model: it.product_snapshot?.model,
-          color: it.product_snapshot?.color,
-          category: it.product_snapshot?.category,
-          unit: it.product_snapshot?.unit,
-          images: it.product_snapshot?.images || [],
-        },
-
-        currency: it.currency_snapshot,
-        qty: Number(it.qty),
-        price: Number(it.price_snapshot),
-        subtotal: Number(it.subtotal),
-      })),
-
-      totals: {
-        UZS: Number(order.total_uzs || 0),
-        USD: Number(order.total_usd || 0),
-      },
-    }));
-
-    return res.json({
-      ok: true,
-      total: items.length,
-      items,
-    });
+    return res.json({ ok: true, total: rows.length, items: rows });
   } catch (error) {
     return res.status(500).json({
       ok: false,
@@ -121,49 +125,9 @@ exports.getNewOrders = async (req, res) => {
   }
 };
 
-
-exports.getNewOrders = async (req, res) => {
-  try {
-    const { from, to, agent_id, customer_id } = req.query;
-
-    const filter = { status: "NEW" };
-
-    if (agent_id && mongoose.isValidObjectId(agent_id)) {
-      filter.agent_id = agent_id;
-    }
-
-    if (customer_id && mongoose.isValidObjectId(customer_id)) {
-      filter.customer_id = customer_id;
-    }
-
-    const fromDate = parseDate(from, false);
-    const toDate = parseDate(to, true);
-    if (fromDate || toDate) {
-      filter.createdAt = {};
-      if (fromDate) filter.createdAt.$gte = fromDate;
-      if (toDate) filter.createdAt.$lte = toDate;
-    }
-
-    const items = await Order.find(filter)
-      .populate("agent_id", "name phone login")
-      .populate("customer_id", "name phone address")
-      .sort({ createdAt: -1 })
-      .lean();
-
-    return res.json({
-      ok: true,
-      total: items.length,
-      items,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      message: "Server xatoligi",
-      error: error.message,
-    });
-  }
-};
-
+/* =======================
+   CONFIRM ORDER → SALE
+======================= */
 exports.confirmOrder = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -172,51 +136,37 @@ exports.confirmOrder = async (req, res) => {
     const cashierId = getUserId(req);
     const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(id)) {
-      await session.abortTransaction();
+    if (!mongoose.isValidObjectId(id))
       return res.status(400).json({ ok: false, message: "order id noto‘g‘ri" });
-    }
 
     const order = await Order.findById(id).session(session);
-    if (!order) {
-      await session.abortTransaction();
+    if (!order)
       return res.status(404).json({ ok: false, message: "Zakas topilmadi" });
-    }
 
-    if (order.status !== "NEW") {
-      await session.abortTransaction();
+    if (order.status !== "NEW")
       return res.status(400).json({
         ok: false,
         message: `Zakas NEW emas (hozirgi: ${order.status})`,
       });
-    }
 
     const customer = await Customer.findById(order.customer_id).session(
       session
     );
-    if (!customer) {
-      await session.abortTransaction();
+    if (!customer)
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
-    }
 
-    /** 1) OMBORDAN QTY KAMAYTIRISH */
+    // 1) STOCK KAMAYTIRISH
     for (const it of order.items) {
       const updated = await Product.findOneAndUpdate(
         { _id: it.product_id, qty: { $gte: it.qty } },
         { $inc: { qty: -it.qty } },
         { new: true, session }
       );
-
-      if (!updated) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          ok: false,
-          message: `Omborda yetarli qty yo‘q: ${it.product_id}`,
-        });
-      }
+      if (!updated)
+        throw new Error(`Omborda yetarli qty yo‘q: ${it.product_id}`);
     }
 
-    /** 2) SALE ITEMS + TOTALS */
+    // 2) SALE ITEMS
     const saleItems = [];
     const currencyTotals = {
       UZS: {
@@ -237,32 +187,21 @@ exports.confirmOrder = async (req, res) => {
 
     for (const it of order.items) {
       const cur = normCurrency(it.currency_snapshot);
-      if (!cur) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          ok: false,
-          message: `currency_snapshot noto‘g‘ri: ${it.currency_snapshot}`,
-        });
-      }
+      if (!cur) throw new Error(`currency noto‘g‘ri: ${it.currency_snapshot}`);
 
       const warehouse = await Warehouse.findOne({ currency: cur }).session(
         session
       );
-      if (!warehouse) {
-        await session.abortTransaction();
-        return res.status(400).json({
-          ok: false,
-          message: `Warehouse topilmadi (${cur})`,
-        });
-      }
+      if (!warehouse) throw new Error(`Warehouse topilmadi (${cur})`);
 
       saleItems.push({
         productId: it.product_id,
-        nameSnapshot: it.name_snapshot,
+        productSnapshot: it.product_snapshot,
         warehouseId: warehouse._id,
         currency: cur,
         qty: it.qty,
-        price: it.price_snapshot,
+        sell_price: it.price_snapshot,
+        buy_price: it.buy_price || 0,
         subtotal: it.subtotal,
       });
 
@@ -277,7 +216,7 @@ exports.confirmOrder = async (req, res) => {
       grandTotal: currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
     };
 
-    /** 3) SALE CREATE */
+    // 3) SALE CREATE
     const [sale] = await Sale.create(
       [
         {
@@ -300,7 +239,7 @@ exports.confirmOrder = async (req, res) => {
       { session }
     );
 
-    /** 4) ORDER UPDATE */
+    // 4) ORDER UPDATE
     order.status = "CONFIRMED";
     order.confirmedAt = new Date();
     order.confirmedBy = cashierId;
@@ -308,16 +247,10 @@ exports.confirmOrder = async (req, res) => {
 
     await session.commitTransaction();
 
-    /** ✅ SOCKET (TO‘LIQ DATA) */
+    // SOCKET
     const io = req.app?.get("io");
     if (io) {
       const fullOrder = await getOrderFull(order._id);
-
-      io.to("cashiers").emit("order:updated", {
-        action: "CONFIRMED",
-        order: fullOrder,
-      });
-
       io.to("cashiers").emit("order:confirmed", {
         order: fullOrder,
         sale: { _id: String(sale._id), invoiceNo: sale.invoiceNo },
@@ -331,7 +264,7 @@ exports.confirmOrder = async (req, res) => {
       sale,
     });
   } catch (error) {
-    await session.abortTransaction();
+    if (session.inTransaction()) await session.abortTransaction();
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
@@ -342,51 +275,38 @@ exports.confirmOrder = async (req, res) => {
   }
 };
 
-
+/* =======================
+   CANCEL ORDER
+======================= */
 exports.cancelOrder = async (req, res) => {
   try {
     const cashierId = getUserId(req);
     const { id } = req.params;
     const { reason } = req.body || {};
 
-    if (!mongoose.isValidObjectId(id)) {
+    if (!mongoose.isValidObjectId(id))
       return res.status(400).json({ ok: false, message: "order id noto‘g‘ri" });
-    }
 
     const order = await Order.findById(id);
-    if (!order) {
+    if (!order)
       return res.status(404).json({ ok: false, message: "Zakas topilmadi" });
-    }
 
-    if (order.status !== "NEW") {
+    if (order.status !== "NEW")
       return res.status(400).json({
         ok: false,
-        message: `Faqat NEW zakasni bekor qilish mumkin (hozirgi: ${order.status})`,
+        message: `Faqat NEW zakasni bekor qilish mumkin`,
       });
-    }
 
     order.status = "CANCELED";
     order.canceledAt = new Date();
     order.canceledBy = cashierId;
-    order.cancelReason = String(reason || "Bekor qilindi")
-      .trim()
-      .slice(0, 300);
-
+    order.cancelReason = String(reason || "Bekor qilindi").slice(0, 300);
     await order.save();
 
-    /** ✅ SOCKET (TO‘LIQ DATA) */
     const io = req.app?.get("io");
     if (io) {
       const fullOrder = await getOrderFull(order._id);
-
-      io.to("cashiers").emit("order:updated", {
-        action: "CANCELED",
-        order: fullOrder,
-      });
-
-      io.to("cashiers").emit("order:canceled", {
-        order: fullOrder,
-      });
+      io.to("cashiers").emit("order:canceled", { order: fullOrder });
     }
 
     return res.json({ ok: true, message: "Zakas bekor qilindi", order });
