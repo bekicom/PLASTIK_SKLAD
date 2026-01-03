@@ -50,7 +50,6 @@ function calcItemsSubtotals(items) {
   });
 }
 
-
 function calcCurrencyTotals(items, discount = 0, payments = []) {
   const totals = {
     UZS: {
@@ -127,7 +126,6 @@ async function generateInvoiceNo(session) {
   return `S-${year}-${seqStr}`;
 }
 
-
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -166,11 +164,12 @@ exports.createSale = async (req, res) => {
     // 2) fetch products
     const productIds = [...new Set(body.items.map((x) => String(x.productId)))];
 
-   const products = await Product.find({ _id: { $in: productIds } })
-  .select("_id name unit warehouse_currency qty buy_price")
-  .session(session);
-
-    
+    const products = await Product.find({ _id: { $in: productIds } })
+      .select(
+        "_id name model color category unit images warehouse_currency qty buy_price"
+      )
+      .lean()
+      .session(session);
 
     const pMap = new Map(products.map((p) => [String(p._id), p]));
 
@@ -234,46 +233,44 @@ exports.createSale = async (req, res) => {
     }
 
     // 6) build sale items with automatic warehouseId + currency
- const items = body.items.map((it) => {
-   const p = pMap.get(String(it.productId));
-   const currency = p.warehouse_currency;
-   const warehouseId = wMap.get(currency);
+    const items = body.items.map((it) => {
+      const p = pMap.get(String(it.productId));
+      const currency = p.warehouse_currency;
+      const warehouseId = wMap.get(currency);
 
-   const qty = Number(it.qty);
-   const sellPrice = Number(it.price);
-   const buyPrice = Number(p.buy_price);
+      const qty = Number(it.qty);
+      const sellPrice = Number(it.price);
+      const buyPrice = Number(p.buy_price);
 
-   if (!p.unit) {
-     throw new Error(`Product unit yo‘q: ${p.name}`);
-   }
+      if (!p.unit) {
+        throw new Error(`Product unit yo‘q: ${p.name}`);
+      }
 
-   return {
-     productId: p._id,
+      return {
+        productId: p._id,
 
-     // ✅ TO‘LIQ PRODUCT SNAPSHOT (ASOSIY JOY)
-     productSnapshot: {
-       name: p.name,
-       model: p.model || null,
-       color: p.color || null,
-       category: p.category || null,
-       unit: p.unit,
-       images: p.images || [],
-     },
+        // ✅ TO‘LIQ PRODUCT SNAPSHOT (ASOSIY JOY)
+        productSnapshot: {
+          name: p.name,
+          model: p.model || null,
+          color: p.color || null,
+          category: p.category || null,
+          unit: p.unit,
+          images: p.images || [],
+        },
 
-     warehouseId,
-     currency,
+        warehouseId,
+        currency,
 
-     qty,
+        qty,
 
-     // 🔥 MUHIM FIELDLAR
-     sell_price: sellPrice,
-     buy_price: buyPrice,
+        // 🔥 MUHIM FIELDLAR
+        sell_price: sellPrice,
+        buy_price: buyPrice,
 
-     subtotal: +(qty * sellPrice).toFixed(2),
-   };
- });
-
-
+        subtotal: +(qty * sellPrice).toFixed(2),
+      };
+    });
 
     const itemsCalculated = calcItemsSubtotals(items);
 
@@ -425,6 +422,7 @@ exports.getSales = async (req, res) => {
     const rows = await Sale.find(filter)
       .sort({ createdAt: -1 })
       .populate("customerId", "name phone address note")
+      .populate("soldBy", "name phone login")
       .lean();
 
     const items = rows.map((sale) => ({
@@ -434,6 +432,17 @@ exports.getSales = async (req, res) => {
       createdAt: sale.createdAt,
       canceledAt: sale.canceledAt || null,
 
+      // ✅ AGENT (orders/new dagidek)
+      agent: sale.soldBy
+        ? {
+            _id: sale.soldBy._id,
+            name: sale.soldBy.name,
+            phone: sale.soldBy.phone,
+            login: sale.soldBy.login,
+          }
+        : null,
+
+      // ✅ CUSTOMER
       customer: sale.customerId
         ? {
             _id: sale.customerId._id,
@@ -444,11 +453,11 @@ exports.getSales = async (req, res) => {
           }
         : sale.customerSnapshot || null,
 
+      // ✅ ITEMS (ORDER FORMATIGA MOS)
       items: (sale.items || []).map((it) => ({
-        productId: it.productId,
+        product_id: it.productId,
 
-        // ✅ TO‘LIQ PRODUCT MA’LUMOT
-        product: {
+        product_snapshot: {
           name: it.productSnapshot?.name,
           model: it.productSnapshot?.model,
           color: it.productSnapshot?.color,
@@ -457,17 +466,20 @@ exports.getSales = async (req, res) => {
           images: it.productSnapshot?.images || [],
         },
 
-        currency: it.currency,
         qty: Number(it.qty),
-        sell_price: Number(it.sell_price),
-        buy_price: Number(it.buy_price),
+        price_snapshot: Number(it.sell_price),
+        buy_price_snapshot: Number(it.buy_price),
         subtotal: Number(it.subtotal),
+        currency_snapshot: it.currency,
       })),
 
       totals: sale.totals,
+
       currencyTotals: sale.currencyTotals,
+
       payments: sale.payments,
-      note: sale.note || null,
+
+      note: sale.note || "",
     }));
 
     return res.json({
@@ -483,7 +495,6 @@ exports.getSales = async (req, res) => {
     });
   }
 };
-
 
 exports.getSaleById = async (req, res) => {
   try {
@@ -620,4 +631,3 @@ exports.searchSalesByProduct = async (req, res) => {
     });
   }
 };
-

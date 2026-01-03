@@ -21,8 +21,8 @@ const productSchema = new mongoose.Schema(
       trim: true,
     },
     images: {
-      type: String,
-      default: null,
+      type: [String],
+      default: [],
     },
 
     color: {
@@ -87,4 +87,3 @@ productSchema.index(
 );
 
 module.exports = mongoose.model("Product", productSchema);
-
