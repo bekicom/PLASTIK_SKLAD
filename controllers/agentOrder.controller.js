@@ -75,7 +75,9 @@ exports.createAgentOrder = async (req, res) => {
       _id: { $in: uniqueProductIds },
       is_active: { $ne: false },
     })
-      .select("name unit sell_price warehouse_currency")
+      .select(
+        "name model color category unit sell_price warehouse_currency images"
+      )
       .lean();
 
     if (products.length !== uniqueProductIds.length) {
@@ -165,10 +167,19 @@ exports.createAgentOrder = async (req, res) => {
 
       orderItems.push({
         product_id: p._id,
-        name_snapshot: p.name,
-        unit_snapshot: p.unit,
+
+        // 🔒 SNAPSHOT (kassir uchun hammasi bor)
+        product_snapshot: {
+          name: p.name,
+          model: p.model || null,
+          color: p.color || null,
+          category: p.category || null,
+          unit: p.unit,
+          images: p.images || [],
+        },
+
         qty,
-        price_snapshot: price, // ✅ agent price yoki basePrice
+        price_snapshot: price,
         subtotal,
         currency_snapshot: currency,
       });
@@ -229,16 +240,23 @@ exports.createAgentOrder = async (req, res) => {
               }
             : null,
 
-          items: (fullOrder.items || []).map((it) => ({
+          items: fullOrder.items.map((it) => ({
             productId: String(it.product_id),
-            name: it.name_snapshot,
-            unit: it.unit_snapshot,
-            currency: it.currency_snapshot,
-            qty: Number(it.qty || 0),
-            price: Number(it.price_snapshot || 0), // ✅ agent narxi ham ko‘rinadi
-            subtotal: Number(it.subtotal || 0),
-          })),
 
+            product: {
+              name: it.product_snapshot?.name,
+              model: it.product_snapshot?.model,
+              color: it.product_snapshot?.color,
+              category: it.product_snapshot?.category,
+              unit: it.product_snapshot?.unit,
+              images: it.product_snapshot?.images || [],
+            },
+
+            currency: it.currency_snapshot,
+            qty: Number(it.qty),
+            price: Number(it.price_snapshot),
+            subtotal: Number(it.subtotal),
+          })),
           totals: {
             UZS: Number(fullOrder.total_uzs || 0),
             USD: Number(fullOrder.total_usd || 0),
@@ -266,7 +284,6 @@ exports.createAgentOrder = async (req, res) => {
     });
   }
 };
-
 
 /**
  * GET /agents/summary?from=&to=
