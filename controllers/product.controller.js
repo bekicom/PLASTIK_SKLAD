@@ -5,6 +5,9 @@ const path = require("path");
 const UNITS = ["DONA", "PACHKA", "KG"];
 const CUR = ["UZS", "USD"];
 
+/* =======================
+   HELPERS
+======================= */
 function toStr(v) {
   return v === undefined || v === null ? "" : String(v);
 }
@@ -18,11 +21,15 @@ function safeNumber(v, def = 0) {
   return Number.isFinite(n) ? n : def;
 }
 
-/**
- * POST /api/products/create
- * Content-Type: multipart/form-data
- * files: images (max 5)
- */
+// ✅ IMAGE URL BUILDER (MUHIM)
+function withImageUrl(req, images = []) {
+  const base = `${req.protocol}://${req.get("host")}`;
+  return (images || []).map((img) => `${base}${img}`);
+}
+
+/* =======================
+   CREATE PRODUCT
+======================= */
 exports.createProduct = async (req, res) => {
   try {
     const {
@@ -54,18 +61,19 @@ exports.createProduct = async (req, res) => {
     }
 
     if (!UNITS.includes(unit)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "unit noto‘g‘ri (DONA/PACHKA/KG)" });
+      return res.status(400).json({
+        ok: false,
+        message: "unit noto‘g‘ri (DONA/PACHKA/KG)",
+      });
     }
 
     if (!CUR.includes(warehouse_currency)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "warehouse_currency noto‘g‘ri (UZS/USD)" });
+      return res.status(400).json({
+        ok: false,
+        message: "warehouse_currency noto‘g‘ri (UZS/USD)",
+      });
     }
 
-    // ✅ Rasmlar (multer) -> URLlar
     const images = (req.files || []).map(
       (f) => `/uploads/products/${f.filename}`
     );
@@ -81,8 +89,10 @@ exports.createProduct = async (req, res) => {
       qty: qty !== undefined ? safeNumber(qty, 0) : 0,
       buy_price: safeNumber(buy_price, 0),
       sell_price: safeNumber(sell_price, 0),
-      images, // ✅ shu yerga yozildi
+      images,
     });
+
+    product.images = withImageUrl(req, product.images);
 
     return res.status(201).json({
       ok: true,
@@ -91,26 +101,27 @@ exports.createProduct = async (req, res) => {
     });
   } catch (error) {
     if (error.code === 11000) {
-      return res
-        .status(409)
-        .json({ ok: false, message: "Bu mahsulot allaqachon mavjud" });
+      return res.status(409).json({
+        ok: false,
+        message: "Bu mahsulot allaqachon mavjud",
+      });
     }
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 
-/**
- * GET /api/products
- * Query: q, page, limit, currency, category, supplier_id
- */
+/* =======================
+   GET PRODUCTS
+======================= */
 exports.getProducts = async (req, res) => {
   try {
     const { q, currency, category, supplier_id } = req.query;
 
     const filter = {};
-
     if (supplier_id) filter.supplier_id = supplier_id;
     if (currency) filter.warehouse_currency = currency;
     if (category) filter.category = category;
@@ -122,46 +133,62 @@ exports.getProducts = async (req, res) => {
 
     const items = await Product.find(filter)
       .populate("supplier_id", "name phone")
-      .sort({ createdAt: -1 });
+      .sort({ createdAt: -1 })
+      .lean();
 
-    return res.json({ ok: true, total: items.length, items });
+    const mapped = items.map((p) => ({
+      ...p,
+      images: withImageUrl(req, p.images),
+    }));
+
+    return res.json({
+      ok: true,
+      total: mapped.length,
+      items: mapped,
+    });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 
-
-/**
- * GET /api/products/:id
- */
+/* =======================
+   GET PRODUCT BY ID
+======================= */
 exports.getProductById = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id).populate(
-      "supplier_id",
-      "name phone"
-    );
+    const product = await Product.findById(req.params.id)
+      .populate("supplier_id", "name phone")
+      .lean();
 
     if (!product) {
-      return res.status(404).json({ ok: false, message: "Mahsulot topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Mahsulot topilmadi",
+      });
     }
 
-    return res.json({ ok: true, product });
+    product.images = withImageUrl(req, product.images);
+
+    return res.json({
+      ok: true,
+      product,
+    });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 
-/**
- * PUT /api/products/:id
- * Content-Type: multipart/form-data
- * files: images (max 5)
- *
- * Default: yangi rasm yuborilsa -> eski rasmlarga qo‘shib qo‘yadi
- */
+/* =======================
+   UPDATE PRODUCT
+======================= */
 exports.updateProduct = async (req, res) => {
   try {
     const product = await Product.findById(req.params.id);
@@ -169,119 +196,37 @@ exports.updateProduct = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Mahsulot topilmadi" });
     }
 
-    const {
-      name,
-      model,
-      color,
-      category,
-      unit,
-      warehouse_currency,
-      qty,
-      buy_price,
-      sell_price,
-    } = req.body;
+    // body update
+    if (req.body.name) product.name = req.body.name;
 
-    if (unit !== undefined && !UNITS.includes(unit)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "unit noto‘g‘ri (DONA/PACHKA/KG)" });
-    }
-
-    if (warehouse_currency !== undefined && !CUR.includes(warehouse_currency)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "warehouse_currency noto‘g‘ri (UZS/USD)" });
-    }
-
-    if (name !== undefined) product.name = normalizeText(name);
-    if (model !== undefined) product.model = normalizeText(model);
-    if (color !== undefined) product.color = normalizeText(color);
-    if (category !== undefined) product.category = normalizeText(category);
-    if (unit !== undefined) product.unit = unit;
-    if (warehouse_currency !== undefined)
-      product.warehouse_currency = warehouse_currency;
-    if (qty !== undefined) product.qty = safeNumber(qty, product.qty);
-    if (buy_price !== undefined)
-      product.buy_price = safeNumber(buy_price, product.buy_price);
-    if (sell_price !== undefined)
-      product.sell_price = safeNumber(sell_price, product.sell_price);
-
-    // ✅ Yangi rasmlar kelsa: qo‘shamiz
-    const newImages = (req.files || []).map(
-      (f) => `/uploads/products/${f.filename}`
-    );
-    if (newImages.length) {
-      product.images = [...(product.images || []), ...newImages].slice(0, 5); // max 5
+    // rasm bo‘lsa
+    if (req.file) {
+      product.images.push(`/uploads/products/${req.file.filename}`);
     }
 
     await product.save();
-
-    return res.json({ ok: true, message: "Mahsulot yangilandi", product });
-  } catch (error) {
-    if (error.code === 11000) {
-      return res
-        .status(409)
-        .json({ ok: false, message: "Bu mahsulot allaqachon mavjud" });
-    }
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    res.json({ ok: true, product });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 };
 
-/**
- * DELETE /api/products/:id
- */
+/* =======================
+   DELETE PRODUCT
+======================= */
 exports.deleteProduct = async (req, res) => {
   try {
     const product = await Product.findByIdAndDelete(req.params.id);
     if (!product) {
-      return res.status(404).json({ ok: false, message: "Mahsulot topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Mahsulot topilmadi",
+      });
     }
-
-    return res.json({ ok: true, message: "Mahsulot o‘chirildi", product });
-  } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
-  }
-};
-
-exports.replaceProductImage = async (req, res) => {
-  try {
-    const product = await Product.findById(req.params.id);
-    if (!product) {
-      return res.status(404).json({ ok: false, message: "Product topilmadi" });
-    }
-
-    if (!req.file) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "Yangi rasm yuborilmadi" });
-    }
-
-    // 🔥 Eski rasmlarni o‘chiramiz
-    for (const img of product.images || []) {
-      const filePath = path.join(
-        __dirname,
-        "..",
-        img.replace("/uploads/", "uploads/")
-      );
-      if (fs.existsSync(filePath)) {
-        fs.unlinkSync(filePath);
-      }
-    }
-
-    // ✅ Yangi rasm
-    const newImage = `/uploads/products/${req.file.filename}`;
-    product.images = [newImage];
-
-    await product.save();
 
     return res.json({
       ok: true,
-      message: "Rasm almashtirildi",
-      images: product.images,
+      message: "Mahsulot o‘chirildi",
     });
   } catch (error) {
     return res.status(500).json({

@@ -16,8 +16,10 @@ const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
+
 const withdrawalController = require("../controllers/withdrawal.controller");
 
+console.log("UPLOAD:", uploadProductImages);
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -198,27 +200,19 @@ router.put(
   "/products/:id",
   rAuth,
   rRole("ADMIN"),
+  uploadProductImages.single("image"), // OK
   productController.updateProduct
 );
 
-// productni delete qilish
-router.delete(
+router.put(
   "/products/:id",
   rAuth,
   rRole("ADMIN"),
-  productController.deleteProduct
-);
-router.put(
-  "/products/:id/image",
-  rAuth,
-  rRole("ADMIN"),
   uploadProductImages.single("image"),
-  productController.replaceProductImage
+  productController.updateProduct
 );
 
-/**
- * PURCHASES (KIRIM) (ADMIN only)
- */
+
 
 // purchase (kirim) yaratish
 // purchase (kirim) yaratish
@@ -462,6 +456,7 @@ router.get(
   rRole("ADMIN"),
   withdrawalController.getWithdrawals
 );
+
 
 
 module.exports = router;
