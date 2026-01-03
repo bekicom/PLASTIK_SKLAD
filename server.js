@@ -58,7 +58,6 @@ io.on("connection", (socket) => {
   });
 });
 
-
 /**
  * MongoDB
  */

@@ -166,9 +166,11 @@ exports.createSale = async (req, res) => {
     // 2) fetch products
     const productIds = [...new Set(body.items.map((x) => String(x.productId)))];
 
-    const products = await Product.find({ _id: { $in: productIds } })
-      .select("_id name warehouse_currency qty bay_price ")
-      .session(session);
+   const products = await Product.find({ _id: { $in: productIds } })
+  .select("_id name unit warehouse_currency qty buy_price")
+  .session(session);
+
+    
 
     const pMap = new Map(products.map((p) => [String(p._id), p]));
 
@@ -232,22 +234,45 @@ exports.createSale = async (req, res) => {
     }
 
     // 6) build sale items with automatic warehouseId + currency
-  const items = body.items.map((it) => {
-    const p = pMap.get(String(it.productId));
-    const currency = p.warehouse_currency;
+ const items = body.items.map((it) => {
+   const p = pMap.get(String(it.productId));
+   const currency = p.warehouse_currency;
+   const warehouseId = wMap.get(currency);
 
-    return {
-      productId: it.productId,
-      nameSnapshot: p.name,
-      currency,
-      warehouseId: wMap.get(currency),
+   const qty = Number(it.qty);
+   const sellPrice = Number(it.price);
+   const buyPrice = Number(p.buy_price);
 
-      qty: it.qty,
+   if (!p.unit) {
+     throw new Error(`Product unit yo‘q: ${p.name}`);
+   }
 
-      sell_price: safeNumber(it.price), // 🔥 sotuv narxi
-      buy_price: safeNumber(p.buy_price), // 🔥 tannarx (snapshot)
-    };
-  });
+   return {
+     productId: p._id,
+
+     // ✅ TO‘LIQ PRODUCT SNAPSHOT (ASOSIY JOY)
+     productSnapshot: {
+       name: p.name,
+       model: p.model || null,
+       color: p.color || null,
+       category: p.category || null,
+       unit: p.unit,
+       images: p.images || [],
+     },
+
+     warehouseId,
+     currency,
+
+     qty,
+
+     // 🔥 MUHIM FIELDLAR
+     sell_price: sellPrice,
+     buy_price: buyPrice,
+
+     subtotal: +(qty * sellPrice).toFixed(2),
+   };
+ });
+
 
 
     const itemsCalculated = calcItemsSubtotals(items);
