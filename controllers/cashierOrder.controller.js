@@ -29,72 +29,99 @@ function normCurrency(c) {
 /**
  * ✅ Order’ni to‘liq qilib socket uchun tayyorlash
  */
-async function getOrderFull(orderId) {
-  const doc = await Order.findById(orderId)
-    .populate("agent_id", "name phone login")
-    .populate("customer_id", "name phone address note")
-    .lean();
+exports.getNewOrders = async (req, res) => {
+  try {
+    const { from, to, agent_id, customer_id } = req.query;
 
-  if (!doc) return null;
+    const filter = { status: "NEW" };
 
-  return {
-    _id: String(doc._id),
-    status: doc.status,
-    note: doc.note || null,
+    if (agent_id && mongoose.isValidObjectId(agent_id)) {
+      filter.agent_id = agent_id;
+    }
 
-    customer: doc.customer_id
-      ? {
-          _id: String(doc.customer_id._id),
-          name: doc.customer_id.name,
-          phone: doc.customer_id.phone,
-          address: doc.customer_id.address,
-          note: doc.customer_id.note,
-        }
-      : null,
+    if (customer_id && mongoose.isValidObjectId(customer_id)) {
+      filter.customer_id = customer_id;
+    }
 
-    agent: doc.agent_id
-      ? {
-          _id: String(doc.agent_id._id),
-          name: doc.agent_id.name,
-          phone: doc.agent_id.phone,
-          login: doc.agent_id.login,
-        }
-      : null,
+    const fromDate = parseDate(from, false);
+    const toDate = parseDate(to, true);
+    if (fromDate || toDate) {
+      filter.createdAt = {};
+      if (fromDate) filter.createdAt.$gte = fromDate;
+      if (toDate) filter.createdAt.$lte = toDate;
+    }
 
-    items: (doc.items || []).map((it) => ({
-      productId: String(it.product_id),
-      name: it.name_snapshot,
-      unit: it.unit_snapshot,
-      currency: it.currency_snapshot,
-      qty: Number(it.qty || 0),
-      price: Number(it.price_snapshot || 0),
-      subtotal: Number(it.subtotal || 0),
-    })),
+    const rows = await Order.find(filter)
+      .populate("agent_id", "name phone login")
+      .populate("customer_id", "name phone address note")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    totals: {
-      UZS: Number(doc.total_uzs || 0),
-      USD: Number(doc.total_usd || 0),
-    },
+    const items = rows.map((order) => ({
+      _id: order._id,
+      status: order.status,
+      createdAt: order.createdAt,
+      note: order.note || null,
 
-    createdAt: doc.createdAt,
-    updatedAt: doc.updatedAt,
+      agent: order.agent_id
+        ? {
+            _id: order.agent_id._id,
+            name: order.agent_id.name,
+            phone: order.agent_id.phone,
+            login: order.agent_id.login,
+          }
+        : null,
 
-    confirmedAt: doc.confirmedAt || null,
-    confirmedBy: doc.confirmedBy || null,
+      customer: order.customer_id
+        ? {
+            _id: order.customer_id._id,
+            name: order.customer_id.name,
+            phone: order.customer_id.phone,
+            address: order.customer_id.address,
+            note: order.customer_id.note,
+          }
+        : null,
 
-    canceledAt: doc.canceledAt || null,
-    canceledBy: doc.canceledBy || null,
-    cancelReason: doc.cancelReason || null,
-  };
-}
+      items: (order.items || []).map((it) => ({
+        productId: it.product_id,
 
-/* =======================
-   GET NEW ORDERS
-======================= */
-/**
- * GET /orders/new?from=&to=&agent_id=&customer_id=&page=&limit=
- * ADMIN/CASHIER
- */
+        // ✅ TO‘LIQ PRODUCT MA’LUMOT
+        product: {
+          name: it.product_snapshot?.name,
+          model: it.product_snapshot?.model,
+          color: it.product_snapshot?.color,
+          category: it.product_snapshot?.category,
+          unit: it.product_snapshot?.unit,
+          images: it.product_snapshot?.images || [],
+        },
+
+        currency: it.currency_snapshot,
+        qty: Number(it.qty),
+        price: Number(it.price_snapshot),
+        subtotal: Number(it.subtotal),
+      })),
+
+      totals: {
+        UZS: Number(order.total_uzs || 0),
+        USD: Number(order.total_usd || 0),
+      },
+    }));
+
+    return res.json({
+      ok: true,
+      total: items.length,
+      items,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
+  }
+};
+
+
 exports.getNewOrders = async (req, res) => {
   try {
     const { from, to, agent_id, customer_id } = req.query;
@@ -315,17 +342,7 @@ exports.confirmOrder = async (req, res) => {
   }
 };
 
-/* =======================
-   CANCEL ORDER
-======================= */
-/**
- * POST /orders/:id/cancel
- * ADMIN/CASHIER
- *
- * ✅ SOCKET:
- *  - order:updated (to‘liq order)
- *  - order:canceled (to‘liq order)
- */
+
 exports.cancelOrder = async (req, res) => {
   try {
     const cashierId = getUserId(req);

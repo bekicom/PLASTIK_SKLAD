@@ -127,18 +127,7 @@ async function generateInvoiceNo(session) {
   return `S-${year}-${seqStr}`;
 }
 
-/**
- * POST /sales/create
- * Body:
- * {
- *   customerId?: ObjectId,
- *   customerSnapshot?: { name, phone, address, note },
- *   items: [{ productId, qty, price }],
- *   discount?,
- *   payments: [{ currency: "UZS"|"USD", method: "CASH"|"CARD"|"TRANSFER", amount }],
- *   note?
- * }
- */
+
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -398,7 +387,7 @@ exports.getSales = async (req, res) => {
     const filter = {};
 
     if (req.query.status) {
-      filter.status = req.query.status;
+      filter.status = String(req.query.status).toUpperCase();
     }
 
     if (
@@ -410,13 +399,56 @@ exports.getSales = async (req, res) => {
 
     const rows = await Sale.find(filter)
       .sort({ createdAt: -1 })
-      .populate("customerId", "name phone")
+      .populate("customerId", "name phone address note")
       .lean();
+
+    const items = rows.map((sale) => ({
+      _id: sale._id,
+      invoiceNo: sale.invoiceNo,
+      status: sale.status,
+      createdAt: sale.createdAt,
+      canceledAt: sale.canceledAt || null,
+
+      customer: sale.customerId
+        ? {
+            _id: sale.customerId._id,
+            name: sale.customerId.name,
+            phone: sale.customerId.phone,
+            address: sale.customerId.address,
+            note: sale.customerId.note,
+          }
+        : sale.customerSnapshot || null,
+
+      items: (sale.items || []).map((it) => ({
+        productId: it.productId,
+
+        // ✅ TO‘LIQ PRODUCT MA’LUMOT
+        product: {
+          name: it.productSnapshot?.name,
+          model: it.productSnapshot?.model,
+          color: it.productSnapshot?.color,
+          category: it.productSnapshot?.category,
+          unit: it.productSnapshot?.unit,
+          images: it.productSnapshot?.images || [],
+        },
+
+        currency: it.currency,
+        qty: Number(it.qty),
+        sell_price: Number(it.sell_price),
+        buy_price: Number(it.buy_price),
+        subtotal: Number(it.subtotal),
+      })),
+
+      totals: sale.totals,
+      currencyTotals: sale.currencyTotals,
+      payments: sale.payments,
+      note: sale.note || null,
+    }));
 
     return res.json({
       ok: true,
-      total: rows.length,
-      items: rows,
+      total: items.length,
+      items,
     });
   } catch (err) {
     return res.status(500).json({
@@ -563,3 +595,4 @@ exports.searchSalesByProduct = async (req, res) => {
     });
   }
 };
+
