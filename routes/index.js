@@ -212,8 +212,6 @@ router.put(
   productController.updateProduct
 );
 
-
-
 // purchase (kirim) yaratish
 // purchase (kirim) yaratish
 router.post(
@@ -230,8 +228,6 @@ router.post(
   uploadProductImages.single("image"),
   purchaseController.addProductImage
 );
-
-
 
 /**
  * CUSTOMERS (HOZMAKLAR)
@@ -438,7 +434,6 @@ router.put("/expenses/:id", rAuth, expenseController.updateExpense);
 router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
 router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
 
-
 /**
  * INVESTOR WITHDRAWALS (FOYDADAN AYRILMAYDI)
  */
@@ -456,7 +451,5 @@ router.get(
   rRole("ADMIN"),
   withdrawalController.getWithdrawals
 );
-
-
 
 module.exports = router;
