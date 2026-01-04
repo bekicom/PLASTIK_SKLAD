@@ -6,6 +6,8 @@ const Order = require("../orders/Order");
 const Customer = require("../Customer/Customer");
 const Supplier = require("../suppliers/Supplier");
 const Product = require("../products/Product");
+const CashIn = require("../cashIn/CashIn");
+const Withdrawal = require("../withdrawals/Withdrawal");
 
 /* =====================
    HELPERS
@@ -75,7 +77,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   /* =====================
-     PROFIT
+     PROFIT (GROSS)
   ===================== */
   const profitAgg = await Sale.aggregate([
     ...salesPipeline,
@@ -138,10 +140,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   for (const r of expensesAgg) {
-    if (r._id === "UZS")
-      expenses.UZS = { total: r.total || 0, count: r.count || 0 };
-    if (r._id === "USD")
-      expenses.USD = { total: r.total || 0, count: r.count || 0 };
+    if (r._id === "UZS") expenses.UZS = r;
+    if (r._id === "USD") expenses.USD = r;
   }
 
   /* =====================
@@ -165,101 +165,150 @@ async function getOverview({ from, to, tz, warehouseId }) {
     CANCELED: { count: 0, total_uzs: 0, total_usd: 0 },
   };
 
-  for (const r of ordersAgg) {
-    if (orders[r._id]) {
-      orders[r._id] = {
-        count: r.count || 0,
-        total_uzs: r.total_uzs || 0,
-        total_usd: r.total_usd || 0,
-      };
-    }
+  for (const o of ordersAgg) {
+    if (orders[o._id]) orders[o._id] = o;
   }
 
   /* =====================
-     SUPPLIER BALANCE
+     BALANCES (CUSTOMER / SUPPLIER)
   ===================== */
-  const suppliers = await Supplier.find({}, { balance: 1 }).lean();
+  const balances = {
+    customers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
+    suppliers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
+  };
 
-  let supplierDebtUZS = 0;
-  let supplierDebtUSD = 0;
-  let supplierPrepaidUZS = 0;
-  let supplierPrepaidUSD = 0;
-
-  for (const s of suppliers) {
-    const uzs = Number(s.balance?.UZS || 0);
-    const usd = Number(s.balance?.USD || 0);
-
-    if (uzs > 0) supplierDebtUZS += uzs;
-    if (uzs < 0) supplierPrepaidUZS += Math.abs(uzs);
-
-    if (usd > 0) supplierDebtUSD += usd;
-    if (usd < 0) supplierPrepaidUSD += Math.abs(usd);
-  }
-
-  /* =====================
-     CUSTOMER BALANCE
-  ===================== */
   const customers = await Customer.find(
     { isActive: true },
     { balance: 1 }
   ).lean();
-
-  let customerDebtUZS = 0;
-  let customerDebtUSD = 0;
-  let customerPrepaidUZS = 0;
-  let customerPrepaidUSD = 0;
-
   for (const c of customers) {
-    const uzs = Number(c.balance?.UZS || 0);
-    const usd = Number(c.balance?.USD || 0);
+    if (c.balance?.UZS > 0) balances.customers.debt.UZS += c.balance.UZS;
+    if (c.balance?.UZS < 0)
+      balances.customers.prepaid.UZS += Math.abs(c.balance.UZS);
+    if (c.balance?.USD > 0) balances.customers.debt.USD += c.balance.USD;
+    if (c.balance?.USD < 0)
+      balances.customers.prepaid.USD += Math.abs(c.balance.USD);
+  }
 
-    if (uzs > 0) customerDebtUZS += uzs;
-    if (uzs < 0) customerPrepaidUZS += Math.abs(uzs);
-
-    if (usd > 0) customerDebtUSD += usd;
-    if (usd < 0) customerPrepaidUSD += Math.abs(usd);
+  const suppliers = await Supplier.find({}, { balance: 1 }).lean();
+  for (const s of suppliers) {
+    if (s.balance?.UZS > 0) balances.suppliers.debt.UZS += s.balance.UZS;
+    if (s.balance?.UZS < 0)
+      balances.suppliers.prepaid.UZS += Math.abs(s.balance.UZS);
+    if (s.balance?.USD > 0) balances.suppliers.debt.USD += s.balance.USD;
+    if (s.balance?.USD < 0)
+      balances.suppliers.prepaid.USD += Math.abs(s.balance.USD);
   }
 
   /* =====================
-     CASHFLOW
+     CASH-IN (CUSTOMER / SUPPLIER)
+===================== */
+  const cashInAgg = await CashIn.aggregate([
+    {
+      $match: {
+        ...buildDateMatch(from, to, "createdAt"),
+        amount: { $gt: 0 },
+      },
+    },
+    {
+      $group: {
+        _id: "$currency",
+        customer_in: {
+          $sum: {
+            $cond: [{ $eq: ["$target_type", "CUSTOMER"] }, "$amount", 0],
+          },
+        },
+        supplier_out: {
+          $sum: {
+            $cond: [{ $eq: ["$target_type", "SUPPLIER"] }, "$amount", 0],
+          },
+        },
+      },
+    },
+  ]);
+
+  const cashInFlow = {
+    UZS: { in: 0, out: 0 },
+    USD: { in: 0, out: 0 },
+  };
+
+  for (const r of cashInAgg) {
+    if (r._id === "UZS") {
+      cashInFlow.UZS.in = r.customer_in || 0;
+      cashInFlow.UZS.out = r.supplier_out || 0;
+    }
+    if (r._id === "USD") {
+      cashInFlow.USD.in = r.customer_in || 0;
+      cashInFlow.USD.out = r.supplier_out || 0;
+    }
+  }
+
+  /* =====================
+     INVESTOR WITHDRAWALS
+  ===================== */
+  const withdrawalsAgg = await Withdrawal.aggregate([
+    { $match: buildDateMatch(from, to, "takenAt") },
+    {
+      $group: {
+        _id: "$currency",
+        total: { $sum: "$amount" },
+      },
+    },
+  ]);
+
+  const withdrawals = { UZS: 0, USD: 0 };
+  for (const w of withdrawalsAgg) {
+    if (w._id === "UZS") withdrawals.UZS = w.total || 0;
+    if (w._id === "USD") withdrawals.USD = w.total || 0;
+  }
+
+  /* =====================
+     CASHFLOW (FINAL, REAL)
   ===================== */
   const cashflow = {
-    UZS: (sales.uzs_paid || 0) - (expenses.UZS.total || 0),
-    USD: (sales.usd_paid || 0) - (expenses.USD.total || 0),
+    UZS:
+      (sales.uzs_paid || 0) +
+      cashInFlow.UZS.in -
+      cashInFlow.UZS.out -
+      (expenses.UZS.total || 0) -
+      withdrawals.UZS,
+
+    USD:
+      (sales.usd_paid || 0) +
+      cashInFlow.USD.in -
+      cashInFlow.USD.out -
+      (expenses.USD.total || 0) -
+      withdrawals.USD,
   };
+
   const net_profit = {
     UZS: (profit.UZS || 0) - (expenses.UZS.total || 0),
     USD: (profit.USD || 0) - (expenses.USD.total || 0),
   };
 
- return {
-   range: { from, to, tz, warehouseId },
+  return {
+    range: { from, to, tz, warehouseId },
 
-   sales,
+    sales,
 
-   profit: {
-     gross: profit, // savdodan foyda
-     net: net_profit, // 🔥 rasxoddan keyingi real foyda
-   },
+    profit: {
+      gross: profit,
+      net: net_profit,
+    },
 
-   expenses,
-   orders,
+    expenses,
+    orders,
+    balances,
 
-   balances: {
-     suppliers: {
-       debt: { UZS: supplierDebtUZS, USD: supplierDebtUSD },
-       prepaid: { UZS: supplierPrepaidUZS, USD: supplierPrepaidUSD },
-     },
-     customers: {
-       receivable: { UZS: customerDebtUZS, USD: customerDebtUSD },
-       prepaid: { UZS: customerPrepaidUZS, USD: customerPrepaidUSD },
-     },
-   },
-
-   cashflow,
- };
-
-
+    cashflow: {
+      total: cashflow,
+      breakdown: {
+        cash_in: cashInFlow,
+        expenses,
+        withdrawals,
+      },
+    },
+  };
 }
 
 /* =====================
@@ -268,140 +317,49 @@ async function getOverview({ from, to, tz, warehouseId }) {
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
 
-  const sales = await Sale.aggregate([
-    {
-      $match: { ...buildDateMatch(from, to, "createdAt"), status: "COMPLETED" },
-    },
+  return Sale.aggregate([
+    { $match: { ...buildDateMatch(from, to), status: "COMPLETED" } },
     {
       $group: {
         _id: { $dateTrunc: { date: "$createdAt", unit, timezone: tz } },
-        count: { $sum: 1 },
-        uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
-        usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
+        uzs: { $sum: "$currencyTotals.UZS.paidAmount" },
+        usd: { $sum: "$currencyTotals.USD.paidAmount" },
       },
     },
     { $sort: { _id: 1 } },
-    {
-      $project: {
-        _id: 0,
-        date: "$_id",
-        count: 1,
-        uzs_total: 1,
-        usd_total: 1,
-      },
-    },
   ]);
-
-  return { group, sales };
 }
 
 /* =====================
-   TOP
+   TOP PRODUCTS
 ===================== */
-async function getTop({ from, to, tz, type, limit }) {
-  if (type === "customers") {
-    return Customer.find({ isActive: true })
-      .sort({ "balance.UZS": -1, "balance.USD": -1 })
-      .limit(limit)
-      .select("name phone balance")
-      .lean();
-  }
-
-  // 🔥 PRODUCTS TOP
+async function getTop({ from, to, limit }) {
   return Sale.aggregate([
-    {
-      $match: {
-        ...buildDateMatch(from, to, "createdAt"),
-        status: "COMPLETED",
-      },
-    },
+    { $match: { ...buildDateMatch(from, to), status: "COMPLETED" } },
     { $unwind: "$items" },
-
-    // 1️⃣ GROUP BY PRODUCT
     {
       $group: {
         _id: "$items.productId",
         qty: { $sum: "$items.qty" },
-
-        uzs_sum: {
-          $sum: {
-            $cond: [{ $eq: ["$items.currency", "UZS"] }, "$items.subtotal", 0],
-          },
-        },
-
-        usd_sum: {
-          $sum: {
-            $cond: [{ $eq: ["$items.currency", "USD"] }, "$items.subtotal", 0],
-          },
-        },
       },
     },
-
-    // 2️⃣ PRODUCT LOOKUP
-    {
-      $lookup: {
-        from: "products", // collection nomi
-        localField: "_id",
-        foreignField: "_id",
-        as: "product",
-      },
-    },
-
-    // 3️⃣ ARRAY → OBJECT
-    { $unwind: "$product" },
-
-    // 4️⃣ SORT
-    { $sort: { uzs_sum: -1, usd_sum: -1, qty: -1 } },
-
-    // 5️⃣ LIMIT
+    { $sort: { qty: -1 } },
     { $limit: limit },
-
-    // 6️⃣ FINAL FORMAT
-    {
-      $project: {
-        _id: 0,
-        product_id: "$product._id",
-        name: "$product.name",
-        model: "$product.model",
-        category: "$product.category",
-        unit: "$product.unit",
-
-        qty: 1,
-        uzs_sum: 1,
-        usd_sum: 1,
-      },
-    },
   ]);
 }
-
 
 /* =====================
    STOCK
 ===================== */
 async function getStock() {
-  const byCurrency = await Product.aggregate([
+  return Product.aggregate([
     {
       $group: {
         _id: "$warehouse_currency",
-        sku: { $sum: 1 },
         total_qty: { $sum: "$qty" },
-        valuation_buy: { $sum: { $multiply: ["$qty", "$buy_price"] } },
-        valuation_sell: { $sum: { $multiply: ["$qty", "$sell_price"] } },
-      },
-    },
-    {
-      $project: {
-        _id: 0,
-        currency: "$_id",
-        sku: 1,
-        total_qty: 1,
-        valuation_buy: 1,
-        valuation_sell: 1,
       },
     },
   ]);
-
-  return { byCurrency };
 }
 
 module.exports = {

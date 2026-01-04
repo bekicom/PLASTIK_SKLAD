@@ -16,10 +16,9 @@ const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
-
 const withdrawalController = require("../controllers/withdrawal.controller");
+const cashInController = require("../controllers/cashIn.controller");
 
-console.log("UPLOAD:", uploadProductImages);
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -457,5 +456,23 @@ router.get(
   rRole("ADMIN"),
   withdrawalController.getWithdrawals
 );
+
+// 🔥 PUL KIRIM
+router.post(
+  "/cash-in",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashInController.createCashIn
+);
+
+
+
+router.get(
+  "/cash-in/report",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashInController.getCashInReportAll
+);
+
 
 module.exports = router;
