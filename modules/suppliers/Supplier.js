@@ -18,7 +18,7 @@ const supplierSchema = new mongoose.Schema(
         amount: { type: Number, required: true }, // har doim musbat
         direction: {
           type: String,
-          enum: ["DEBT", "PREPAYMENT"],
+          enum: ["DEBT", "PAYMENT", "PREPAYMENT"],
           required: true,
         },
         note: String,

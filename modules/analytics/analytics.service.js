@@ -7,6 +7,9 @@ const Customer = require("../Customer/Customer");
 const Supplier = require("../suppliers/Supplier");
 const Product = require("../products/Product");
 
+/* =====================
+   HELPERS
+===================== */
 function buildDateMatch(from, to, field = "createdAt") {
   const m = {};
   if (from || to) {
@@ -17,21 +20,33 @@ function buildDateMatch(from, to, field = "createdAt") {
   return m;
 }
 
+/* =====================
+   OVERVIEW (DASHBOARD)
+===================== */
 async function getOverview({ from, to, tz, warehouseId }) {
   /* =====================
-     SALES SUMMARY
+     SALES
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
     status: "COMPLETED",
   };
 
+  let salesPipeline = [{ $match: saleMatch }];
+
   if (warehouseId && mongoose.isValidObjectId(warehouseId)) {
-    saleMatch["items.warehouseId"] = new mongoose.Types.ObjectId(warehouseId);
+    salesPipeline.push(
+      { $unwind: "$items" },
+      {
+        $match: {
+          "items.warehouseId": new mongoose.Types.ObjectId(warehouseId),
+        },
+      }
+    );
   }
 
   const salesAgg = await Sale.aggregate([
-    { $match: saleMatch },
+    ...salesPipeline,
     {
       $group: {
         _id: null,
@@ -63,7 +78,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
      PROFIT
   ===================== */
   const profitAgg = await Sale.aggregate([
-    { $match: saleMatch },
+    ...salesPipeline,
     { $unwind: "$items" },
     {
       $group: {
@@ -117,7 +132,11 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   ]);
 
-  const expenses = { UZS: { total: 0, count: 0 }, USD: { total: 0, count: 0 } };
+  const expenses = {
+    UZS: { total: 0, count: 0 },
+    USD: { total: 0, count: 0 },
+  };
+
   for (const r of expensesAgg) {
     if (r._id === "UZS")
       expenses.UZS = { total: r.total || 0, count: r.count || 0 };
@@ -145,6 +164,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
     CONFIRMED: { count: 0, total_uzs: 0, total_usd: 0 },
     CANCELED: { count: 0, total_uzs: 0, total_usd: 0 },
   };
+
   for (const r of ordersAgg) {
     if (orders[r._id]) {
       orders[r._id] = {
@@ -186,13 +206,18 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   let customerDebtUZS = 0;
   let customerDebtUSD = 0;
+  let customerPrepaidUZS = 0;
+  let customerPrepaidUSD = 0;
 
   for (const c of customers) {
     const uzs = Number(c.balance?.UZS || 0);
     const usd = Number(c.balance?.USD || 0);
 
     if (uzs > 0) customerDebtUZS += uzs;
+    if (uzs < 0) customerPrepaidUZS += Math.abs(uzs);
+
     if (usd > 0) customerDebtUSD += usd;
+    if (usd < 0) customerPrepaidUSD += Math.abs(usd);
   }
 
   /* =====================
@@ -218,6 +243,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
       },
       customers: {
         receivable: { UZS: customerDebtUZS, USD: customerDebtUSD },
+        prepaid: { UZS: customerPrepaidUZS, USD: customerPrepaidUSD },
       },
     },
 
@@ -226,10 +252,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
 }
 
 /* =====================
-   QOLGAN FUNKSIYALAR
-   (deyarli o‘zgarmadi)
+   TIME SERIES
 ===================== */
-
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
 
@@ -247,17 +271,26 @@ async function getTimeSeries({ from, to, tz, group }) {
     },
     { $sort: { _id: 1 } },
     {
-      $project: { _id: 0, date: "$_id", count: 1, uzs_total: 1, usd_total: 1 },
+      $project: {
+        _id: 0,
+        date: "$_id",
+        count: 1,
+        uzs_total: 1,
+        usd_total: 1,
+      },
     },
   ]);
 
   return { group, sales };
 }
 
+/* =====================
+   TOP
+===================== */
 async function getTop({ from, to, tz, type, limit }) {
   if (type === "customers") {
     return Customer.find({ isActive: true })
-      .sort({ "balance.UZS": -1, "balance.USD": -1 })
+      .sort({ "balance.UZS": -1, "balance.USD": -1, createdAt: -1 })
       .limit(limit)
       .select("name phone balance")
       .lean();
@@ -289,6 +322,9 @@ async function getTop({ from, to, tz, type, limit }) {
   ]);
 }
 
+/* =====================
+   STOCK
+===================== */
 async function getStock() {
   const byCurrency = await Product.aggregate([
     {

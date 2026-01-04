@@ -1,6 +1,8 @@
 const mongoose = require("mongoose");
 const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
+const Order = require("../modules/orders/Order");
+
 
 /* =======================
    HELPERS
@@ -405,87 +407,122 @@ exports.getCustomerSummary = async (req, res) => {
         .json({ ok: false, message: "customer id noto‘g‘ri" });
     }
 
-    const customer = await Customer.findById(id).select(
-      "name phone address note createdAt"
-    );
+    /* =========================
+       1. CUSTOMER
+    ========================= */
+    const customer = await Customer.findById(id)
+      .select("name phone address note createdAt balance")
+      .lean();
+
     if (!customer) {
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
     }
 
-    // 1) Agent orderlar bo‘yicha summary
+    /* =========================
+       2. ORDERS SUMMARY
+    ========================= */
     const [orderAgg] = await Order.aggregate([
-      { $match: { customer_id: new mongoose.Types.ObjectId(id) } },
+      { $match: { customerId: new mongoose.Types.ObjectId(id) } },
       {
         $group: {
-          _id: "$customer_id",
+          _id: "$customerId",
           ordersCount: { $sum: 1 },
-          newCount: { $sum: { $cond: [{ $eq: ["$status", "NEW"] }, 1, 0] } },
+          newCount: {
+            $sum: { $cond: [{ $eq: ["$status", "NEW"] }, 1, 0] },
+          },
           confirmedCount: {
             $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
           },
           canceledCount: {
             $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] },
           },
-
           totalUZS: { $sum: { $ifNull: ["$total_uzs", 0] } },
           totalUSD: { $sum: { $ifNull: ["$total_usd", 0] } },
-
           lastOrderAt: { $max: "$createdAt" },
         },
       },
     ]);
 
-    // 2) Sales bo‘yicha summary (agar Sale modelda customer_id bo‘lsa)
+    /* =========================
+       3. SALES SUMMARY
+    ========================= */
     const [saleAgg] = await Sale.aggregate([
-      { $match: { customer_id: new mongoose.Types.ObjectId(id) } },
+      { $match: { customerId: new mongoose.Types.ObjectId(id) } },
       {
         $group: {
-          _id: "$customer_id",
+          _id: "$customerId",
           salesCount: { $sum: 1 },
-          // ⚠️ Sale modelingizda total field nomi boshqacha bo‘lsa o‘zgartiring
-          salesTotalSum: { $sum: { $ifNull: ["$total", 0] } },
+          uzsTotal: {
+            $sum: { $ifNull: ["$currencyTotals.UZS.grandTotal", 0] },
+          },
+          usdTotal: {
+            $sum: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
+          },
           lastSaleAt: { $max: "$createdAt" },
         },
       },
     ]);
 
-    // 3) Oxirgi orderlar ro‘yxati (history)
-    const lastOrders = await Order.find({ customer_id: id })
-      .populate("agent_id", "name phone login")
+    /* =========================
+       4. LAST SALES (HISTORY)
+    ========================= */
+    const lastSales = await Sale.find({ customerId: id })
       .sort({ createdAt: -1 })
-      .limit(20);
+      .limit(20)
+      .select("invoiceNo createdAt totals currencyTotals status payments note")
+      .lean();
 
+    /* =========================
+       5. RESPONSE
+    ========================= */
     return res.json({
       ok: true,
       data: {
-        customer,
+        customer: {
+          _id: customer._id,
+          name: customer.name,
+          phone: customer.phone,
+          address: customer.address,
+          note: customer.note,
+          createdAt: customer.createdAt,
+          balance: customer.balance,
+        },
+
         orders: {
-          ordersCount: orderAgg?.ordersCount || 0,
-          newCount: orderAgg?.newCount || 0,
-          confirmedCount: orderAgg?.confirmedCount || 0,
-          canceledCount: orderAgg?.canceledCount || 0,
+          total: orderAgg?.ordersCount || 0,
+          NEW: orderAgg?.newCount || 0,
+          CONFIRMED: orderAgg?.confirmedCount || 0,
+          CANCELED: orderAgg?.canceledCount || 0,
           totals: {
             UZS: orderAgg?.totalUZS || 0,
             USD: orderAgg?.totalUSD || 0,
           },
           lastOrderAt: orderAgg?.lastOrderAt || null,
         },
+
         sales: {
-          salesCount: saleAgg?.salesCount || 0,
-          total: saleAgg?.salesTotalSum || 0,
+          total: saleAgg?.salesCount || 0,
+          totals: {
+            UZS: saleAgg?.uzsTotal || 0,
+            USD: saleAgg?.usdTotal || 0,
+          },
           lastSaleAt: saleAgg?.lastSaleAt || null,
         },
+
         history: {
-          lastOrders,
+          lastSales,
         },
       },
     });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Customer summary olishda xato",
+      error: error.message,
+    });
   }
 };
+
 
 exports.payCustomerDebt = async (req, res) => {
   const session = await mongoose.startSession();
@@ -505,9 +542,11 @@ exports.payCustomerDebt = async (req, res) => {
         throw new Error("currency noto‘g‘ri (UZS/USD)");
       }
 
-      const payAmount = Number(amount);
-      if (!Number.isFinite(payAmount) || payAmount <= 0) {
-        throw new Error("amount noto‘g‘ri (0 dan katta bo‘lsin)");
+      const delta = Number(amount);
+
+      // 🔥 FAQAT 0 BO‘LMASIN
+      if (!Number.isFinite(delta) || delta === 0) {
+        throw new Error("amount 0 ga teng bo‘lmasin");
       }
 
       const customer = await Customer.findById(id).session(session);
@@ -515,22 +554,19 @@ exports.payCustomerDebt = async (req, res) => {
 
       /* =========================
          1. OLDINGI BALANCE
-         (+) qarz, (-) avans
+         + → qarz
+         - → avans
       ========================= */
       const prevBalance = Number(customer.balance?.[currency] || 0);
       const currentDebt = Math.max(0, prevBalance);
 
       /* =========================
-         2. QARZGA QANCHA TUSHADI
+         2. AGAR amount > 0 bo‘lsa
+         → qarz yopiladi (FIFO)
       ========================= */
-      const applied = Math.min(payAmount, currentDebt);
-      const change = Math.max(0, payAmount - currentDebt); // avans bo‘ladigan qism
+      if (delta > 0 && currentDebt > 0) {
+        const applied = Math.min(delta, currentDebt);
 
-      /* =========================
-         3. FIFO SALE YOPISH
-         (faqat qarz bo‘lgan qismiga)
-      ========================= */
-      if (applied > 0) {
         const debtField = `currencyTotals.${currency}.debtAmount`;
         const paidField = `currencyTotals.${currency}.paidAmount`;
 
@@ -578,55 +614,41 @@ exports.payCustomerDebt = async (req, res) => {
       }
 
       /* =========================
-         4. CUSTOMER BALANCE
-         🔥 ASOSIY FIX
+         3. CUSTOMER BALANCE
+         🔥 ASOSIY FORMULA
       ========================= */
-      customer.balance[currency] = prevBalance - payAmount;
-      // natija:
-      // >0  → qarz
-      // =0  → toza
-      // <0  → avans
+      customer.balance[currency] = prevBalance - delta;
+      // delta > 0  → balance kamayadi
+      // delta < 0  → balance oshadi
 
       /* =========================
-         5. PAYMENT HISTORY
+         4. PAYMENT HISTORY
       ========================= */
-      if (applied > 0) {
-        customer.payment_history.push({
-          currency,
-          amount: applied,
-          direction: "PAYMENT",
-          note: note || "Qarz to‘lovi",
-          date: new Date(),
-        });
-      }
-
-      if (change > 0) {
-        customer.payment_history.push({
-          currency,
-          amount: change,
-          direction: "PREPAYMENT",
-          note: note || "Avans",
-          date: new Date(),
-        });
-      }
+      customer.payment_history.push({
+        currency,
+        amount: Math.abs(delta),
+        direction: delta > 0 ? "PAYMENT" : "DEBT",
+        note:
+          note ||
+          (delta > 0 ? "Qarz to‘lovi / avans" : "Mijozdan qarz yozildi"),
+        date: new Date(),
+      });
 
       await customer.save({ session });
 
       result = {
         ok: true,
-        message: "To‘lov qabul qilindi",
+        message: "Customer balance yangilandi",
         customer: {
           id: customer._id,
           name: customer.name,
           balance: customer.balance,
         },
-        payment: {
+        change: {
           currency,
-          requested_amount: payAmount,
-          applied_amount: applied,
-          change,
-          previous_debt: currentDebt,
-          remaining_debt: Math.max(0, currentDebt - applied),
+          amount: delta,
+          previous_balance: prevBalance,
+          current_balance: customer.balance[currency],
         },
       };
     });

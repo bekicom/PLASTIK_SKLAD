@@ -376,7 +376,14 @@ exports.getSupplierDetail = async (req, res) => {
 exports.paySupplierDebt = async (req, res) => {
   try {
     const { id } = req.params;
-    const { amount, currency = "UZS", note } = req.body;
+    const { amount, currency = "UZS", note } = req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "supplier id noto‘g‘ri",
+      });
+    }
 
     if (!["UZS", "USD"].includes(currency)) {
       return res.status(400).json({
@@ -385,43 +392,49 @@ exports.paySupplierDebt = async (req, res) => {
       });
     }
 
-    const payAmount = Number(amount);
-    if (!Number.isFinite(payAmount) || payAmount <= 0) {
+    const delta = Number(amount);
+
+    // 🔥 FAQAT 0 BO‘LMASIN
+    if (!Number.isFinite(delta) || delta === 0) {
       return res.status(400).json({
         ok: false,
-        message: "amount noto‘g‘ri (0 dan katta bo‘lsin)",
+        message: "amount 0 ga teng bo‘lmasin",
       });
     }
 
     const supplier = await Supplier.findById(id);
     if (!supplier) {
-      return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
-    }
-
-    const currentBalance = Number(supplier.balance[currency] || 0);
-
-    // ❗ Agar qarz bo‘lmasa
-    if (currentBalance <= 0) {
-      return res.status(400).json({
+      return res.status(404).json({
         ok: false,
-        message: `Bu zavodda ${currency} bo‘yicha qarz yo‘q`,
+        message: "Zavod topilmadi",
       });
     }
 
-    // qancha yopiladi
-    const applied = Math.min(payAmount, currentBalance);
-    const change = Math.max(0, payAmount - currentBalance);
+    /* =========================
+       1. OLDINGI BALANCE
+       + → qarz
+       - → avans
+    ========================= */
+    const prevBalance = Number(supplier.balance?.[currency] || 0);
 
-    // 🔥 ASOSIY QATOR
-    supplier.balance[currency] = currentBalance - applied;
+    /* =========================
+       2. YANGI BALANCE (ASOSIY FORMULA 🔥)
+       amount > 0  → balance kamayadi
+       amount < 0  → balance oshadi
+    ========================= */
+    const newBalance = prevBalance - delta;
+    supplier.balance[currency] = newBalance;
 
+    /* =========================
+       3. PAYMENT HISTORY
+    ========================= */
     supplier.payment_history.push({
       currency,
-      amount: applied,
-      direction: "PREPAYMENT",
+      amount: Math.abs(delta),
+      direction: delta > 0 ? "PREPAYMENT" : "DEBT",
       note:
-        (note || "Zavodga qarz to‘lovi") +
-        (change > 0 ? ` (Ortiqcha: ${change})` : ""),
+        note ||
+        (delta > 0 ? "Zavodga to‘lov / avans" : "Zavoddan qarz yozildi"),
       date: new Date(),
     });
 
@@ -429,19 +442,18 @@ exports.paySupplierDebt = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Qarz to‘landi",
+      message: "Supplier balance yangilandi",
       supplier: {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
         balance: supplier.balance,
       },
-      payment: {
+      change: {
         currency,
-        paid_amount: applied,
-        previous_balance: currentBalance,
-        remaining_balance: supplier.balance[currency],
-        change,
+        amount: delta,
+        previous_balance: prevBalance,
+        current_balance: newBalance,
       },
     });
   } catch (error) {
@@ -452,6 +464,8 @@ exports.paySupplierDebt = async (req, res) => {
     });
   }
 };
+
+
 
 
 exports.updateSupplierBalance = async (req, res) => {
