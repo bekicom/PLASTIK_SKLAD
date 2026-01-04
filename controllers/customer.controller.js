@@ -89,14 +89,8 @@ exports.createCustomer = async (req, res) => {
 ======================= */
 exports.getCustomers = async (req, res) => {
   try {
-    const page = Math.max(1, parseInt(req.query.page || "1", 10));
-    const limit = Math.min(
-      100,
-      Math.max(1, parseInt(req.query.limit || "20", 10))
-    );
-    const skip = (page - 1) * limit;
-
     const filter = {};
+
     if (req.query.isActive === "true") filter.isActive = true;
     if (req.query.isActive === "false") filter.isActive = false;
 
@@ -105,29 +99,33 @@ exports.getCustomers = async (req, res) => {
       filter.$or = [{ name: r }, { phone: r }];
     }
 
-    const [items, total] = await Promise.all([
-      Customer.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Customer.countDocuments(filter),
-    ]);
+    const items = await Customer.find(filter).sort({ createdAt: -1 }).lean();
 
-    let totals = {
+    const total = items.length;
+
+    // 🔥 BALANCE ASOSIDA TOTALS
+    const totals = {
       debt: { UZS: 0, USD: 0 },
       prepaid: { UZS: 0, USD: 0 },
     };
 
     items.forEach((c) => {
-      if (c.balance?.UZS > 0) totals.debt.UZS += c.balance.UZS;
-      if (c.balance?.UZS < 0) totals.prepaid.UZS += Math.abs(c.balance.UZS);
+      const uzs = Number(c.balance?.UZS || 0);
+      const usd = Number(c.balance?.USD || 0);
 
-      if (c.balance?.USD > 0) totals.debt.USD += c.balance.USD;
-      if (c.balance?.USD < 0) totals.prepaid.USD += Math.abs(c.balance.USD);
+      if (uzs > 0) totals.debt.UZS += uzs;
+      if (uzs < 0) totals.prepaid.UZS += Math.abs(uzs);
+
+      if (usd > 0) totals.debt.USD += usd;
+      if (usd < 0) totals.prepaid.USD += Math.abs(usd);
     });
 
-    return res.json({ ok: true, page, limit, total, totals, items });
+    return res.json({
+      ok: true,
+      total,
+      totals,
+      items,
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,
@@ -136,6 +134,9 @@ exports.getCustomers = async (req, res) => {
     });
   }
 };
+
+
+
 
 /* =======================
    GET CUSTOMER BY ID
@@ -490,17 +491,19 @@ exports.payCustomerDebt = async (req, res) => {
   const session = await mongoose.startSession();
 
   try {
-    let out = null;
+    let result = null;
 
     await session.withTransaction(async () => {
       const { id } = req.params;
       const { amount, currency = "UZS", note } = req.body || {};
-      const userId = req.user?._id || req.user?.id || req.userId;
 
-      if (!mongoose.isValidObjectId(id))
+      if (!mongoose.isValidObjectId(id)) {
         throw new Error("customer id noto‘g‘ri");
-      if (!["UZS", "USD"].includes(currency))
+      }
+
+      if (!["UZS", "USD"].includes(currency)) {
         throw new Error("currency noto‘g‘ri (UZS/USD)");
+      }
 
       const payAmount = Number(amount);
       if (!Number.isFinite(payAmount) || payAmount <= 0) {
@@ -510,147 +513,133 @@ exports.payCustomerDebt = async (req, res) => {
       const customer = await Customer.findById(id).session(session);
       if (!customer) throw new Error("Customer topilmadi");
 
-      // ✅ Sale bo‘yicha match (SIZDA customerId)
-      const matchBase = {
-        customerId: new mongoose.Types.ObjectId(id),
-        status: "COMPLETED",
-      };
+      /* =========================
+         1. OLDINGI BALANCE
+         (+) qarz, (-) avans
+      ========================= */
+      const prevBalance = Number(customer.balance?.[currency] || 0);
+      const currentDebt = Math.max(0, prevBalance);
 
-      const debtPath = `$currencyTotals.${currency}.debtAmount`;
-      const paidPath = `$currencyTotals.${currency}.paidAmount`;
-      const grandPath = `$currencyTotals.${currency}.grandTotal`;
+      /* =========================
+         2. QARZGA QANCHA TUSHADI
+      ========================= */
+      const applied = Math.min(payAmount, currentDebt);
+      const change = Math.max(0, payAmount - currentDebt); // avans bo‘ladigan qism
 
-      // ✅ Avval umumiy qarzni Sale’dan hisoblaymiz
-      const [sumAgg] = await Sale.aggregate([
-        { $match: matchBase },
-        {
-          $group: {
-            _id: null,
-            grand: { $sum: { $ifNull: [grandPath, 0] } },
-            paid: { $sum: { $ifNull: [paidPath, 0] } },
-            debt: { $sum: { $ifNull: [debtPath, 0] } },
-            salesCount: { $sum: 1 },
-          },
-        },
-      ]).session(session);
+      /* =========================
+         3. FIFO SALE YOPISH
+         (faqat qarz bo‘lgan qismiga)
+      ========================= */
+      if (applied > 0) {
+        const debtField = `currencyTotals.${currency}.debtAmount`;
+        const paidField = `currencyTotals.${currency}.paidAmount`;
 
-      const currentDebt = safeNum(sumAgg?.debt, 0);
-      if (currentDebt <= 0)
-        throw new Error(`Bu hozmakda ${currency} qarz yo‘q`);
+        const sales = await Sale.find({
+          customerId: customer._id,
+          status: "COMPLETED",
+          [debtField]: { $gt: 0 },
+        })
+          .sort({ createdAt: 1 })
+          .select("currencyTotals")
+          .lean()
+          .session(session);
 
-      const appliedTotal = Math.min(payAmount, currentDebt);
-      const change = Math.max(0, payAmount - currentDebt);
+        let remaining = applied;
+        const bulkOps = [];
 
-      // ✅ FIFO uchun qarzi bor sale’lar
-      const debtFieldSale = `currencyTotals.${currency}.debtAmount`;
-      const paidFieldSale = `currencyTotals.${currency}.paidAmount`;
+        for (const s of sales) {
+          if (remaining <= 0) break;
 
-      const sales = await Sale.find({
-        ...matchBase,
-        [debtFieldSale]: { $gt: 0 },
-      })
-        .sort({ createdAt: 1 })
-        .select("invoiceNo createdAt currencyTotals")
-        .lean()
-        .session(session);
+          const cur = s.currencyTotals[currency];
+          const debt = Number(cur.debtAmount || 0);
+          const paid = Number(cur.paidAmount || 0);
 
-      let remaining = appliedTotal;
-      const bulkOps = [];
-      const allocations = [];
+          if (debt <= 0) continue;
 
-      for (const s of sales) {
-        if (remaining <= 0) break;
+          const use = Math.min(remaining, debt);
+          remaining -= use;
 
-        const cur = (s.currencyTotals && s.currencyTotals[currency]) || {};
-        const debt = safeNum(cur.debtAmount, 0);
-        const paid = safeNum(cur.paidAmount, 0);
-        if (debt <= 0) continue;
-
-        const apply = Math.min(remaining, debt);
-        remaining -= apply;
-
-        const newPaid = paid + apply;
-        const newDebt = Math.max(0, debt - apply);
-
-        allocations.push({
-          sale_id: s._id,
-          invoiceNo: s.invoiceNo,
-          applied: apply,
-          before_debt: debt,
-          after_debt: newDebt,
-          sale_createdAt: s.createdAt,
-        });
-
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: s._id },
-            update: {
-              $set: {
-                [paidFieldSale]: newPaid,
-                [debtFieldSale]: newDebt,
+          bulkOps.push({
+            updateOne: {
+              filter: { _id: s._id },
+              update: {
+                $set: {
+                  [paidField]: paid + use,
+                  [debtField]: debt - use,
+                },
               },
             },
-          },
+          });
+        }
+
+        if (bulkOps.length) {
+          await Sale.bulkWrite(bulkOps, { session });
+        }
+      }
+
+      /* =========================
+         4. CUSTOMER BALANCE
+         🔥 ASOSIY FIX
+      ========================= */
+      customer.balance[currency] = prevBalance - payAmount;
+      // natija:
+      // >0  → qarz
+      // =0  → toza
+      // <0  → avans
+
+      /* =========================
+         5. PAYMENT HISTORY
+      ========================= */
+      if (applied > 0) {
+        customer.payment_history.push({
+          currency,
+          amount: applied,
+          direction: "PAYMENT",
+          note: note || "Qarz to‘lovi",
+          date: new Date(),
         });
       }
 
-      if (bulkOps.length) await Sale.bulkWrite(bulkOps, { session });
-
-      // ✅ Customer.total_debt_* ni sinxron qilib qo‘yamiz (majburiy emas, lekin qulay)
-      const debtFieldCustomer =
-        currency === "UZS" ? "total_debt_uzs" : "total_debt_usd";
-      customer[debtFieldCustomer] = Math.max(0, currentDebt - appliedTotal);
-
-      // ✅ payment_history bo‘lsa yozamiz (senda qo‘shilgan bo‘lsa)
-      if (Array.isArray(customer.payment_history)) {
+      if (change > 0) {
         customer.payment_history.push({
           currency,
-          amount_uzs: currency === "UZS" ? appliedTotal : 0,
-          amount_usd: currency === "USD" ? appliedTotal : 0,
-          note: `${note || "Qarz to‘lovi"}${
-            change > 0 ? ` (Ortiqcha: ${change})` : ""
-          }`,
+          amount: change,
+          direction: "PREPAYMENT",
+          note: note || "Avans",
           date: new Date(),
-          allocations: allocations.map((a) => ({
-            sale_id: a.sale_id,
-            applied: a.applied,
-            before_debt: a.before_debt,
-            after_debt: a.after_debt,
-          })),
-          createdBy: userId, // agar schema’da yo‘q bo‘lsa olib tashla
         });
       }
 
       await customer.save({ session });
 
-      out = {
+      result = {
         ok: true,
-        message: "To‘lov qabul qilindi (FIFO)",
+        message: "To‘lov qabul qilindi",
         customer: {
           id: customer._id,
           name: customer.name,
-          phone: customer.phone,
-          total_debt_uzs: safeNum(customer.total_debt_uzs, 0),
-          total_debt_usd: safeNum(customer.total_debt_usd, 0),
+          balance: customer.balance,
         },
         payment: {
           currency,
           requested_amount: payAmount,
-          applied_amount: appliedTotal,
+          applied_amount: applied,
           change,
           previous_debt: currentDebt,
-          remaining_debt: Math.max(0, currentDebt - appliedTotal),
+          remaining_debt: Math.max(0, currentDebt - applied),
         },
-        allocations,
       };
     });
 
-    return res.json(out);
+    return res.json(result);
   } catch (err) {
-    return res
-      .status(400)
-      .json({ ok: false, message: err?.message || "To‘lovda xato" });
+    return res.status(400).json({
+      ok: false,
+      message: err.message || "To‘lovda xato",
+    });
   } finally {
     session.endSession();
   }
 };
+
+

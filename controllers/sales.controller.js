@@ -132,124 +132,97 @@ exports.createSale = async (req, res) => {
 
   try {
     const soldBy = req.user?._id || req.user?.id;
-    if (!soldBy) return res.status(401).json({ message: "Auth required" });
+    if (!soldBy) throw new Error("Auth required");
 
-    const body = req.body || {};
+    const {
+      items,
+      customerId,
+      payments = [],
+      discount = 0,
+      note,
+    } = req.body || {};
 
-    if (!Array.isArray(body.items) || body.items.length === 0) {
-      return res
-        .status(400)
-        .json({ message: "Items bo'sh bo'lishi mumkin emas" });
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error("Items bo‘sh bo‘lishi mumkin emas");
     }
 
-    // 1) validate items
-    for (const [idx, it] of body.items.entries()) {
-      if (!it.productId || !mongoose.isValidObjectId(it.productId)) {
-        return res
-          .status(400)
-          .json({ message: `items[${idx}].productId noto'g'ri` });
-      }
-      if (safeNumber(it.qty) <= 0) {
-        return res
-          .status(400)
-          .json({ message: `items[${idx}].qty 0 dan katta bo'lishi kerak` });
-      }
-      if (safeNumber(it.price) < 0) {
-        return res
-          .status(400)
-          .json({ message: `items[${idx}].price manfiy bo'lishi mumkin emas` });
-      }
-    }
+    /* =========================
+       1. PRODUCTLARNI OLAMIZ
+    ========================= */
+    const productIds = items.map((i) => i.productId);
 
-    // 2) fetch products
-    const productIds = [...new Set(body.items.map((x) => String(x.productId)))];
-
-    const products = await Product.find({ _id: { $in: productIds } })
+    const products = await Product.find({
+      _id: { $in: productIds },
+    })
       .select(
-        "_id name model color category unit images warehouse_currency qty buy_price"
+        "_id name model color category unit images qty buy_price warehouse_currency"
       )
-      .lean()
       .session(session);
 
     const pMap = new Map(products.map((p) => [String(p._id), p]));
 
-    for (const pid of productIds) {
-      if (!pMap.has(pid))
-        return res.status(400).json({ message: `Product topilmadi: ${pid}` });
-    }
+    /* =========================
+       2. STOCK TEKSHIRISH
+    ========================= */
+    for (const it of items) {
+      const p = pMap.get(String(it.productId));
+      if (!p) throw new Error("Product topilmadi");
 
-    // 3) group qty + check stock
-    const grouped = new Map(); // productId -> totalQty
-    for (const it of body.items) {
-      const pid = String(it.productId);
-      grouped.set(pid, (grouped.get(pid) || 0) + safeNumber(it.qty));
-    }
+      const qty = Number(it.qty);
+      if (!Number.isFinite(qty) || qty <= 0) {
+        throw new Error("qty noto‘g‘ri");
+      }
 
-    for (const [pid, needQty] of grouped.entries()) {
-      const p = pMap.get(pid);
-      const hasQty = safeNumber(p.qty);
-      if (hasQty < needQty) {
-        return res.status(400).json({
-          message: `Stock yetarli emas: ${p.name} (${needQty} kerak, ${hasQty} bor)`,
-          meta: { productId: pid, needQty, hasQty },
-        });
+      if (p.qty < qty) {
+        throw new Error(`Stock yetarli emas: ${p.name}`);
       }
     }
 
-    // 4) decrement stock atomically
-    for (const [pid, needQty] of grouped.entries()) {
-      const updated = await Product.updateOne(
-        { _id: pid, qty: { $gte: needQty } },
-        { $inc: { qty: -needQty } },
+    /* =========================
+       3. STOCK KAMAYTIRISH
+    ========================= */
+    for (const it of items) {
+      await Product.updateOne(
+        { _id: it.productId, qty: { $gte: it.qty } },
+        { $inc: { qty: -it.qty } },
         { session }
       );
-
-      if (updated.modifiedCount !== 1) {
-        return res
-          .status(400)
-          .json({ message: "Stock o'zgargan, qayta urinib ko'ring" });
-      }
     }
 
-    // 5) currency -> warehouseId map
-    const currenciesInSale = [
-      ...new Set(products.map((p) => p.warehouse_currency)),
-    ];
+    /* =========================
+       4. WAREHOUSE MAP
+    ========================= */
+    const currencies = [...new Set(products.map((p) => p.warehouse_currency))];
 
     const warehouses = await Warehouse.find({
-      currency: { $in: currenciesInSale },
+      currency: { $in: currencies },
     })
       .select("_id currency")
       .session(session);
 
     const wMap = new Map(warehouses.map((w) => [w.currency, w._id]));
 
-    for (const cur of currenciesInSale) {
-      if (!wMap.has(cur)) {
-        return res
-          .status(400)
-          .json({ message: `Warehouse topilmadi: currency=${cur}` });
-      }
-    }
-
-    // 6) build sale items with automatic warehouseId + currency
-    const items = body.items.map((it) => {
+    /* =========================
+       5. SALE ITEMS
+    ========================= */
+    const saleItems = items.map((it) => {
       const p = pMap.get(String(it.productId));
       const currency = p.warehouse_currency;
       const warehouseId = wMap.get(currency);
 
-      const qty = Number(it.qty);
-      const sellPrice = Number(it.price);
-      const buyPrice = Number(p.buy_price);
+      if (!warehouseId) {
+        throw new Error(`Warehouse topilmadi: ${currency}`);
+      }
 
-      if (!p.unit) {
-        throw new Error(`Product unit yo‘q: ${p.name}`);
+      const qty = Number(it.qty);
+      const sellPrice = Number(it.sell_price);
+
+      if (!Number.isFinite(sellPrice) || sellPrice < 0) {
+        throw new Error("sell_price noto‘g‘ri");
       }
 
       return {
         productId: p._id,
-
-        // ✅ TO‘LIQ PRODUCT SNAPSHOT (ASOSIY JOY)
         productSnapshot: {
           name: p.name,
           model: p.model || null,
@@ -258,151 +231,135 @@ exports.createSale = async (req, res) => {
           unit: p.unit,
           images: p.images || [],
         },
-
         warehouseId,
         currency,
-
         qty,
-
-        // 🔥 MUHIM FIELDLAR
         sell_price: sellPrice,
-        buy_price: buyPrice,
-
+        buy_price: Number(p.buy_price),
         subtotal: +(qty * sellPrice).toFixed(2),
       };
     });
 
-    const itemsCalculated = calcItemsSubtotals(items);
+    /* =========================
+       6. CURRENCY TOTALS
+    ========================= */
+    const currencyTotals = {
+      UZS: {
+        subtotal: 0,
+        discount: 0,
+        grandTotal: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+      },
+      USD: {
+        subtotal: 0,
+        discount: 0,
+        grandTotal: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+      },
+    };
 
-    // ✅ 7) CUSTOMER: create/find + attach (MANA SHU JOYDA!)
-    let customerId = undefined;
-    let customerSnapshot = body.customerSnapshot || undefined;
-
-    if (body.customerId) {
-      if (!mongoose.isValidObjectId(body.customerId)) {
-        return res.status(400).json({ message: "customerId noto'g'ri" });
-      }
-
-      const c = await Customer.findById(body.customerId).session(session);
-      if (!c) return res.status(400).json({ message: "Customer topilmadi" });
-
-      customerId = c._id;
-      customerSnapshot = {
-        name: c.name,
-        phone: c.phone,
-        address: c.address,
-        note: c.note,
-      };
-    } else if (customerSnapshot?.phone || customerSnapshot?.name) {
-      const phone = normalizePhone(customerSnapshot.phone);
-      const name = customerSnapshot.name
-        ? String(customerSnapshot.name).trim()
-        : undefined;
-
-      let c = null;
-      if (phone) c = await Customer.findOne({ phone }).session(session);
-      if (!c && name) c = await Customer.findOne({ name }).session(session);
-
-      if (!c) {
-        const createdCustomer = await Customer.create(
-          [
-            {
-              name: name || "Customer",
-              phone,
-              address: customerSnapshot.address?.trim(),
-              note: customerSnapshot.note?.trim(),
-            },
-          ],
-          { session }
-        );
-        c = createdCustomer[0];
-      }
-
-      customerId = c._id;
-      customerSnapshot = {
-        name: c.name,
-        phone: c.phone,
-        address: c.address,
-        note: c.note,
-      };
+    for (const it of saleItems) {
+      currencyTotals[it.currency].subtotal += it.subtotal;
     }
 
-    // 8) payments validate
-    const discount = Math.max(0, safeNumber(body.discount));
-    const payments = Array.isArray(body.payments) ? body.payments : [];
-
-    for (const [idx, p] of payments.entries()) {
+    for (const p of payments) {
       if (!["UZS", "USD"].includes(p.currency)) {
-        return res
-          .status(400)
-          .json({ message: `payments[${idx}].currency noto'g'ri` });
+        throw new Error("Payment currency noto‘g‘ri");
       }
-      if (!["CASH", "CARD", "TRANSFER"].includes(p.method)) {
-        return res
-          .status(400)
-          .json({ message: `payments[${idx}].method noto'g'ri` });
-      }
-      if (safeNumber(p.amount) < 0) {
-        return res
-          .status(400)
-          .json({ message: `payments[${idx}].amount manfiy bo'lmasin` });
-      }
+      currencyTotals[p.currency].paidAmount += Number(p.amount || 0);
     }
 
-    const currencyTotals = calcCurrencyTotals(
-      itemsCalculated,
-      discount,
-      payments
-    );
-    const subtotalAll =
-      currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
-    const grandAll =
-      currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal;
+    for (const cur of ["UZS", "USD"]) {
+      currencyTotals[cur].grandTotal = +currencyTotals[cur].subtotal.toFixed(2);
 
-    const invoiceNo = await generateInvoiceNo(session);
+      currencyTotals[cur].debtAmount = Math.max(
+        0,
+        +(
+          currencyTotals[cur].grandTotal - currencyTotals[cur].paidAmount
+        ).toFixed(2)
+      );
+    }
 
-    const created = await Sale.create(
+    const invoiceNo = `S-${Date.now()}`;
+
+    /* =========================
+       7. SALE CREATE
+    ========================= */
+    const [sale] = await Sale.create(
       [
         {
           invoiceNo,
           soldBy,
-
-          customerId: customerId || undefined, // ✅ MUHIM
-          customerSnapshot: customerSnapshot || undefined, // ✅ MUHIM
-
-          items: itemsCalculated,
-
+          customerId: mongoose.isValidObjectId(customerId)
+            ? customerId
+            : undefined,
+          items: saleItems,
           totals: {
-            subtotal: +subtotalAll.toFixed(2),
-            discount: +discount.toFixed(2),
-            grandTotal: +grandAll.toFixed(2),
+            subtotal: currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
+            discount: Number(discount) || 0,
+            grandTotal:
+              currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
           },
-
           currencyTotals,
           payments,
-          note: body.note?.trim(),
+          note,
           status: "COMPLETED",
         },
       ],
       { session }
     );
 
-    await session.commitTransaction();
-    session.endSession();
+    /* =========================
+       8. CUSTOMER BALANCE (ENG MUHIM QISM)
+    ========================= */
+    if (mongoose.isValidObjectId(customerId)) {
+      const customer = await Customer.findById(customerId).session(session);
+      if (!customer) throw new Error("Customer topilmadi");
 
-    return res
-      .status(201)
-      .json({ message: "Sotuv yaratildi", data: created[0] });
+      if (currencyTotals.UZS.debtAmount > 0) {
+        customer.balance.UZS += currencyTotals.UZS.debtAmount;
+        customer.payment_history.push({
+          currency: "UZS",
+          amount: currencyTotals.UZS.debtAmount,
+          direction: "DEBT",
+          note: `Sale ${invoiceNo}`,
+        });
+      }
+
+      if (currencyTotals.USD.debtAmount > 0) {
+        customer.balance.USD += currencyTotals.USD.debtAmount;
+        customer.payment_history.push({
+          currency: "USD",
+          amount: currencyTotals.USD.debtAmount,
+          direction: "DEBT",
+          note: `Sale ${invoiceNo}`,
+        });
+      }
+
+      await customer.save({ session });
+    }
+
+    await session.commitTransaction();
+
+    return res.status(201).json({
+      ok: true,
+      message: "Sale yaratildi",
+      sale,
+    });
   } catch (err) {
     await session.abortTransaction();
-    session.endSession();
-
-    return res.status(500).json({
-      message: "Sotuv yaratishda xato",
-      error: err.message,
+    return res.status(400).json({
+      ok: false,
+      message: err.message,
     });
+  } finally {
+    session.endSession();
   }
 };
+
+
 
 exports.getSales = async (req, res) => {
   try {
@@ -520,51 +477,55 @@ exports.cancelSale = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { id } = req.params;
-    const userId = req.user?._id || req.user?.id;
+    const sale = await Sale.findById(req.params.id).session(session);
+    if (!sale) throw new Error("Sale topilmadi");
 
-    if (!mongoose.isValidObjectId(id))
-      return res.status(400).json({ message: "ID noto'g'ri" });
+    if (sale.status === "CANCELED") throw new Error("Sale allaqachon bekor");
 
-    const sale = await Sale.findById(id).session(session);
-    if (!sale) return res.status(404).json({ message: "Sale topilmadi" });
-
-    if (sale.status === "CANCELED") {
-      return res
-        .status(400)
-        .json({ message: "Sale allaqachon bekor qilingan" });
-    }
-
-    // stock qaytarish
-    const grouped = new Map(); // productId -> qty
+    // STOCK QAYTARISH
     for (const it of sale.items) {
-      const pid = String(it.productId);
-      grouped.set(pid, (grouped.get(pid) || 0) + safeNumber(it.qty));
+      await Product.updateOne(
+        { _id: it.productId },
+        { $inc: { qty: it.qty } },
+        { session }
+      );
     }
 
-    for (const [pid, qty] of grouped.entries()) {
-      await Product.updateOne({ _id: pid }, { $inc: { qty } }, { session });
+    // 🔥 CUSTOMER QARZNI KAMAYTIRISH
+    if (sale.customerId) {
+      const customer = await Customer.findById(sale.customerId).session(
+        session
+      );
+      if (customer) {
+        customer.total_debt_uzs = Math.max(
+          0,
+          customer.total_debt_uzs - sale.currencyTotals.UZS.debtAmount
+        );
+        customer.total_debt_usd = Math.max(
+          0,
+          customer.total_debt_usd - sale.currencyTotals.USD.debtAmount
+        );
+
+        await customer.save({ session });
+      }
     }
 
     sale.status = "CANCELED";
     sale.canceledAt = new Date();
-    sale.canceledBy = userId;
-    sale.cancelReason = req.body?.reason?.trim();
+    sale.cancelReason = req.body?.reason;
 
     await sale.save({ session });
 
     await session.commitTransaction();
-    session.endSession();
-
-    return res.json({ message: "Sale bekor qilindi", data: sale });
-  } catch (err) {
+    return res.json({ ok: true, message: "Sale bekor qilindi" });
+  } catch (e) {
     await session.abortTransaction();
+    return res.status(400).json({ ok: false, message: e.message });
+  } finally {
     session.endSession();
-    return res
-      .status(500)
-      .json({ message: "Sale cancel xato", error: err.message });
   }
 };
+
 
 exports.searchSalesByProduct = async (req, res) => {
   try {
