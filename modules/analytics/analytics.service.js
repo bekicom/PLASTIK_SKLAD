@@ -227,28 +227,39 @@ async function getOverview({ from, to, tz, warehouseId }) {
     UZS: (sales.uzs_paid || 0) - (expenses.UZS.total || 0),
     USD: (sales.usd_paid || 0) - (expenses.USD.total || 0),
   };
-
-  return {
-    range: { from, to, tz, warehouseId },
-
-    sales,
-    profit,
-    expenses,
-    orders,
-
-    balances: {
-      suppliers: {
-        debt: { UZS: supplierDebtUZS, USD: supplierDebtUSD },
-        prepaid: { UZS: supplierPrepaidUZS, USD: supplierPrepaidUSD },
-      },
-      customers: {
-        receivable: { UZS: customerDebtUZS, USD: customerDebtUSD },
-        prepaid: { UZS: customerPrepaidUZS, USD: customerPrepaidUSD },
-      },
-    },
-
-    cashflow,
+  const net_profit = {
+    UZS: (profit.UZS || 0) - (expenses.UZS.total || 0),
+    USD: (profit.USD || 0) - (expenses.USD.total || 0),
   };
+
+ return {
+   range: { from, to, tz, warehouseId },
+
+   sales,
+
+   profit: {
+     gross: profit, // savdodan foyda
+     net: net_profit, // 🔥 rasxoddan keyingi real foyda
+   },
+
+   expenses,
+   orders,
+
+   balances: {
+     suppliers: {
+       debt: { UZS: supplierDebtUZS, USD: supplierDebtUSD },
+       prepaid: { UZS: supplierPrepaidUZS, USD: supplierPrepaidUSD },
+     },
+     customers: {
+       receivable: { UZS: customerDebtUZS, USD: customerDebtUSD },
+       prepaid: { UZS: customerPrepaidUZS, USD: customerPrepaidUSD },
+     },
+   },
+
+   cashflow,
+ };
+
+
 }
 
 /* =====================
@@ -290,26 +301,34 @@ async function getTimeSeries({ from, to, tz, group }) {
 async function getTop({ from, to, tz, type, limit }) {
   if (type === "customers") {
     return Customer.find({ isActive: true })
-      .sort({ "balance.UZS": -1, "balance.USD": -1, createdAt: -1 })
+      .sort({ "balance.UZS": -1, "balance.USD": -1 })
       .limit(limit)
       .select("name phone balance")
       .lean();
   }
 
+  // 🔥 PRODUCTS TOP
   return Sale.aggregate([
     {
-      $match: { ...buildDateMatch(from, to, "createdAt"), status: "COMPLETED" },
+      $match: {
+        ...buildDateMatch(from, to, "createdAt"),
+        status: "COMPLETED",
+      },
     },
     { $unwind: "$items" },
+
+    // 1️⃣ GROUP BY PRODUCT
     {
       $group: {
         _id: "$items.productId",
         qty: { $sum: "$items.qty" },
+
         uzs_sum: {
           $sum: {
             $cond: [{ $eq: ["$items.currency", "UZS"] }, "$items.subtotal", 0],
           },
         },
+
         usd_sum: {
           $sum: {
             $cond: [{ $eq: ["$items.currency", "USD"] }, "$items.subtotal", 0],
@@ -317,10 +336,44 @@ async function getTop({ from, to, tz, type, limit }) {
         },
       },
     },
+
+    // 2️⃣ PRODUCT LOOKUP
+    {
+      $lookup: {
+        from: "products", // collection nomi
+        localField: "_id",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+
+    // 3️⃣ ARRAY → OBJECT
+    { $unwind: "$product" },
+
+    // 4️⃣ SORT
     { $sort: { uzs_sum: -1, usd_sum: -1, qty: -1 } },
+
+    // 5️⃣ LIMIT
     { $limit: limit },
+
+    // 6️⃣ FINAL FORMAT
+    {
+      $project: {
+        _id: 0,
+        product_id: "$product._id",
+        name: "$product.name",
+        model: "$product.model",
+        category: "$product.category",
+        unit: "$product.unit",
+
+        qty: 1,
+        uzs_sum: 1,
+        usd_sum: 1,
+      },
+    },
   ]);
 }
+
 
 /* =====================
    STOCK
