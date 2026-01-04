@@ -3,30 +3,30 @@ const mongoose = require("mongoose");
 const supplierSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
+    phone: { type: String, required: true, unique: true },
 
-    phone: { type: String, required: true, unique: true, trim: true },
+    // 🔥 UNIVERSAL BALANCE
+    balance: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
 
-    total_debt_uzs: { type: Number, default: 0, min: 0 },
-    total_debt_usd: { type: Number, default: 0, min: 0 },
-
+    // To‘lovlar va avanslar tarixi
     payment_history: [
-      new mongoose.Schema(
-        {
-          currency: { type: String, enum: ["UZS", "USD"], required: true },
-
-          // ✅ ikkalasi ham bo‘ladi (bittasi 0 bo‘ladi)
-          amount_uzs: { type: Number, default: 0, min: 0 },
-          amount_usd: { type: Number, default: 0, min: 0 },
-
-          date: { type: Date, default: Date.now },
-          note: { type: String, default: "" },
+      {
+        currency: { type: String, enum: ["UZS", "USD"], required: true },
+        amount: { type: Number, required: true }, // har doim musbat
+        direction: {
+          type: String,
+          enum: ["DEBT", "PREPAYMENT"],
+          required: true,
         },
-        { _id: true }
-      ),
+        note: String,
+        date: { type: Date, default: Date.now },
+      },
     ],
   },
   { timestamps: true }
 );
 
-module.exports =
-  mongoose.models.Supplier || mongoose.model("Supplier", supplierSchema);
+module.exports = mongoose.model("Supplier", supplierSchema);

@@ -18,6 +18,9 @@ function buildDateMatch(from, to, field = "createdAt") {
 }
 
 async function getOverview({ from, to, tz, warehouseId }) {
+  /* =====================
+     SALES SUMMARY
+  ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
     status: "COMPLETED",
@@ -27,9 +30,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     saleMatch["items.warehouseId"] = new mongoose.Types.ObjectId(warehouseId);
   }
 
-  // =====================
-  // SALES SUMMARY
-  // =====================
   const salesAgg = await Sale.aggregate([
     { $match: saleMatch },
     {
@@ -39,12 +39,10 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
         uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
         uzs_paid: { $sum: "$currencyTotals.UZS.paidAmount" },
-        uzs_debt: { $sum: "$currencyTotals.UZS.debtAmount" },
         uzs_discount: { $sum: "$currencyTotals.UZS.discount" },
 
         usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
         usd_paid: { $sum: "$currencyTotals.USD.paidAmount" },
-        usd_debt: { $sum: "$currencyTotals.USD.debtAmount" },
         usd_discount: { $sum: "$currencyTotals.USD.discount" },
       },
     },
@@ -55,17 +53,15 @@ async function getOverview({ from, to, tz, warehouseId }) {
     count: 0,
     uzs_total: 0,
     uzs_paid: 0,
-    uzs_debt: 0,
     uzs_discount: 0,
     usd_total: 0,
     usd_paid: 0,
-    usd_debt: 0,
     usd_discount: 0,
   };
 
-  // =====================
-  // PROFIT (FOYDA)
-  // =====================
+  /* =====================
+     PROFIT
+  ===================== */
   const profitAgg = await Sale.aggregate([
     { $match: saleMatch },
     { $unwind: "$items" },
@@ -107,9 +103,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   const profit = profitAgg[0] || { UZS: 0, USD: 0 };
 
-  // =====================
-  // EXPENSES
-  // =====================
+  /* =====================
+     EXPENSES
+  ===================== */
   const expensesAgg = await Expense.aggregate([
     { $match: buildDateMatch(from, to, "expense_date") },
     {
@@ -129,9 +125,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
       expenses.USD = { total: r.total || 0, count: r.count || 0 };
   }
 
-  // =====================
-  // ORDERS
-  // =====================
+  /* =====================
+     ORDERS
+  ===================== */
   const ordersAgg = await Order.aggregate([
     { $match: buildDateMatch(from, to, "createdAt") },
     {
@@ -159,35 +155,49 @@ async function getOverview({ from, to, tz, warehouseId }) {
     }
   }
 
-  // =====================
-  // DEBTS
-  // =====================
-  const [custDebt] = await Customer.aggregate([
-    { $match: { isActive: true } },
-    {
-      $group: {
-        _id: null,
-        uzs: { $sum: "$total_debt_uzs" },
-        usd: { $sum: "$total_debt_usd" },
-      },
-    },
-    { $project: { _id: 0 } },
-  ]);
+  /* =====================
+     SUPPLIER BALANCE
+  ===================== */
+  const suppliers = await Supplier.find({}, { balance: 1 }).lean();
 
-  const [suppDebt] = await Supplier.aggregate([
-    {
-      $group: {
-        _id: null,
-        uzs: { $sum: "$total_debt_uzs" },
-        usd: { $sum: "$total_debt_usd" },
-      },
-    },
-    { $project: { _id: 0 } },
-  ]);
+  let supplierDebtUZS = 0;
+  let supplierDebtUSD = 0;
+  let supplierPrepaidUZS = 0;
+  let supplierPrepaidUSD = 0;
 
-  // =====================
-  // CASHFLOW
-  // =====================
+  for (const s of suppliers) {
+    const uzs = Number(s.balance?.UZS || 0);
+    const usd = Number(s.balance?.USD || 0);
+
+    if (uzs > 0) supplierDebtUZS += uzs;
+    if (uzs < 0) supplierPrepaidUZS += Math.abs(uzs);
+
+    if (usd > 0) supplierDebtUSD += usd;
+    if (usd < 0) supplierPrepaidUSD += Math.abs(usd);
+  }
+
+  /* =====================
+     CUSTOMER BALANCE
+  ===================== */
+  const customers = await Customer.find(
+    { isActive: true },
+    { balance: 1 }
+  ).lean();
+
+  let customerDebtUZS = 0;
+  let customerDebtUSD = 0;
+
+  for (const c of customers) {
+    const uzs = Number(c.balance?.UZS || 0);
+    const usd = Number(c.balance?.USD || 0);
+
+    if (uzs > 0) customerDebtUZS += uzs;
+    if (usd > 0) customerDebtUSD += usd;
+  }
+
+  /* =====================
+     CASHFLOW
+  ===================== */
   const cashflow = {
     UZS: (sales.uzs_paid || 0) - (expenses.UZS.total || 0),
     USD: (sales.usd_paid || 0) - (expenses.USD.total || 0),
@@ -195,19 +205,31 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   return {
     range: { from, to, tz, warehouseId },
+
     sales,
-    profit, // 🔥 JAMI FOYDA
+    profit,
     expenses,
     orders,
-    debts: {
-      customers: { UZS: custDebt?.uzs || 0, USD: custDebt?.usd || 0 },
-      suppliers: { UZS: suppDebt?.uzs || 0, USD: suppDebt?.usd || 0 },
+
+    balances: {
+      suppliers: {
+        debt: { UZS: supplierDebtUZS, USD: supplierDebtUSD },
+        prepaid: { UZS: supplierPrepaidUZS, USD: supplierPrepaidUSD },
+      },
+      customers: {
+        receivable: { UZS: customerDebtUZS, USD: customerDebtUSD },
+      },
     },
+
     cashflow,
   };
 }
 
-// ⬇️ QOLGAN FUNKSIYALAR O‘ZGARMADI
+/* =====================
+   QOLGAN FUNKSIYALAR
+   (deyarli o‘zgarmadi)
+===================== */
+
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
 
@@ -229,93 +251,16 @@ async function getTimeSeries({ from, to, tz, group }) {
     },
   ]);
 
-  const expRaw = await Expense.aggregate([
-    { $match: buildDateMatch(from, to, "expense_date") },
-    {
-      $group: {
-        _id: {
-          date: { $dateTrunc: { date: "$expense_date", unit, timezone: tz } },
-          currency: "$currency",
-        },
-        total: { $sum: "$amount" },
-      },
-    },
-    { $sort: { "_id.date": 1 } },
-  ]);
-
-  const map = new Map();
-  for (const r of expRaw) {
-    const key = new Date(r._id.date).toISOString();
-    const row = map.get(key) || { date: r._id.date, UZS: 0, USD: 0 };
-    row[r._id.currency] = r.total || 0;
-    map.set(key, row);
-  }
-
-  const expenses = Array.from(map.values()).sort(
-    (a, b) => new Date(a.date) - new Date(b.date)
-  );
-
-  const orders = await Order.aggregate([
-    { $match: buildDateMatch(from, to, "createdAt") },
-    {
-      $group: {
-        _id: { $dateTrunc: { date: "$createdAt", unit, timezone: tz } },
-        count: { $sum: 1 },
-        confirmed: {
-          $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
-        },
-        canceled: { $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] } },
-      },
-    },
-    { $sort: { _id: 1 } },
-    { $project: { _id: 0, date: "$_id", count: 1, confirmed: 1, canceled: 1 } },
-  ]);
-
-  return { group, sales, expenses, orders };
+  return { group, sales };
 }
 
 async function getTop({ from, to, tz, type, limit }) {
   if (type === "customers") {
     return Customer.find({ isActive: true })
-      .sort({ total_debt_uzs: -1, total_debt_usd: -1 })
+      .sort({ "balance.UZS": -1, "balance.USD": -1 })
       .limit(limit)
-      .select("name phone total_debt_uzs total_debt_usd")
+      .select("name phone balance")
       .lean();
-  }
-
-  if (type === "agents") {
-    return Order.aggregate([
-      { $match: buildDateMatch(from, to, "createdAt") },
-      {
-        $group: {
-          _id: "$agent_id",
-          count: { $sum: 1 },
-          total_uzs: { $sum: "$total_uzs" },
-          total_usd: { $sum: "$total_usd" },
-        },
-      },
-      { $sort: { total_uzs: -1, total_usd: -1, count: -1 } },
-      { $limit: limit },
-      {
-        $lookup: {
-          from: "users",
-          localField: "_id",
-          foreignField: "_id",
-          as: "agent",
-        },
-      },
-      { $unwind: { path: "$agent", preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          _id: 0,
-          agent_id: "$_id",
-          agent_name: "$agent.name",
-          count: 1,
-          total_uzs: 1,
-          total_usd: 1,
-        },
-      },
-    ]);
   }
 
   return Sale.aggregate([
@@ -341,27 +286,6 @@ async function getTop({ from, to, tz, type, limit }) {
     },
     { $sort: { uzs_sum: -1, usd_sum: -1, qty: -1 } },
     { $limit: limit },
-    {
-      $lookup: {
-        from: "products",
-        localField: "_id",
-        foreignField: "_id",
-        as: "product",
-      },
-    },
-    { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
-    {
-      $project: {
-        _id: 0,
-        product_id: "$_id",
-        name: "$product.name",
-        model: "$product.model",
-        color: "$product.color",
-        qty: 1,
-        uzs_sum: 1,
-        usd_sum: 1,
-      },
-    },
   ]);
 }
 
@@ -388,15 +312,7 @@ async function getStock() {
     },
   ]);
 
-  const low = await Product.find({ qty: { $gt: 0 } })
-    .sort({ qty: 1 })
-    .limit(20)
-    .select(
-      "name model color warehouse_currency qty buy_price sell_price supplier_id"
-    )
-    .lean();
-
-  return { byCurrency, low };
+  return { byCurrency };
 }
 
 module.exports = {

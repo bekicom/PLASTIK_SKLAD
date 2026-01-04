@@ -9,43 +9,44 @@ const customerSchema = new mongoose.Schema(
       maxlength: 120,
       index: true,
     },
+
     phone: { type: String, trim: true, maxlength: 30, index: true },
     address: { type: String, trim: true, maxlength: 250 },
     note: { type: String, trim: true, maxlength: 300 },
 
-    // ✅ Qarzdorlik (running balance)
-    total_debt_uzs: { type: Number, default: 0, min: 0, index: true },
-    total_debt_usd: { type: Number, default: 0, min: 0, index: true },
+    // 🔥 UNIVERSAL BALANCE (supplier bilan BIR XIL)
+    balance: {
+      UZS: { type: Number, default: 0 }, // + qarz, - avans
+      USD: { type: Number, default: 0 },
+    },
 
-    // ✅ TO‘LOV TARIXI (YANGI)
+    // 🔥 TO‘LOV / O‘ZGARISH TARIXI
     payment_history: [
-      new mongoose.Schema(
-        {
-          currency: { type: String, enum: ["UZS", "USD"], required: true },
-
-          // doim ikkalasi bo‘ladi, bittasi 0
-          amount_uzs: { type: Number, default: 0, min: 0 },
-          amount_usd: { type: Number, default: 0, min: 0 },
-
-          note: { type: String, default: "" },
-          date: { type: Date, default: Date.now },
-
-          // qaysi sotuvlardan yopildi (hisobot uchun MUHIM)
-          allocations: [
-            {
-              sale_id: {
-                type: mongoose.Schema.Types.ObjectId,
-                ref: "Sale",
-                required: true,
-              },
-              applied: { type: Number, required: true, min: 0 },
-              before_debt: { type: Number, default: 0 },
-              after_debt: { type: Number, default: 0 },
-            },
-          ],
+      {
+        currency: {
+          type: String,
+          enum: ["UZS", "USD"],
+          required: true,
         },
-        { _id: true }
-      ),
+
+        amount: {
+          type: Number,
+          required: true, // har doim musbat
+          min: 0,
+        },
+
+        // DEBT  → qarz oshdi
+        // PAYMENT → qarz kamaydi
+        // PREPAYMENT → avans
+        direction: {
+          type: String,
+          enum: ["DEBT", "PAYMENT", "PREPAYMENT"],
+          required: true,
+        },
+
+        note: { type: String, default: "" },
+        date: { type: Date, default: Date.now },
+      },
     ],
 
     // Soft delete

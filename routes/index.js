@@ -166,6 +166,12 @@ router.post(
   supplierController.paySupplierDebt
 );
 
+router.post(
+  "/suppliers/:id/balance",
+  rAuth,
+  rRole("ADMIN"),
+  supplierController.updateSupplierBalance
+);
 /**
  * PRODUCTS (ADMIN only)
  */

@@ -77,8 +77,8 @@ exports.createSupplier = async (req, res) => {
     const {
       name,
       phone,
-      initial_debt_uzs = 0,
-      initial_debt_usd = 0,
+      opening_balance_uzs = 0,
+      opening_balance_usd = 0,
     } = req.body;
 
     if (!name || !phone) {
@@ -89,42 +89,38 @@ exports.createSupplier = async (req, res) => {
 
     const exists = await Supplier.findOne({ phone });
     if (exists) {
-      return res
-        .status(409)
-        .json({ ok: false, message: "Bu telefon raqam band" });
+      return res.status(409).json({ ok: false, message: "Bu telefon band" });
     }
 
-    const debtUzs = Math.max(0, Number(initial_debt_uzs) || 0);
-    const debtUsd = Math.max(0, Number(initial_debt_usd) || 0);
+    const balUzs = Number(opening_balance_uzs) || 0;
+    const balUsd = Number(opening_balance_usd) || 0;
 
     const payment_history = [];
 
-    if (debtUzs > 0) {
+    if (balUzs !== 0) {
       payment_history.push({
         currency: "UZS",
-        amount_uzs: debtUzs,
-        amount_usd: 0,
-        note: "Boshlang‘ich qarz (UZS)",
+        amount: Math.abs(balUzs),
+        direction: balUzs > 0 ? "DEBT" : "PREPAYMENT",
+        note:
+          balUzs > 0 ? "Boshlang‘ich qarz (UZS)" : "Boshlang‘ich avans (UZS)",
       });
     }
 
-    if (debtUsd > 0) {
+    if (balUsd !== 0) {
       payment_history.push({
         currency: "USD",
-        amount_uzs: 0,
-        amount_usd: debtUsd,
-        note: "Boshlang‘ich qarz (USD)",
+        amount: Math.abs(balUsd),
+        direction: balUsd > 0 ? "DEBT" : "PREPAYMENT",
+        note:
+          balUsd > 0 ? "Boshlang‘ich qarz (USD)" : "Boshlang‘ich avans (USD)",
       });
     }
 
     const supplier = await Supplier.create({
       name: String(name).trim(),
       phone: String(phone).trim(),
-
-      // 🔥 BOSHLANG‘ICH QARZ
-      total_debt_uzs: debtUzs,
-      total_debt_usd: debtUsd,
-
+      balance: { UZS: balUzs, USD: balUsd },
       payment_history,
     });
 
@@ -146,25 +142,16 @@ exports.createSupplier = async (req, res) => {
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;
-    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit || "20", 10), 1),
-      100
-    );
-    const skip = (page - 1) * limit;
-
     const filter = {};
+
     if (q && q.trim()) {
       const r = new RegExp(q.trim(), "i");
       filter.$or = [{ name: r }, { phone: r }];
     }
 
-    const [items, total] = await Promise.all([
-      Supplier.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit),
-      Supplier.countDocuments(filter),
-    ]);
+    const items = await Supplier.find(filter).sort({ createdAt: -1 });
 
-    return res.json({ ok: true, page, limit, total, items });
+    return res.json({ ok: true, total: items.length, items });
   } catch (error) {
     return res
       .status(500)
@@ -213,13 +200,14 @@ exports.updateSupplier = async (req, res) => {
       .json({ ok: false, message: "Server xatoligi", error: error.message });
   }
 };
+
 exports.deleteSupplier = async (req, res) => {
   try {
     const supplier = await Supplier.findByIdAndDelete(req.params.id);
     if (!supplier)
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
 
-    return res.json({ ok: true, message: "Zavod o‘chirildi", supplier });
+    return res.json({ ok: true, message: "Zavod o‘chirildi" });
   } catch (error) {
     return res
       .status(500)
@@ -236,19 +224,34 @@ exports.getSuppliersDashboard = async (req, res) => {
       filter.$or = [{ name: r }, { phone: r }];
     }
 
-    const suppliers = await Supplier.find(filter).sort({ createdAt: -1 });
+    // 1️⃣ Supplierlarni olamiz
+    const suppliers = await Supplier.find(filter, {
+      name: 1,
+      phone: 1,
+      balance: 1,
+      createdAt: 1,
+    }).sort({ createdAt: -1 });
+
     const total_suppliers = await Supplier.countDocuments(filter);
 
-    const total_debt_uzs = suppliers.reduce(
-      (sum, s) => sum + Number(s.total_debt_uzs || 0),
-      0
-    );
+    // 2️⃣ JAMI QARZ / AVANS HISOBI
+    let total_debt_uzs = 0;
+    let total_debt_usd = 0;
+    let total_prepaid_uzs = 0;
+    let total_prepaid_usd = 0;
 
-    const total_debt_usd = suppliers.reduce(
-      (sum, s) => sum + Number(s.total_debt_usd || 0),
-      0
-    );
+    for (const s of suppliers) {
+      const uzs = Number(s.balance?.UZS || 0);
+      const usd = Number(s.balance?.USD || 0);
 
+      if (uzs > 0) total_debt_uzs += uzs;
+      if (uzs < 0) total_prepaid_uzs += Math.abs(uzs);
+
+      if (usd > 0) total_debt_usd += usd;
+      if (usd < 0) total_prepaid_usd += Math.abs(usd);
+    }
+
+    // 3️⃣ Purchase statistikasi (oldingi logika saqlanadi)
     const ids = suppliers.map((s) => s._id);
 
     const stats = await Purchase.aggregate([
@@ -270,22 +273,48 @@ exports.getSuppliersDashboard = async (req, res) => {
       };
     });
 
-    const items = suppliers.map((s) => ({
-      id: s._id,
-      name: s.name,
-      phone: s.phone,
-      total_debt_uzs: Number(s.total_debt_uzs || 0),
-      total_debt_usd: Number(s.total_debt_usd || 0),
-      purchases_count: map[String(s._id)]?.purchases_count || 0,
-      last_purchase_at: map[String(s._id)]?.last_purchase_at || null,
-      createdAt: s.createdAt,
-    }));
+    // 4️⃣ HAR BIR SUPPLIER UCHUN ITEM
+    const items = suppliers.map((s) => {
+      const uzs = Number(s.balance?.UZS || 0);
+      const usd = Number(s.balance?.USD || 0);
+
+      return {
+        id: s._id,
+        name: s.name,
+        phone: s.phone,
+
+        balance: {
+          UZS: uzs,
+          USD: usd,
+        },
+
+        // qulay frontend uchun
+        status: {
+          UZS: uzs > 0 ? "DEBT" : uzs < 0 ? "PREPAID" : "CLEAR",
+          USD: usd > 0 ? "DEBT" : usd < 0 ? "PREPAID" : "CLEAR",
+        },
+
+        purchases_count: map[String(s._id)]?.purchases_count || 0,
+        last_purchase_at: map[String(s._id)]?.last_purchase_at || null,
+        createdAt: s.createdAt,
+      };
+    });
 
     return res.json({
       ok: true,
       total_suppliers,
-      total_debt_uzs,
-      total_debt_usd,
+
+      summary: {
+        debt: {
+          UZS: total_debt_uzs,
+          USD: total_debt_usd,
+        },
+        prepaid: {
+          UZS: total_prepaid_uzs,
+          USD: total_prepaid_usd,
+        },
+      },
+
       items,
     });
   } catch (error) {
@@ -296,6 +325,7 @@ exports.getSuppliersDashboard = async (req, res) => {
     });
   }
 };
+
 exports.getSupplierDetail = async (req, res) => {
   try {
     const { id } = req.params;
@@ -306,16 +336,8 @@ exports.getSupplierDetail = async (req, res) => {
     }
 
     const supplier = await Supplier.findById(id).lean();
-    if (!supplier) {
+    if (!supplier)
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
-    }
-
-    const page = Math.max(parseInt(req.query.page || "1", 10), 1);
-    const limit = Math.min(
-      Math.max(parseInt(req.query.limit || "20", 10), 1),
-      100
-    );
-    const skip = (page - 1) * limit;
 
     const fromDate = parseDate(req.query.from, false);
     const toDate = parseDate(req.query.to, true);
@@ -327,39 +349,9 @@ exports.getSupplierDetail = async (req, res) => {
       if (toDate) filter.createdAt.$lte = toDate;
     }
 
-    const [rows, total] = await Promise.all([
-      Purchase.find(filter)
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limit)
-        .lean(),
-      Purchase.countDocuments(filter),
-    ]);
-
-    // ✅ items + totals
-    const items = rows.map((p) => {
-      const totals = calcPurchaseTotals(p);
-      return {
-        ...p,
-        total_amount_uzs: totals.uzs.total,
-        paid_amount_uzs: totals.uzs.paid,
-        debt_amount_uzs: totals.uzs.debt,
-        total_amount_usd: totals.usd.total,
-        paid_amount_usd: totals.usd.paid,
-        debt_amount_usd: totals.usd.debt,
-        totals,
-      };
-    });
-
-    // ✅ MUHIM: supplier debt’ni real purchase’lardan hisoblaymiz
-    // (supplier.total_debt_usd DB’da 0 bo‘lib qolsa ham bu doim to‘g‘ri bo‘ladi)
-    let computedDebtUzs = 0;
-    let computedDebtUsd = 0;
-
-    for (const p of items) {
-      computedDebtUzs += Number(p.debt_amount_uzs || 0);
-      computedDebtUsd += Number(p.debt_amount_usd || 0);
-    }
+    const purchases = await Purchase.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
 
     return res.json({
       ok: true,
@@ -367,14 +359,10 @@ exports.getSupplierDetail = async (req, res) => {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-
-        // ✅ real debt (purchase'lardan)
-        total_debt_uzs: computedDebtUzs,
-        total_debt_usd: computedDebtUsd,
-
+        balance: supplier.balance, // 🔥 ASOSIY HAQIQIY HOLAT
         createdAt: supplier.createdAt,
       },
-      purchases: { page, limit, total, items },
+      purchases,
     });
   } catch (error) {
     return res.status(500).json({
@@ -384,12 +372,13 @@ exports.getSupplierDetail = async (req, res) => {
     });
   }
 };
+
 exports.paySupplierDebt = async (req, res) => {
   try {
     const { id } = req.params;
     const { amount, currency = "UZS", note } = req.body;
 
-    if (!CUR.includes(currency)) {
+    if (!["UZS", "USD"].includes(currency)) {
       return res.status(400).json({
         ok: false,
         message: "currency noto‘g‘ri (UZS/USD)",
@@ -409,50 +398,49 @@ exports.paySupplierDebt = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
     }
 
-    const debtField = currency === "UZS" ? "total_debt_uzs" : "total_debt_usd";
-    const currentDebt = Number(supplier[debtField] || 0);
+    const currentBalance = Number(supplier.balance[currency] || 0);
 
-    if (currentDebt <= 0) {
+    // ❗ Agar qarz bo‘lmasa
+    if (currentBalance <= 0) {
       return res.status(400).json({
         ok: false,
-        message: `Bu zavodda ${currency} qarz yo‘q`,
+        message: `Bu zavodda ${currency} bo‘yicha qarz yo‘q`,
       });
     }
 
-    const applied = Math.min(payAmount, currentDebt);
-    const change = Math.max(0, payAmount - currentDebt);
+    // qancha yopiladi
+    const applied = Math.min(payAmount, currentBalance);
+    const change = Math.max(0, payAmount - currentBalance);
 
-    supplier[debtField] = currentDebt - applied;
+    // 🔥 ASOSIY QATOR
+    supplier.balance[currency] = currentBalance - applied;
 
-    // ✅ payment_history: schema'ga mos (date bor)
-    supplier.payment_history = supplier.payment_history || [];
     supplier.payment_history.push({
-      currency, // ✅ endi bor
-      amount_uzs: currency === "UZS" ? applied : 0,
-      amount_usd: currency === "USD" ? applied : 0,
-      note: `${note || "Qarz to‘lovi"}${
-        change > 0 ? ` (Ortiqcha: ${change})` : ""
-      }`,
-      date: new Date(), // ✅ createdAt emas, date
+      currency,
+      amount: applied,
+      direction: "PREPAYMENT",
+      note:
+        (note || "Zavodga qarz to‘lovi") +
+        (change > 0 ? ` (Ortiqcha: ${change})` : ""),
+      date: new Date(),
     });
 
     await supplier.save();
 
     return res.json({
       ok: true,
-      message: "To‘lov qabul qilindi",
+      message: "Qarz to‘landi",
       supplier: {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-        total_debt_uzs: Number(supplier.total_debt_uzs || 0),
-        total_debt_usd: Number(supplier.total_debt_usd || 0),
+        balance: supplier.balance,
       },
       payment: {
         currency,
         paid_amount: applied,
-        previous_debt: currentDebt,
-        remaining_debt: Number(supplier[debtField] || 0),
+        previous_balance: currentBalance,
+        remaining_balance: supplier.balance[currency],
         change,
       },
     });
@@ -461,6 +449,52 @@ exports.paySupplierDebt = async (req, res) => {
       ok: false,
       message: "Server xatoligi",
       error: error.message,
+    });
+  }
+};
+
+
+exports.updateSupplierBalance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { currency, amount, note } = req.body;
+
+    if (!["UZS", "USD"].includes(currency)) {
+      return res.status(400).json({ message: "currency noto‘g‘ri" });
+    }
+
+    const delta = Number(amount);
+    if (!Number.isFinite(delta) || delta === 0) {
+      return res.status(400).json({ message: "amount noto‘g‘ri" });
+    }
+
+    const supplier = await Supplier.findById(id);
+    if (!supplier) {
+      return res.status(404).json({ message: "Zavod topilmadi" });
+    }
+
+    // 🔥 ASOSIY QATOR
+    supplier.balance[currency] += delta;
+
+    supplier.payment_history.push({
+      currency,
+      amount: Math.abs(delta),
+      direction: delta > 0 ? "DEBT" : "PREPAYMENT",
+      note: note || "Balance o‘zgartirildi",
+      date: new Date(),
+    });
+
+    await supplier.save();
+
+    return res.json({
+      ok: true,
+      message: "Balance yangilandi",
+      balance: supplier.balance,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      message: "Server xato",
+      error: err.message,
     });
   }
 };

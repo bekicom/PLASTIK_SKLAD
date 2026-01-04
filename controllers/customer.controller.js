@@ -1,7 +1,10 @@
 const mongoose = require("mongoose");
 const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
-const Order = require("../modules/orders/Order");
+
+/* =======================
+   HELPERS
+======================= */
 function normalizePhone(phone) {
   if (!phone) return "";
   return String(phone).replace(/\s+/g, "").trim();
@@ -12,20 +15,9 @@ function safeNum(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
-function safeTrim(v, maxLen) {
-  if (v === undefined || v === null) return undefined;
-  const s = String(v).trim();
-  if (!s) return "";
-  return maxLen ? s.slice(0, maxLen) : s;
-}
-
-function asObjectId(id) {
-  return new mongoose.Types.ObjectId(id);
-}
-
-/**
- * POST /customers/create (ADMIN or CASHIER)
- */
+/* =======================
+   CREATE CUSTOMER
+======================= */
 exports.createCustomer = async (req, res) => {
   try {
     const {
@@ -33,56 +25,54 @@ exports.createCustomer = async (req, res) => {
       phone,
       address,
       note,
-
-      initial_debt_uzs = 0,
-      initial_debt_usd = 0,
+      opening_balance_uzs = 0,
+      opening_balance_usd = 0,
     } = req.body;
 
     if (!name) {
       return res.status(400).json({ ok: false, message: "name majburiy" });
     }
 
-    const debtUzs = Math.max(0, Number(initial_debt_uzs) || 0);
-    const debtUsd = Math.max(0, Number(initial_debt_usd) || 0);
+    const balUzs = safeNum(opening_balance_uzs, 0);
+    const balUsd = safeNum(opening_balance_usd, 0);
 
     const payment_history = [];
 
-    if (debtUzs > 0) {
+    if (balUzs !== 0) {
       payment_history.push({
         currency: "UZS",
-        amount_uzs: debtUzs,
-        amount_usd: 0,
-        note: "Boshlang‘ich qarz (UZS)",
-        allocations: [],
+        amount: Math.abs(balUzs),
+        direction: balUzs > 0 ? "DEBT" : "PREPAYMENT",
+        note:
+          balUzs > 0 ? "Boshlang‘ich qarz (UZS)" : "Boshlang‘ich avans (UZS)",
       });
     }
 
-    if (debtUsd > 0) {
+    if (balUsd !== 0) {
       payment_history.push({
         currency: "USD",
-        amount_uzs: 0,
-        amount_usd: debtUsd,
-        note: "Boshlang‘ich qarz (USD)",
-        allocations: [],
+        amount: Math.abs(balUsd),
+        direction: balUsd > 0 ? "DEBT" : "PREPAYMENT",
+        note:
+          balUsd > 0 ? "Boshlang‘ich qarz (USD)" : "Boshlang‘ich avans (USD)",
       });
     }
 
     const customer = await Customer.create({
       name: name.trim(),
-      phone: phone?.trim(),
+      phone: normalizePhone(phone),
       address: address?.trim(),
       note: note?.trim(),
-
-      // 🔥 BOSHLANG‘ICH QARZ
-      total_debt_uzs: debtUzs,
-      total_debt_usd: debtUsd,
-
+      balance: {
+        UZS: balUzs,
+        USD: balUsd,
+      },
       payment_history,
     });
 
     return res.status(201).json({
       ok: true,
-      message: "Mijoz yaratildi",
+      message: "Customer yaratildi",
       customer,
     });
   } catch (error) {
@@ -94,10 +84,9 @@ exports.createCustomer = async (req, res) => {
   }
 };
 
-/**
- * GET /customers?search=&page=&limit=&isActive=
- * (ADMIN or CASHIER)
- */
+/* =======================
+   GET CUSTOMERS (LIST)
+======================= */
 exports.getCustomers = async (req, res) => {
   try {
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
@@ -111,15 +100,12 @@ exports.getCustomers = async (req, res) => {
     if (req.query.isActive === "true") filter.isActive = true;
     if (req.query.isActive === "false") filter.isActive = false;
 
-    const search = (req.query.search || "").trim();
-    if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: "i" } },
-        { phone: { $regex: search, $options: "i" } },
-      ];
+    if (req.query.search) {
+      const r = new RegExp(req.query.search.trim(), "i");
+      filter.$or = [{ name: r }, { phone: r }];
     }
 
-    const [customers, total] = await Promise.all([
+    const [items, total] = await Promise.all([
       Customer.find(filter)
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -128,70 +114,18 @@ exports.getCustomers = async (req, res) => {
       Customer.countDocuments(filter),
     ]);
 
-    const ids = customers.map((c) => c._id);
+    let totals = {
+      debt: { UZS: 0, USD: 0 },
+      prepaid: { UZS: 0, USD: 0 },
+    };
 
-    // ✅ har bir customer bo'yicha debtlarni yig'amiz (COMPLETED sales)
-    const debts = await Sale.aggregate([
-      {
-        $match: {
-          customerId: { $in: ids },
-          status: "COMPLETED",
-        },
-      },
-      {
-        $group: {
-          _id: "$customerId",
-          uzsDebt: { $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] } },
-          usdDebt: { $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] } },
-          uzsPaid: { $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] } },
-          usdPaid: { $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] } },
-          uzsGrand: {
-            $sum: { $ifNull: ["$currencyTotals.UZS.grandTotal", 0] },
-          },
-          usdGrand: {
-            $sum: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
-          },
-          salesCount: { $sum: 1 },
-        },
-      },
-    ]);
+    items.forEach((c) => {
+      if (c.balance?.UZS > 0) totals.debt.UZS += c.balance.UZS;
+      if (c.balance?.UZS < 0) totals.prepaid.UZS += Math.abs(c.balance.UZS);
 
-    const debtMap = {};
-    for (const d of debts) {
-      debtMap[String(d._id)] = {
-        salesCount: Number(d.salesCount || 0),
-        UZS: {
-          grandTotal: Number(d.uzsGrand || 0),
-          paidAmount: Number(d.uzsPaid || 0),
-          debtAmount: Number(d.uzsDebt || 0),
-        },
-        USD: {
-          grandTotal: Number(d.usdGrand || 0),
-          paidAmount: Number(d.usdPaid || 0),
-          debtAmount: Number(d.usdDebt || 0),
-        },
-      };
-    }
-
-    const items = customers.map((c) => ({
-      ...c,
-      summary: debtMap[String(c._id)] || {
-        salesCount: 0,
-        UZS: { grandTotal: 0, paidAmount: 0, debtAmount: 0 },
-        USD: { grandTotal: 0, paidAmount: 0, debtAmount: 0 },
-      },
-    }));
-
-    // umumiy totals (list uchun foydali)
-    const totals = items.reduce(
-      (acc, c) => {
-        acc.UZS.debt += c.summary.UZS.debtAmount;
-        acc.USD.debt += c.summary.USD.debtAmount;
-        acc.salesCount += c.summary.salesCount;
-        return acc;
-      },
-      { salesCount: 0, UZS: { debt: 0 }, USD: { debt: 0 } }
-    );
+      if (c.balance?.USD > 0) totals.debt.USD += c.balance.USD;
+      if (c.balance?.USD < 0) totals.prepaid.USD += Math.abs(c.balance.USD);
+    });
 
     return res.json({ ok: true, page, limit, total, totals, items });
   } catch (err) {
@@ -203,122 +137,109 @@ exports.getCustomers = async (req, res) => {
   }
 };
 
-/**
- * GET /customers/:id
- * Customer detail + summary (COMPLETED sales only)
- */
+/* =======================
+   GET CUSTOMER BY ID
+======================= */
 exports.getCustomerById = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "ID noto'g'ri" });
-    }
+    if (!mongoose.isValidObjectId(id))
+      return res.status(400).json({ ok: false, message: "ID noto‘g‘ri" });
 
     const customer = await Customer.findById(id).lean();
-    if (!customer) {
+    if (!customer)
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
-    }
 
-    const cid = asObjectId(id);
-
-    // ✅ Safe aggregation: field bo'lmasa 0
-    const summaryAgg = await Sale.aggregate([
-      { $match: { customerId: cid, status: "COMPLETED" } },
-      {
-        $group: {
-          _id: null,
-
-          uzsGrand: {
-            $sum: { $ifNull: ["$currencyTotals.UZS.grandTotal", 0] },
-          },
-          uzsPaid: { $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] } },
-          uzsDebt: { $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] } },
-
-          usdGrand: {
-            $sum: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
-          },
-          usdPaid: { $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] } },
-          usdDebt: { $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] } },
-
-          salesCount: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const s = summaryAgg[0] || {
-      uzsGrand: 0,
-      uzsPaid: 0,
-      uzsDebt: 0,
-      usdGrand: 0,
-      usdPaid: 0,
-      usdDebt: 0,
-      salesCount: 0,
-    };
-
-    return res.json({
-      ok: true,
-      data: customer,
-      summary: {
-        salesCount: Number(s.salesCount || 0),
-        UZS: {
-          grandTotal: Number(s.uzsGrand || 0),
-          paidAmount: Number(s.uzsPaid || 0),
-          debtAmount: Number(s.uzsDebt || 0),
-        },
-        USD: {
-          grandTotal: Number(s.usdGrand || 0),
-          paidAmount: Number(s.usdPaid || 0),
-          debtAmount: Number(s.usdDebt || 0),
-        },
-      },
-    });
+    return res.json({ ok: true, customer });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Customer detail xato",
+      message: "Customer olishda xato",
       error: err.message,
     });
   }
 };
 
-/**
- * PUT /customers/:id
- */
+/* =======================
+   UPDATE CUSTOMER
+======================= */
 exports.updateCustomer = async (req, res) => {
   try {
     const { id } = req.params;
-    if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "ID noto'g'ri" });
-    }
+    if (!mongoose.isValidObjectId(id))
+      return res.status(400).json({ ok: false, message: "ID noto‘g‘ri" });
 
     const patch = {};
-    if (req.body?.name !== undefined) patch.name = safeTrim(req.body.name, 120);
-    if (req.body?.phone !== undefined) {
-      const p = normalizePhone(req.body.phone);
-      patch.phone = p || undefined;
-    }
-    if (req.body?.address !== undefined)
-      patch.address = safeTrim(req.body.address, 250) || undefined;
-    if (req.body?.note !== undefined)
-      patch.note = safeTrim(req.body.note, 300) || undefined;
-    if (req.body?.isActive !== undefined) patch.isActive = !!req.body.isActive;
+    if (req.body.name !== undefined) patch.name = req.body.name.trim();
+    if (req.body.phone !== undefined)
+      patch.phone = normalizePhone(req.body.phone);
+    if (req.body.address !== undefined) patch.address = req.body.address.trim();
+    if (req.body.note !== undefined) patch.note = req.body.note.trim();
+    if (req.body.isActive !== undefined) patch.isActive = !!req.body.isActive;
 
     const updated = await Customer.findByIdAndUpdate(id, patch, {
       new: true,
-    }).lean();
-    if (!updated) {
+    });
+
+    if (!updated)
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
-    }
 
     return res.json({
       ok: true,
       message: "Customer yangilandi",
-      data: updated,
+      customer: updated,
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
       message: "Customer update xato",
+      error: err.message,
+    });
+  }
+};
+
+/* =======================
+   UPDATE CUSTOMER BALANCE
+======================= */
+exports.updateCustomerBalance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { currency, amount, note } = req.body;
+
+    if (!mongoose.isValidObjectId(id))
+      return res.status(400).json({ message: "ID noto‘g‘ri" });
+    if (!["UZS", "USD"].includes(currency))
+      return res.status(400).json({ message: "currency noto‘g‘ri" });
+
+    const delta = Number(amount);
+    if (!Number.isFinite(delta) || delta === 0)
+      return res.status(400).json({ message: "amount noto‘g‘ri" });
+
+    const customer = await Customer.findById(id);
+    if (!customer)
+      return res.status(404).json({ message: "Customer topilmadi" });
+
+    customer.balance[currency] += delta;
+
+    customer.payment_history.push({
+      currency,
+      amount: Math.abs(delta),
+      direction: delta > 0 ? "DEBT" : "PAYMENT",
+      note: note || "Balance o‘zgartirildi",
+      date: new Date(),
+    });
+
+    await customer.save();
+
+    return res.json({
+      ok: true,
+      message: "Balance yangilandi",
+      balance: customer.balance,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Balance update xato",
       error: err.message,
     });
   }
@@ -733,5 +654,3 @@ exports.payCustomerDebt = async (req, res) => {
     session.endSession();
   }
 };
-
-

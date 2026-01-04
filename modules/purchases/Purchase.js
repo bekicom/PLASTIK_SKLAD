@@ -8,8 +8,9 @@ const purchaseItemSchema = new mongoose.Schema(
       required: true,
     },
 
-    name: { type: String, required: true }, // snapshot
-    model: { type: String, default: "" }, // snapshot
+    // 🔹 snapshot
+    name: { type: String, required: true },
+    model: { type: String, default: "" },
     unit: { type: String, enum: ["DONA", "PACHKA", "KG"], required: true },
 
     qty: { type: Number, required: true, min: 0 },
@@ -18,7 +19,8 @@ const purchaseItemSchema = new mongoose.Schema(
 
     currency: { type: String, enum: ["UZS", "USD"], required: true },
 
-    row_total_uzs: { type: Number, required: true, min: 0 },
+    // 🔥 item bo‘yicha summa (o‘z currency’da)
+    row_total: { type: Number, required: true, min: 0 },
   },
   { _id: false }
 );
@@ -37,21 +39,10 @@ const purchaseSchema = new mongoose.Schema(
       trim: true,
     },
 
-
-
-    paid_amount_uzs: {
-      type: Number,
-      default: 0,
-    },
-
-    total_amount_uzs: {
-      type: Number,
-      default: 0,
-    },
-
-    debt_amount_uzs: {
-      type: Number,
-      default: 0,
+    // 🔥 Purchase umumiy summasi (currency bo‘yicha)
+    totals: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
     },
 
     items: {
