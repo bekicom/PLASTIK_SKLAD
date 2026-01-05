@@ -137,6 +137,7 @@ exports.createSale = async (req, res) => {
     const {
       items,
       customerId,
+      customer, // ✅ YANGI MIJOZ
       payments = [],
       discount = 0,
       note,
@@ -144,6 +145,35 @@ exports.createSale = async (req, res) => {
 
     if (!Array.isArray(items) || items.length === 0) {
       throw new Error("Items bo‘sh bo‘lishi mumkin emas");
+    }
+
+    /* =========================
+       0. CUSTOMER ANIQLASH / YARATISH
+    ========================= */
+    let finalCustomerId = null;
+
+    // 1) eski customer
+    if (mongoose.isValidObjectId(customerId)) {
+      finalCustomerId = customerId;
+    }
+
+    // 2) yangi customer
+    if (!finalCustomerId && customer?.name) {
+      const [newCustomer] = await Customer.create(
+        [
+          {
+            name: customer.name,
+            phone: normalizePhone(customer.phone),
+            address: customer.address || "",
+            note: customer.note || "",
+            balance: { UZS: 0, USD: 0 },
+            payment_history: [],
+          },
+        ],
+        { session }
+      );
+
+      finalCustomerId = newCustomer._id;
     }
 
     /* =========================
@@ -244,20 +274,8 @@ exports.createSale = async (req, res) => {
        6. CURRENCY TOTALS
     ========================= */
     const currencyTotals = {
-      UZS: {
-        subtotal: 0,
-        discount: 0,
-        grandTotal: 0,
-        paidAmount: 0,
-        debtAmount: 0,
-      },
-      USD: {
-        subtotal: 0,
-        discount: 0,
-        grandTotal: 0,
-        paidAmount: 0,
-        debtAmount: 0,
-      },
+      UZS: { subtotal: 0, paidAmount: 0, debtAmount: 0 },
+      USD: { subtotal: 0, paidAmount: 0, debtAmount: 0 },
     };
 
     for (const it of saleItems) {
@@ -272,13 +290,9 @@ exports.createSale = async (req, res) => {
     }
 
     for (const cur of ["UZS", "USD"]) {
-      currencyTotals[cur].grandTotal = +currencyTotals[cur].subtotal.toFixed(2);
-
       currencyTotals[cur].debtAmount = Math.max(
         0,
-        +(
-          currencyTotals[cur].grandTotal - currencyTotals[cur].paidAmount
-        ).toFixed(2)
+        currencyTotals[cur].subtotal - currencyTotals[cur].paidAmount
       );
     }
 
@@ -292,15 +306,13 @@ exports.createSale = async (req, res) => {
         {
           invoiceNo,
           soldBy,
-          customerId: mongoose.isValidObjectId(customerId)
-            ? customerId
-            : undefined,
+          customerId: finalCustomerId || undefined,
           items: saleItems,
           totals: {
             subtotal: currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
             discount: Number(discount) || 0,
             grandTotal:
-              currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
+              currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
           },
           currencyTotals,
           payments,
@@ -312,15 +324,17 @@ exports.createSale = async (req, res) => {
     );
 
     /* =========================
-       8. CUSTOMER BALANCE (ENG MUHIM QISM)
+       8. CUSTOMER BALANCE
     ========================= */
-    if (mongoose.isValidObjectId(customerId)) {
-      const customer = await Customer.findById(customerId).session(session);
-      if (!customer) throw new Error("Customer topilmadi");
+    if (finalCustomerId) {
+      const customerDoc = await Customer.findById(finalCustomerId).session(
+        session
+      );
+      if (!customerDoc) throw new Error("Customer topilmadi");
 
       if (currencyTotals.UZS.debtAmount > 0) {
-        customer.balance.UZS += currencyTotals.UZS.debtAmount;
-        customer.payment_history.push({
+        customerDoc.balance.UZS += currencyTotals.UZS.debtAmount;
+        customerDoc.payment_history.push({
           currency: "UZS",
           amount: currencyTotals.UZS.debtAmount,
           direction: "DEBT",
@@ -329,8 +343,8 @@ exports.createSale = async (req, res) => {
       }
 
       if (currencyTotals.USD.debtAmount > 0) {
-        customer.balance.USD += currencyTotals.USD.debtAmount;
-        customer.payment_history.push({
+        customerDoc.balance.USD += currencyTotals.USD.debtAmount;
+        customerDoc.payment_history.push({
           currency: "USD",
           amount: currencyTotals.USD.debtAmount,
           direction: "DEBT",
@@ -338,7 +352,7 @@ exports.createSale = async (req, res) => {
         });
       }
 
-      await customer.save({ session });
+      await customerDoc.save({ session });
     }
 
     await session.commitTransaction();
@@ -358,6 +372,7 @@ exports.createSale = async (req, res) => {
     session.endSession();
   }
 };
+
 
 
 
