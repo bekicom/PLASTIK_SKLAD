@@ -137,14 +137,14 @@ exports.createSale = async (req, res) => {
     const {
       items,
       customerId,
-      customer, // ✅ YANGI MIJOZ
+      customer,
       payments = [],
       discount = 0,
       note,
     } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
-      throw new Error("Items bo‘sh bo‘lishi mumkin emas");
+      throw new Error("Items bo'sh bo'lishi mumkin emas");
     }
 
     /* =========================
@@ -152,12 +152,10 @@ exports.createSale = async (req, res) => {
     ========================= */
     let finalCustomerId = null;
 
-    // 1) eski customer
     if (mongoose.isValidObjectId(customerId)) {
       finalCustomerId = customerId;
     }
 
-    // 2) yangi customer
     if (!finalCustomerId && customer?.name) {
       const [newCustomer] = await Customer.create(
         [
@@ -200,7 +198,7 @@ exports.createSale = async (req, res) => {
 
       const qty = Number(it.qty);
       if (!Number.isFinite(qty) || qty <= 0) {
-        throw new Error("qty noto‘g‘ri");
+        throw new Error("qty noto'g'ri");
       }
 
       if (p.qty < qty) {
@@ -248,7 +246,7 @@ exports.createSale = async (req, res) => {
       const sellPrice = Number(it.sell_price);
 
       if (!Number.isFinite(sellPrice) || sellPrice < 0) {
-        throw new Error("sell_price noto‘g‘ri");
+        throw new Error("sell_price noto'g'ri");
       }
 
       return {
@@ -271,30 +269,78 @@ exports.createSale = async (req, res) => {
     });
 
     /* =========================
-       6. CURRENCY TOTALS
+       6. CURRENCY TOTALS (✅ FIXED)
     ========================= */
     const currencyTotals = {
-      UZS: { subtotal: 0, paidAmount: 0, debtAmount: 0 },
-      USD: { subtotal: 0, paidAmount: 0, debtAmount: 0 },
+      UZS: {
+        subtotal: 0,
+        discount: 0,
+        grandTotal: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+      },
+      USD: {
+        subtotal: 0,
+        discount: 0,
+        grandTotal: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+      },
     };
 
+    // 1️⃣ SUBTOTAL
     for (const it of saleItems) {
       currencyTotals[it.currency].subtotal += it.subtotal;
     }
 
-    for (const p of payments) {
-      if (!["UZS", "USD"].includes(p.currency)) {
-        throw new Error("Payment currency noto‘g‘ri");
-      }
-      currencyTotals[p.currency].paidAmount += Number(p.amount || 0);
+    // 2️⃣ DISCOUNT (proportional)
+    const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
+    const disc = Math.max(0, safeNumber(discount));
+
+    if (totalAll > 0 && disc > 0) {
+      const uzsShare = currencyTotals.UZS.subtotal / totalAll;
+      const usdShare = currencyTotals.USD.subtotal / totalAll;
+      currencyTotals.UZS.discount = +(disc * uzsShare).toFixed(2);
+      currencyTotals.USD.discount = +(disc * usdShare).toFixed(2);
     }
 
-    for (const cur of ["UZS", "USD"]) {
-      currencyTotals[cur].debtAmount = Math.max(
+    // 3️⃣ GRAND TOTAL
+    currencyTotals.UZS.grandTotal = Math.max(
+      0,
+      +(currencyTotals.UZS.subtotal - currencyTotals.UZS.discount).toFixed(2)
+    );
+    currencyTotals.USD.grandTotal = Math.max(
+      0,
+      +(currencyTotals.USD.subtotal - currencyTotals.USD.discount).toFixed(2)
+    );
+
+    // 4️⃣ PAID AMOUNT
+    for (const p of payments) {
+      if (!["UZS", "USD"].includes(p.currency)) {
+        throw new Error("Payment currency noto'g'ri");
+      }
+      currencyTotals[p.currency].paidAmount += Math.max(
         0,
-        currencyTotals[cur].subtotal - currencyTotals[cur].paidAmount
+        safeNumber(p.amount)
       );
     }
+
+    currencyTotals.UZS.paidAmount = +currencyTotals.UZS.paidAmount.toFixed(2);
+    currencyTotals.USD.paidAmount = +currencyTotals.USD.paidAmount.toFixed(2);
+
+    // 5️⃣ DEBT AMOUNT
+    currencyTotals.UZS.debtAmount = Math.max(
+      0,
+      +(currencyTotals.UZS.grandTotal - currencyTotals.UZS.paidAmount).toFixed(
+        2
+      )
+    );
+    currencyTotals.USD.debtAmount = Math.max(
+      0,
+      +(currencyTotals.USD.grandTotal - currencyTotals.USD.paidAmount).toFixed(
+        2
+      )
+    );
 
     const invoiceNo = `S-${Date.now()}`;
 
@@ -310,9 +356,9 @@ exports.createSale = async (req, res) => {
           items: saleItems,
           totals: {
             subtotal: currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
-            discount: Number(discount) || 0,
+            discount: disc,
             grandTotal:
-              currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
+              currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
           },
           currencyTotals,
           payments,
@@ -373,9 +419,6 @@ exports.createSale = async (req, res) => {
   }
 };
 
-
-
-
 exports.getSales = async (req, res) => {
   try {
     const filter = {};
@@ -404,7 +447,6 @@ exports.getSales = async (req, res) => {
       createdAt: sale.createdAt,
       canceledAt: sale.canceledAt || null,
 
-      // ✅ AGENT (orders/new dagidek)
       agent: sale.soldBy
         ? {
             _id: sale.soldBy._id,
@@ -414,7 +456,6 @@ exports.getSales = async (req, res) => {
           }
         : null,
 
-      // ✅ CUSTOMER
       customer: sale.customerId
         ? {
             _id: sale.customerId._id,
@@ -425,7 +466,6 @@ exports.getSales = async (req, res) => {
           }
         : sale.customerSnapshot || null,
 
-      // ✅ ITEMS (ORDER FORMATIGA MOS)
       items: (sale.items || []).map((it) => ({
         product_id: it.productId,
 
@@ -506,19 +546,19 @@ exports.cancelSale = async (req, res) => {
       );
     }
 
-    // 🔥 CUSTOMER QARZNI KAMAYTIRISH
+    // CUSTOMER QARZNI KAMAYTIRISH
     if (sale.customerId) {
       const customer = await Customer.findById(sale.customerId).session(
         session
       );
       if (customer) {
-        customer.total_debt_uzs = Math.max(
+        customer.balance.UZS = Math.max(
           0,
-          customer.total_debt_uzs - sale.currencyTotals.UZS.debtAmount
+          customer.balance.UZS - sale.currencyTotals.UZS.debtAmount
         );
-        customer.total_debt_usd = Math.max(
+        customer.balance.USD = Math.max(
           0,
-          customer.total_debt_usd - sale.currencyTotals.USD.debtAmount
+          customer.balance.USD - sale.currencyTotals.USD.debtAmount
         );
 
         await customer.save({ session });
@@ -541,7 +581,6 @@ exports.cancelSale = async (req, res) => {
   }
 };
 
-
 exports.searchSalesByProduct = async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
@@ -558,7 +597,6 @@ exports.searchSalesByProduct = async (req, res) => {
       "items.nameSnapshot": rx,
     };
 
-    // ixtiyoriy filterlar (hozir yoki keyin ishlatish mumkin)
     if (req.query.status) {
       filter.status = String(req.query.status);
     }
@@ -570,8 +608,6 @@ exports.searchSalesByProduct = async (req, res) => {
       filter.customerId = new mongoose.Types.ObjectId(req.query.customerId);
     }
 
-    // ❌ limit yo‘q
-    // ❌ pagination yo‘q
     const rows = await Sale.find(filter)
       .sort({ createdAt: -1 })
       .select(
@@ -602,7 +638,7 @@ exports.searchSalesByProduct = async (req, res) => {
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Product bo‘yicha sales qidirishda xato",
+      message: "Product bo'yicha sales qidirishda xato",
       error: err.message,
     });
   }

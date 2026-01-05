@@ -23,11 +23,11 @@ function buildDateMatch(from, to, field = "createdAt") {
 }
 
 /* =====================
-   OVERVIEW (DASHBOARD)
+   OVERVIEW (DASHBOARD) - ✅ FIXED
 ===================== */
 async function getOverview({ from, to, tz, warehouseId }) {
   /* =====================
-     SALES
+     SALES (✅ FIXED - QARZGA HAM HISOBLANADI)
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
@@ -54,6 +54,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
         _id: null,
         count: { $sum: 1 },
 
+        // ✅ GRAND TOTAL (qarzga ham hisoblanadi)
         uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
         uzs_paid: { $sum: "$currencyTotals.UZS.paidAmount" },
         uzs_discount: { $sum: "$currencyTotals.UZS.discount" },
@@ -201,7 +202,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASH-IN (OLD LOGIC – TOTAL)
+     CASH-IN
   ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
@@ -270,7 +271,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   /* =====================
-     CASHFLOW BY METHOD (YANGI)
+     CASHFLOW BY METHOD
   ===================== */
   const cashInByMethodAgg = await CashIn.aggregate([
     {
@@ -334,9 +335,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
 /* =====================
    TIME SERIES
-===================== */
-/* =====================
-   TIME SERIES (FIXED)
 ===================== */
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
@@ -407,9 +405,6 @@ async function getTimeSeries({ from, to, tz, group }) {
 /* =====================
    TOP PRODUCTS
 ===================== */
-/* =====================
-   TOP PRODUCTS (FIXED)
-===================== */
 async function getTop({ from, to, limit = 10 }) {
   return Sale.aggregate([
     {
@@ -421,7 +416,6 @@ async function getTop({ from, to, limit = 10 }) {
 
     { $unwind: "$items" },
 
-    // 1️⃣ PRODUCT BO‘YICHA GROUP
     {
       $group: {
         _id: "$items.productId",
@@ -429,26 +423,21 @@ async function getTop({ from, to, limit = 10 }) {
       },
     },
 
-    // 2️⃣ SORT (ENG KO‘P SOTILGAN)
     { $sort: { qty: -1 } },
 
-    // 3️⃣ LIMIT
     { $limit: limit },
 
-    // 4️⃣ PRODUCT LOOKUP
     {
       $lookup: {
-        from: "products", // ⚠️ collection nomi
+        from: "products",
         localField: "_id",
         foreignField: "_id",
         as: "product",
       },
     },
 
-    // 5️⃣ ARRAY → OBJECT
     { $unwind: "$product" },
 
-    // 6️⃣ FINAL FORMAT
     {
       $project: {
         _id: 0,
@@ -466,27 +455,20 @@ async function getTop({ from, to, limit = 10 }) {
 /* =====================
    STOCK
 ===================== */
-/* =====================
-   STOCK (FIXED & EXTENDED)
-===================== */
 async function getStock() {
   const byCurrency = await Product.aggregate([
     {
       $group: {
         _id: "$warehouse_currency",
 
-        // nechta mahsulot turi
         sku: { $sum: 1 },
 
-        // jami qty
         total_qty: { $sum: "$qty" },
 
-        // ombordagi qiymat (kelish narxida)
         valuation_buy: {
           $sum: { $multiply: ["$qty", "$buy_price"] },
         },
 
-        // ombordagi qiymat (sotuv narxida)
         valuation_sell: {
           $sum: { $multiply: ["$qty", "$sell_price"] },
         },
