@@ -77,7 +77,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   /* =====================
-     PROFIT (GROSS)
+     PROFIT
   ===================== */
   const profitAgg = await Sale.aggregate([
     ...salesPipeline,
@@ -139,9 +139,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
     USD: { total: 0, count: 0 },
   };
 
-  for (const r of expensesAgg) {
-    if (r._id === "UZS") expenses.UZS = r;
-    if (r._id === "USD") expenses.USD = r;
+  for (const e of expensesAgg) {
+    if (e._id === "UZS") expenses.UZS = e;
+    if (e._id === "USD") expenses.USD = e;
   }
 
   /* =====================
@@ -170,7 +170,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     BALANCES (CUSTOMER / SUPPLIER)
+     BALANCES
   ===================== */
   const balances = {
     customers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
@@ -201,8 +201,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASH-IN (CUSTOMER / SUPPLIER)
-===================== */
+     CASH-IN (OLD LOGIC – TOTAL)
+  ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
       $match: {
@@ -213,12 +213,12 @@ async function getOverview({ from, to, tz, warehouseId }) {
     {
       $group: {
         _id: "$currency",
-        customer_in: {
+        in: {
           $sum: {
             $cond: [{ $eq: ["$target_type", "CUSTOMER"] }, "$amount", 0],
           },
         },
-        supplier_out: {
+        out: {
           $sum: {
             $cond: [{ $eq: ["$target_type", "SUPPLIER"] }, "$amount", 0],
           },
@@ -227,24 +227,13 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   ]);
 
-  const cashInFlow = {
-    UZS: { in: 0, out: 0 },
-    USD: { in: 0, out: 0 },
-  };
-
+  const cashInTotal = { UZS: { in: 0, out: 0 }, USD: { in: 0, out: 0 } };
   for (const r of cashInAgg) {
-    if (r._id === "UZS") {
-      cashInFlow.UZS.in = r.customer_in || 0;
-      cashInFlow.UZS.out = r.supplier_out || 0;
-    }
-    if (r._id === "USD") {
-      cashInFlow.USD.in = r.customer_in || 0;
-      cashInFlow.USD.out = r.supplier_out || 0;
-    }
+    cashInTotal[r._id] = { in: r.in || 0, out: r.out || 0 };
   }
 
   /* =====================
-     INVESTOR WITHDRAWALS
+     WITHDRAWALS
   ===================== */
   const withdrawalsAgg = await Withdrawal.aggregate([
     { $match: buildDateMatch(from, to, "takenAt") },
@@ -258,33 +247,62 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   const withdrawals = { UZS: 0, USD: 0 };
   for (const w of withdrawalsAgg) {
-    if (w._id === "UZS") withdrawals.UZS = w.total || 0;
-    if (w._id === "USD") withdrawals.USD = w.total || 0;
+    withdrawals[w._id] = w.total || 0;
   }
 
   /* =====================
-     CASHFLOW (FINAL, REAL)
+     CASHFLOW TOTAL (ESKI FORMULA)
   ===================== */
-  const cashflow = {
+  const cashflowTotal = {
     UZS:
       (sales.uzs_paid || 0) +
-      cashInFlow.UZS.in -
-      cashInFlow.UZS.out -
+      cashInTotal.UZS.in -
+      cashInTotal.UZS.out -
       (expenses.UZS.total || 0) -
       withdrawals.UZS,
 
     USD:
       (sales.usd_paid || 0) +
-      cashInFlow.USD.in -
-      cashInFlow.USD.out -
+      cashInTotal.USD.in -
+      cashInTotal.USD.out -
       (expenses.USD.total || 0) -
       withdrawals.USD,
   };
 
-  const net_profit = {
-    UZS: (profit.UZS || 0) - (expenses.UZS.total || 0),
-    USD: (profit.USD || 0) - (expenses.USD.total || 0),
+  /* =====================
+     CASHFLOW BY METHOD (YANGI)
+  ===================== */
+ const cashInByMethodAgg = await CashIn.aggregate([
+   {
+     $match: {
+       ...buildDateMatch(from, to, "createdAt"),
+       amount: { $gt: 0 },
+     },
+   },
+   {
+     $group: {
+       _id: {
+         currency: "$currency",
+         method: { $ifNull: ["$payment_method", "CASH"] },
+         type: "$target_type",
+       },
+       total: { $sum: "$amount" },
+     },
+   },
+ ]);
+
+
+  const cashflowByMethod = {
+    UZS: { CASH: 0, CARD: 0 },
+    USD: { CASH: 0, CARD: 0 },
   };
+
+  for (const r of cashInByMethodAgg) {
+    const cur = r._id.currency;
+    const m = r._id.method || "CASH";
+    if (r._id.type === "CUSTOMER") cashflowByMethod[cur][m] += r.total;
+    if (r._id.type === "SUPPLIER") cashflowByMethod[cur][m] -= r.total;
+  }
 
   return {
     range: { from, to, tz, warehouseId },
@@ -293,7 +311,10 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
     profit: {
       gross: profit,
-      net: net_profit,
+      net: {
+        UZS: (profit.UZS || 0) - (expenses.UZS.total || 0),
+        USD: (profit.USD || 0) - (expenses.USD.total || 0),
+      },
     },
 
     expenses,
@@ -301,9 +322,10 @@ async function getOverview({ from, to, tz, warehouseId }) {
     balances,
 
     cashflow: {
-      total: cashflow,
+      total: cashflowTotal,
+      by_method: cashflowByMethod,
       breakdown: {
-        cash_in: cashInFlow,
+        cash_in: cashInTotal,
         expenses,
         withdrawals,
       },
@@ -311,55 +333,182 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 }
 
+
 /* =====================
    TIME SERIES
+===================== */
+/* =====================
+   TIME SERIES (FIXED)
 ===================== */
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
 
-  return Sale.aggregate([
-    { $match: { ...buildDateMatch(from, to), status: "COMPLETED" } },
+  const sales = await Sale.aggregate([
+    {
+      $match: { ...buildDateMatch(from, to, "createdAt"), status: "COMPLETED" },
+    },
     {
       $group: {
         _id: { $dateTrunc: { date: "$createdAt", unit, timezone: tz } },
-        uzs: { $sum: "$currencyTotals.UZS.paidAmount" },
-        usd: { $sum: "$currencyTotals.USD.paidAmount" },
+        count: { $sum: 1 },
+        uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
+        usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
       },
     },
     { $sort: { _id: 1 } },
+    {
+      $project: { _id: 0, date: "$_id", count: 1, uzs_total: 1, usd_total: 1 },
+    },
   ]);
+
+  const expRaw = await Expense.aggregate([
+    { $match: buildDateMatch(from, to, "expense_date") },
+    {
+      $group: {
+        _id: {
+          date: { $dateTrunc: { date: "$expense_date", unit, timezone: tz } },
+          currency: "$currency",
+        },
+        total: { $sum: "$amount" },
+      },
+    },
+    { $sort: { "_id.date": 1 } },
+  ]);
+
+  const map = new Map();
+  for (const r of expRaw) {
+    const key = new Date(r._id.date).toISOString();
+    const row = map.get(key) || { date: r._id.date, UZS: 0, USD: 0 };
+    row[r._id.currency] = r.total || 0;
+    map.set(key, row);
+  }
+
+  const expenses = Array.from(map.values()).sort(
+    (a, b) => new Date(a.date) - new Date(b.date)
+  );
+
+  const orders = await Order.aggregate([
+    { $match: buildDateMatch(from, to, "createdAt") },
+    {
+      $group: {
+        _id: { $dateTrunc: { date: "$createdAt", unit, timezone: tz } },
+        count: { $sum: 1 },
+        confirmed: {
+          $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
+        },
+        canceled: { $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] } },
+      },
+    },
+    { $sort: { _id: 1 } },
+    { $project: { _id: 0, date: "$_id", count: 1, confirmed: 1, canceled: 1 } },
+  ]);
+
+  return { group, sales, expenses, orders };
 }
+
 
 /* =====================
    TOP PRODUCTS
 ===================== */
-async function getTop({ from, to, limit }) {
+/* =====================
+   TOP PRODUCTS (FIXED)
+===================== */
+async function getTop({ from, to, limit = 10 }) {
   return Sale.aggregate([
-    { $match: { ...buildDateMatch(from, to), status: "COMPLETED" } },
+    {
+      $match: {
+        ...buildDateMatch(from, to, "createdAt"),
+        status: "COMPLETED",
+      },
+    },
+
     { $unwind: "$items" },
+
+    // 1️⃣ PRODUCT BO‘YICHA GROUP
     {
       $group: {
         _id: "$items.productId",
         qty: { $sum: "$items.qty" },
       },
     },
+
+    // 2️⃣ SORT (ENG KO‘P SOTILGAN)
     { $sort: { qty: -1 } },
+
+    // 3️⃣ LIMIT
     { $limit: limit },
+
+    // 4️⃣ PRODUCT LOOKUP
+    {
+      $lookup: {
+        from: "products", // ⚠️ collection nomi
+        localField: "_id",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+
+    // 5️⃣ ARRAY → OBJECT
+    { $unwind: "$product" },
+
+    // 6️⃣ FINAL FORMAT
+    {
+      $project: {
+        _id: 0,
+        product_id: "$product._id",
+        name: "$product.name",
+        model: "$product.model",
+        category: "$product.category",
+        unit: "$product.unit",
+        qty: 1,
+      },
+    },
   ]);
 }
+
 
 /* =====================
    STOCK
 ===================== */
+/* =====================
+   STOCK (FIXED & EXTENDED)
+===================== */
 async function getStock() {
-  return Product.aggregate([
+  const byCurrency = await Product.aggregate([
     {
       $group: {
         _id: "$warehouse_currency",
+
+        // nechta mahsulot turi
+        sku: { $sum: 1 },
+
+        // jami qty
         total_qty: { $sum: "$qty" },
+
+        // ombordagi qiymat (kelish narxida)
+        valuation_buy: {
+          $sum: { $multiply: ["$qty", "$buy_price"] },
+        },
+
+        // ombordagi qiymat (sotuv narxida)
+        valuation_sell: {
+          $sum: { $multiply: ["$qty", "$sell_price"] },
+        },
+      },
+    },
+    {
+      $project: {
+        _id: 0,
+        currency: "$_id",
+        sku: 1,
+        total_qty: 1,
+        valuation_buy: 1,
+        valuation_sell: 1,
       },
     },
   ]);
+
+  return { byCurrency };
 }
 
 module.exports = {

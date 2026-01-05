@@ -191,25 +191,72 @@ exports.getProductById = async (req, res) => {
 ======================= */
 exports.updateProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const { id } = req.params;
+
+    const product = await Product.findById(id);
     if (!product) {
-      return res.status(404).json({ ok: false, message: "Mahsulot topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Mahsulot topilmadi",
+      });
     }
 
-    // body update
-    if (req.body.name) product.name = req.body.name;
+    const {
+      supplier_id,
+      name,
+      model,
+      color,
+      category,
+      unit,
+      warehouse_currency,
+      qty,
+      buy_price,
+      sell_price,
+      min_qty,
+      description,
+    } = req.body || {};
 
-    // rasm bo‘lsa
+    // 🔹 STRING FIELDS
+    if (supplier_id) product.supplier_id = supplier_id;
+    if (name !== undefined) product.name = String(name).trim();
+    if (model !== undefined) product.model = String(model).trim();
+    if (color !== undefined) product.color = String(color).trim();
+    if (category !== undefined) product.category = String(category).trim();
+    if (description !== undefined)
+      product.description = String(description).trim();
+
+    // 🔹 ENUM / IMPORTANT
+    if (unit) product.unit = unit;
+    if (warehouse_currency) product.warehouse_currency = warehouse_currency;
+
+    // 🔹 NUMBER FIELDS
+    if (qty !== undefined) product.qty = Number(qty) || 0;
+    if (buy_price !== undefined) product.buy_price = Number(buy_price) || 0;
+    if (sell_price !== undefined) product.sell_price = Number(sell_price) || 0;
+    if (min_qty !== undefined) product.min_qty = Number(min_qty) || 0;
+
+    // 🔹 IMAGE (AGAR KELSA – QO‘SHADI)
     if (req.file) {
+      product.images = product.images || [];
       product.images.push(`/uploads/products/${req.file.filename}`);
     }
 
     await product.save();
-    res.json({ ok: true, product });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
+
+    return res.json({
+      ok: true,
+      message: "Mahsulot yangilandi",
+      product,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
+
 
 /* =======================
    DELETE PRODUCT

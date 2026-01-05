@@ -444,7 +444,38 @@ exports.getCustomerSummary = async (req, res) => {
     ]);
 
     /* =========================
-       3. SALES SUMMARY
+       3. ORDERS LIST (DETAIL 🔥)
+    ========================= */
+    const ordersListRaw = await Order.find({ customerId: id })
+      .sort({ createdAt: -1 })
+      .limit(5)
+      .populate({
+        path: "items.productId",
+        select: "name model category unit",
+      })
+      .lean();
+
+    const ordersList = ordersListRaw.map((o) => ({
+      _id: o._id,
+      status: o.status,
+      createdAt: o.createdAt,
+      items: (o.items || []).map((it) => ({
+        product_id: it.productId?._id || null,
+        name: it.productId?.name || "",
+        model: it.productId?.model || "",
+        category: it.productId?.category || "",
+        unit: it.productId?.unit || "",
+        qty: it.qty,
+        price: it.price,
+        currency: it.currency,
+        subtotal: it.subtotal,
+      })),
+      total_uzs: o.total_uzs || 0,
+      total_usd: o.total_usd || 0,
+    }));
+
+    /* =========================
+       4. SALES SUMMARY
     ========================= */
     const [saleAgg] = await Sale.aggregate([
       { $match: { customerId: new mongoose.Types.ObjectId(id) } },
@@ -464,29 +495,45 @@ exports.getCustomerSummary = async (req, res) => {
     ]);
 
     /* =========================
-       4. LAST SALES (HISTORY)
+       5. LAST SALES (DETAIL 🔥)
     ========================= */
-    const lastSales = await Sale.find({ customerId: id })
+    const lastSalesRaw = await Sale.find({ customerId: id })
       .sort({ createdAt: -1 })
-      .limit(20)
-      .select("invoiceNo createdAt totals currencyTotals status payments note")
+      .limit(10)
+      .populate({
+        path: "items.productId",
+        select: "name model category unit",
+      })
       .lean();
 
+    const lastSales = lastSalesRaw.map((s) => ({
+      _id: s._id,
+      invoiceNo: s.invoiceNo,
+      status: s.status,
+      createdAt: s.createdAt,
+      items: (s.items || []).map((it) => ({
+        product_id: it.productId?._id || null,
+        name: it.productId?.name || "",
+        model: it.productId?.model || "",
+        category: it.productId?.category || "",
+        unit: it.productId?.unit || "",
+        qty: it.qty,
+        sell_price: it.sell_price,
+        currency: it.currency,
+        subtotal: it.subtotal,
+      })),
+      totals: s.totals || {},
+      currencyTotals: s.currencyTotals || {},
+      note: s.note || "",
+    }));
+
     /* =========================
-       5. RESPONSE
+       6. RESPONSE
     ========================= */
     return res.json({
       ok: true,
       data: {
-        customer: {
-          _id: customer._id,
-          name: customer.name,
-          phone: customer.phone,
-          address: customer.address,
-          note: customer.note,
-          createdAt: customer.createdAt,
-          balance: customer.balance,
-        },
+        customer,
 
         orders: {
           total: orderAgg?.ordersCount || 0,
@@ -498,6 +545,7 @@ exports.getCustomerSummary = async (req, res) => {
             USD: orderAgg?.totalUSD || 0,
           },
           lastOrderAt: orderAgg?.lastOrderAt || null,
+          list: ordersList, // 🔥 DETAIL QO‘SHILDI
         },
 
         sales: {
@@ -510,7 +558,7 @@ exports.getCustomerSummary = async (req, res) => {
         },
 
         history: {
-          lastSales,
+          lastSales, // 🔥 ITEMS BILAN
         },
       },
     });
@@ -522,6 +570,7 @@ exports.getCustomerSummary = async (req, res) => {
     });
   }
 };
+
 
 
 exports.payCustomerDebt = async (req, res) => {
