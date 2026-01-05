@@ -23,11 +23,11 @@ function buildDateMatch(from, to, field = "createdAt") {
 }
 
 /* =====================
-   OVERVIEW (DASHBOARD) - ✅ FIXED
+   OVERVIEW (DASHBOARD) - ✅ FIXED CASHFLOW
 ===================== */
 async function getOverview({ from, to, tz, warehouseId }) {
   /* =====================
-     SALES (✅ FIXED - QARZGA HAM HISOBLANADI)
+     SALES
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
@@ -54,7 +54,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
         _id: null,
         count: { $sum: 1 },
 
-        // ✅ GRAND TOTAL (qarzga ham hisoblanadi)
         uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
         uzs_paid: { $sum: "$currencyTotals.UZS.paidAmount" },
         uzs_discount: { $sum: "$currencyTotals.UZS.discount" },
@@ -202,7 +201,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASH-IN
+     CASH-IN (FAQAT ALOHIDA TO'LOVLAR)
   ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
@@ -252,15 +251,22 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASHFLOW TOTAL (ESKI FORMULA)
+     ✅ CASHFLOW TOTAL (TO'G'RILANDI)
+     
+     PUL OQIMI = 
+       + Sales to'langan pul (sales.uzs_paid)
+       + Mijozlardan alohida qarz to'lovlari (cashInTotal.in)
+       - Ta'minotchilarga to'lovlar (cashInTotal.out)
+       - Xarajatlar (expenses)
+       - Pul yechish (withdrawals)
   ===================== */
   const cashflowTotal = {
     UZS:
-      (sales.uzs_paid || 0) +
-      cashInTotal.UZS.in -
-      cashInTotal.UZS.out -
-      (expenses.UZS.total || 0) -
-      withdrawals.UZS,
+      (sales.uzs_paid || 0) + // sotuvdan to'langan
+      cashInTotal.UZS.in - // mijozdan qarz to'lovlari
+      cashInTotal.UZS.out - // ta'minotchiga to'lovlar
+      (expenses.UZS.total || 0) - // xarajatlar
+      withdrawals.UZS, // pul yechish
 
     USD:
       (sales.usd_paid || 0) +
@@ -325,6 +331,10 @@ async function getOverview({ from, to, tz, warehouseId }) {
       total: cashflowTotal,
       by_method: cashflowByMethod,
       breakdown: {
+        sales_paid: {
+          UZS: sales.uzs_paid || 0,
+          USD: sales.usd_paid || 0,
+        },
         cash_in: cashInTotal,
         expenses,
         withdrawals,
