@@ -18,7 +18,9 @@ const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
 const withdrawalController = require("../controllers/withdrawal.controller");
 const cashInController = require("../controllers/cashIn.controller");
-
+const {
+  createProductWriteOff,
+} = require("../controllers/productWriteOff.controller");
 
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
@@ -472,6 +474,16 @@ router.get(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   cashInController.getCashInReportAll
+);
+
+
+
+// faqat ADMIN yoki OMBORCHI
+router.post(
+  "/products/write-off",
+  rAuth,
+  rRole("ADMIN", "WAREHOUSE"),
+  createProductWriteOff
 );
 
 
