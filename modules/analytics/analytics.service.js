@@ -145,45 +145,63 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     DEBT (SALE + CASH-IN)
+     ORDERS
   ===================== */
-
-  // 1) Sale orqali yaratilgan qarz
-  const debtCreated = {
-    UZS: sales.uzs_total || 0,
-    USD: sales.usd_total || 0,
-  };
-
-  // 2) CashIn orqali yopilgan qarz (faqat CUSTOMER)
-  const debtPaidAgg = await CashIn.aggregate([
-    {
-      $match: {
-        ...buildDateMatch(from, to, "createdAt"),
-        target_type: "CUSTOMER",
-        amount: { $gt: 0 },
-      },
-    },
+  const ordersAgg = await Order.aggregate([
+    { $match: buildDateMatch(from, to, "createdAt") },
     {
       $group: {
-        _id: "$currency",
-        paid: { $sum: "$amount" },
+        _id: "$status",
+        count: { $sum: 1 },
+        total_uzs: { $sum: "$total_uzs" },
+        total_usd: { $sum: "$total_usd" },
       },
     },
   ]);
 
-  const debtPaid = { UZS: 0, USD: 0 };
-  for (const r of debtPaidAgg) {
-    debtPaid[r._id] = r.paid || 0;
-  }
-
-  // 3) Net qarz
-  const debtNet = {
-    UZS: Math.max(0, debtCreated.UZS - debtPaid.UZS),
-    USD: Math.max(0, debtCreated.USD - debtPaid.USD),
+  const orders = {
+    NEW: { count: 0, total_uzs: 0, total_usd: 0 },
+    CONFIRMED: { count: 0, total_uzs: 0, total_usd: 0 },
+    CANCELED: { count: 0, total_uzs: 0, total_usd: 0 },
   };
 
+  for (const o of ordersAgg) {
+    if (orders[o._id]) orders[o._id] = o;
+  }
+
   /* =====================
-     CASH-IN TOTAL
+     BALANCES
+  ===================== */
+  const balances = {
+    customers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
+    suppliers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
+  };
+
+  const customers = await Customer.find(
+    { isActive: true },
+    { balance: 1 }
+  ).lean();
+  for (const c of customers) {
+    if (c.balance?.UZS > 0) balances.customers.debt.UZS += c.balance.UZS;
+    if (c.balance?.UZS < 0)
+      balances.customers.prepaid.UZS += Math.abs(c.balance.UZS);
+    if (c.balance?.USD > 0) balances.customers.debt.USD += c.balance.USD;
+    if (c.balance?.USD < 0)
+      balances.customers.prepaid.USD += Math.abs(c.balance.USD);
+  }
+
+  const suppliers = await Supplier.find({}, { balance: 1 }).lean();
+  for (const s of suppliers) {
+    if (s.balance?.UZS > 0) balances.suppliers.debt.UZS += s.balance.UZS;
+    if (s.balance?.UZS < 0)
+      balances.suppliers.prepaid.UZS += Math.abs(s.balance.UZS);
+    if (s.balance?.USD > 0) balances.suppliers.debt.USD += s.balance.USD;
+    if (s.balance?.USD < 0)
+      balances.suppliers.prepaid.USD += Math.abs(s.balance.USD);
+  }
+
+  /* =====================
+     CASH-IN (OLD LOGIC – TOTAL)
   ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
@@ -233,7 +251,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASHFLOW TOTAL
+     CASHFLOW TOTAL (ESKI FORMULA)
   ===================== */
   const cashflowTotal = {
     UZS:
@@ -252,7 +270,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   /* =====================
-     CASHFLOW BY METHOD
+     CASHFLOW BY METHOD (YANGI)
   ===================== */
   const cashInByMethodAgg = await CashIn.aggregate([
     {
@@ -285,24 +303,10 @@ async function getOverview({ from, to, tz, warehouseId }) {
     if (r._id.type === "SUPPLIER") cashflowByMethod[cur][m] -= r.total;
   }
 
-  /* =====================
-     FINAL RETURN
-  ===================== */
   return {
     range: { from, to, tz, warehouseId },
 
-    sales: {
-      count: sales.count,
-      total: { UZS: sales.uzs_total, USD: sales.usd_total },
-      paid: { UZS: sales.uzs_paid, USD: sales.usd_paid },
-      discount: { UZS: sales.uzs_discount, USD: sales.usd_discount },
-    },
-
-    debt: {
-      created: debtCreated,
-      paid: debtPaid,
-      remaining: debtNet,
-    },
+    sales,
 
     profit: {
       gross: profit,
@@ -313,6 +317,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
 
     expenses,
+    orders,
+    balances,
+
     cashflow: {
       total: cashflowTotal,
       by_method: cashflowByMethod,
@@ -324,8 +331,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 }
-
-
 
 /* =====================
    TIME SERIES
@@ -399,7 +404,6 @@ async function getTimeSeries({ from, to, tz, group }) {
   return { group, sales, expenses, orders };
 }
 
-
 /* =====================
    TOP PRODUCTS
 ===================== */
@@ -458,7 +462,6 @@ async function getTop({ from, to, limit = 10 }) {
     },
   ]);
 }
-
 
 /* =====================
    STOCK

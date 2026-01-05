@@ -3,6 +3,8 @@ const CashIn = require("../modules/cashIn/CashIn");
 const Customer = require("../modules/Customer/Customer");
 const Supplier = require("../modules/suppliers/Supplier");
 
+const Sale = require("../modules/sales/Sale");  
+
 /* =========================
    CREATE CASH-IN
 ========================= */
@@ -17,7 +19,7 @@ exports.createCashIn = async (req, res) => {
       supplier_id,
       amount,
       currency = "UZS",
-      payment_method = "CASH", // 🔥 YANGI
+      payment_method = "CASH",
       note,
     } = req.body || {};
 
@@ -66,12 +68,61 @@ exports.createCashIn = async (req, res) => {
     }
 
     /* =========================
-       BALANCE UPDATE
-       (+amount → qarz yopiladi)
+       🔥 SALE QARZINI YOPISH (FIFO)
+       FAQAT MIJOZ + PUL KELSA
+    ========================= */
+    if (target_type === "CUSTOMER" && delta > 0) {
+      const debtField = `currencyTotals.${currency}.debtAmount`;
+      const paidField = `currencyTotals.${currency}.paidAmount`;
+
+      const sales = await Sale.find({
+        customerId: doc._id,
+        status: "COMPLETED",
+        [debtField]: { $gt: 0 },
+      })
+        .sort({ createdAt: 1 }) // FIFO
+        .select("_id currencyTotals")
+        .session(session);
+
+      let remaining = delta;
+      const bulkOps = [];
+
+      for (const s of sales) {
+        if (remaining <= 0) break;
+
+        const cur = s.currencyTotals[currency];
+        const debt = Number(cur.debtAmount || 0);
+        const paid = Number(cur.paidAmount || 0);
+
+        if (debt <= 0) continue;
+
+        const used = Math.min(debt, remaining);
+        remaining -= used;
+
+        bulkOps.push({
+          updateOne: {
+            filter: { _id: s._id },
+            update: {
+              $set: {
+                [paidField]: paid + used,
+                [debtField]: debt - used,
+              },
+            },
+          },
+        });
+      }
+
+      if (bulkOps.length) {
+        await Sale.bulkWrite(bulkOps, { session });
+      }
+    }
+
+    /* =========================
+       CUSTOMER / SUPPLIER BALANCE
+       FORMULA: old - delta
     ========================= */
     const prevBalance = Number(doc.balance?.[currency] || 0);
     const newBalance = prevBalance - delta;
-
     doc.balance[currency] = newBalance;
 
     /* =========================
@@ -140,6 +191,7 @@ exports.createCashIn = async (req, res) => {
     session.endSession();
   }
 };
+
 
 /* =========================
    GET CASH-IN REPORT (DAY)
