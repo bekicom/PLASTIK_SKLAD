@@ -424,6 +424,7 @@ router.post(
   rRole("ADMIN", "CASHIER"),
   returnController.createReturn
 );
+router.get("/returns", returnController.getReturns);
 
 // CREATE
 router.post("/expenses", rAuth, expenseController.createExpense);

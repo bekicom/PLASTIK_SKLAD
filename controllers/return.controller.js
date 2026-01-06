@@ -1,12 +1,9 @@
 const mongoose = require("mongoose");
-
 const SaleReturn = require("../modules/returns/SaleReturn");
 const Sale = require("../modules/sales/Sale");
 const Warehouse = require("../modules/Warehouse/Warehouse");
+const Product = require("../modules/products/Product"); // 🔥 MUHIM
 
-/* =======================
-   HELPERS
-======================= */
 function safeNum(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
@@ -18,45 +15,34 @@ function asId(x) {
   return x;
 }
 
-/**
- * Warehouse stock update
- * Assumption: Warehouse schema:
- * products: [{ product_id, qty }]
- */
-async function updateWarehouseStock({
+async function updateProductStockPlus({
   session,
-  warehouseId,
   productId,
-  qtyPlus,
+  warehouseCurrency,
+  qty,
 }) {
-  const inc = safeNum(qtyPlus);
-  if (inc <= 0) return;
-
-  const r1 = await Warehouse.updateOne(
-    { _id: warehouseId, "products.product_id": productId },
-    { $inc: { "products.$.qty": inc } },
-    { session }
-  );
-
-  if (r1.modifiedCount === 0) {
-    await Warehouse.updateOne(
-      { _id: warehouseId },
-      { $push: { products: { product_id: productId, qty: inc } } },
-      { session }
-    );
+  if (!productId || !warehouseCurrency) {
+    throw new Error("productId yoki warehouseCurrency yo‘q");
   }
+
+  const product = await Product.findOne({
+    _id: productId,
+    warehouse_currency: warehouseCurrency,
+  }).session(session);
+
+  if (!product) {
+    throw new Error("Product topilmadi (warehouse_currency mos emas)");
+  }
+
+  product.qty += qty;
+
+  if (product.qty < 0) {
+    throw new Error("Product qty manfiy bo‘lib ketdi");
+  }
+
+  await product.save({ session });
 }
 
-/**
- * POST /returns/create
- * Body:
- * {
- *   sale_id,
- *   warehouse_id,
- *   items:[{ product_id, qty, reason? }],
- *   note?
- * }
- */
 exports.createReturn = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -64,6 +50,9 @@ exports.createReturn = async (req, res) => {
     let createdReturn = null;
 
     await session.withTransaction(async () => {
+      /* =====================
+         AUTH
+      ===================== */
       const userId = req.user?._id || req.user?.id;
       if (!userId) throw new Error("Auth required");
 
@@ -76,34 +65,30 @@ exports.createReturn = async (req, res) => {
       if (!Array.isArray(items) || items.length === 0)
         throw new Error("items majburiy");
 
+      /* =====================
+         LOAD DATA
+      ===================== */
       const warehouse = await Warehouse.findById(warehouse_id).session(session);
       if (!warehouse) throw new Error("Ombor topilmadi");
 
       const sale = await Sale.findById(sale_id).session(session);
       if (!sale) throw new Error("Sale topilmadi");
 
-      const customerId = asId(sale.customerId);
-      if (!customerId) throw new Error("Sale.customerId topilmadi");
-
-      if (!Array.isArray(sale.items) || sale.items.length === 0) {
+      if (!sale.customerId) throw new Error("Sale.customerId topilmadi");
+      if (!Array.isArray(sale.items) || sale.items.length === 0)
         throw new Error("Sale.items bo‘sh");
-      }
 
-      /* =======================
+      /* =====================
          SALE ITEM MAP
-      ======================= */
+      ===================== */
       const saleItemMap = new Map();
       for (const it of sale.items) {
-        const pId = asId(it.productId);
-        const wId = asId(it.warehouseId);
-        if (pId && wId) {
-          saleItemMap.set(`${pId}|${wId}`, it);
-        }
+        saleItemMap.set(`${asId(it.productId)}|${asId(it.warehouseId)}`, it);
       }
 
-      /* =======================
+      /* =====================
          NORMALIZE RETURN ITEMS
-      ======================= */
+      ===================== */
       const normalizedItems = [];
       let returnSubtotal = 0;
 
@@ -124,11 +109,14 @@ exports.createReturn = async (req, res) => {
           );
         }
 
-        const price = safeNum(
-          saleItem.price ?? saleItem.price_snapshot ?? saleItem.priceSnapshot,
-          0
-        );
+        // ❗ OVER-RETURN HIMOYASI
+        if (qty > saleItem.qty) {
+          throw new Error(
+            `Qaytarilayotgan miqdor sotilgandan katta (${qty} > ${saleItem.qty})`
+          );
+        }
 
+        const price = safeNum(saleItem.sell_price, 0);
         const subtotal = price * qty;
 
         normalizedItems.push({
@@ -138,23 +126,23 @@ exports.createReturn = async (req, res) => {
           subtotal,
           reason: row?.reason ? String(row.reason).trim() : undefined,
 
-          // snapshotlar
-          name_snapshot: saleItem.nameSnapshot,
-          unit_snapshot: saleItem.unitSnapshot,
-          price_snapshot: price,
+          product_snapshot: {
+            name: saleItem.productSnapshot?.name,
+            unit: saleItem.productSnapshot?.unit,
+          },
         });
 
         returnSubtotal += subtotal;
       }
 
-      /* =======================
-         CREATE RETURN DOC
-      ======================= */
+      /* =====================
+         CREATE RETURN
+      ===================== */
       const [ret] = await SaleReturn.create(
         [
           {
             sale_id: sale._id,
-            customer_id: customerId,
+            customer_id: sale.customerId,
             warehouse_id: warehouse._id,
             items: normalizedItems,
             returnSubtotal,
@@ -167,21 +155,21 @@ exports.createReturn = async (req, res) => {
 
       createdReturn = ret;
 
-      /* =======================
-         WAREHOUSE STOCK +
-      ======================= */
+      /* =====================
+         PRODUCT STOCK +
+      ===================== */
       for (const it of normalizedItems) {
-        await updateWarehouseStock({
+        await updateProductStockPlus({
           session,
-          warehouseId: warehouse._id,
           productId: it.product_id,
-          qtyPlus: it.qty,
+          warehouseCurrency: warehouse.currency, // 🔥 MUHIM
+          qty: it.qty,
         });
       }
 
-      /* =======================
-         UPDATE SALE (MUHIM JOY)
-      ======================= */
+      /* =====================
+         UPDATE SALE ITEMS
+      ===================== */
       const retMap = new Map();
       for (const it of normalizedItems) {
         const k = `${it.product_id}|${warehouse._id}`;
@@ -199,30 +187,22 @@ exports.createReturn = async (req, res) => {
           continue;
         }
 
-        const oldQty = safeNum(it.qty);
-        const newQty = oldQty - retQty;
+        const newQty = it.qty - retQty;
 
         if (newQty > 0) {
           it.qty = newQty;
-
-          const price = safeNum(
-            it.price ?? it.price_snapshot ?? it.priceSnapshot,
-            0
-          );
-
-          it.subtotal = price * newQty;
+          it.subtotal = safeNum(it.sell_price, 0) * newQty;
           newSaleItems.push(it);
         }
       }
 
-      // ❗ ENG MUHIM FIX
+      /* =====================
+         RETURN STATUS
+      ===================== */
       if (newSaleItems.length === 0) {
-        // FULL RETURN
         sale.returnStatus = "FULL_RETURN";
         sale.isHidden = true;
-        // ❌ sale.items = [] QILMAYMIZ
       } else {
-        // PARTIAL RETURN
         sale.returnStatus = "PARTIAL_RETURN";
         sale.items = newSaleItems;
       }
@@ -232,7 +212,7 @@ exports.createReturn = async (req, res) => {
 
     return res.status(201).json({
       ok: true,
-      message: "Vozvrat yaratildi",
+      message: "Vozvrat muvaffaqiyatli yaratildi",
       data: createdReturn,
     });
   } catch (err) {
@@ -242,5 +222,108 @@ exports.createReturn = async (req, res) => {
     });
   } finally {
     session.endSession();
+  }
+};
+
+exports.getReturns = async (req, res) => {
+  try {
+    const filter = {};
+
+    /* =====================
+       FILTERS
+    ===================== */
+    if (req.query.sale_id && mongoose.isValidObjectId(req.query.sale_id)) {
+      filter.sale_id = req.query.sale_id;
+    }
+
+    if (
+      req.query.customer_id &&
+      mongoose.isValidObjectId(req.query.customer_id)
+    ) {
+      filter.customer_id = req.query.customer_id;
+    }
+
+    if (
+      req.query.warehouse_id &&
+      mongoose.isValidObjectId(req.query.warehouse_id)
+    ) {
+      filter.warehouse_id = req.query.warehouse_id;
+    }
+
+    /* =====================
+       QUERY
+    ===================== */
+    const rows = await SaleReturn.find(filter)
+      .sort({ createdAt: -1 })
+      .populate({
+        path: "sale_id",
+        select: "invoiceNo createdAt",
+      })
+      .populate({
+        path: "customer_id",
+        select: "name phone",
+      })
+      .populate({
+        path: "warehouse_id",
+        select: "name currency",
+      })
+      .lean();
+
+    /* =====================
+       MAP RESPONSE
+    ===================== */
+    const items = rows.map((r) => ({
+      _id: r._id,
+      createdAt: r.createdAt,
+
+      sale: r.sale_id
+        ? {
+            _id: r.sale_id._id,
+            invoiceNo: r.sale_id.invoiceNo,
+            createdAt: r.sale_id.createdAt,
+          }
+        : null,
+
+      customer: r.customer_id
+        ? {
+            _id: r.customer_id._id,
+            name: r.customer_id.name,
+            phone: r.customer_id.phone,
+          }
+        : null,
+
+      warehouse: r.warehouse_id
+        ? {
+            _id: r.warehouse_id._id,
+            name: r.warehouse_id.name,
+            currency: r.warehouse_id.currency,
+          }
+        : null,
+
+      items: (r.items || []).map((it) => ({
+        product_id: it.product_id,
+        qty: it.qty,
+        price: it.price,
+        subtotal: it.subtotal,
+        reason: it.reason || "",
+        product_snapshot: it.product_snapshot || null,
+      })),
+
+      returnSubtotal: r.returnSubtotal,
+      note: r.note || "",
+      createdBy: r.createdBy,
+    }));
+
+    return res.json({
+      ok: true,
+      total: items.length,
+      items,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Vozvratlarni olishda xato",
+      error: err.message,
+    });
   }
 };

@@ -22,11 +22,14 @@ const Counter =
 /**
  * Utils
  */
-function safeNumber(n, def = 0) {
+function safeNum(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
 }
 
+function escapeRegex(text = "") {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 function normalizePhone(phone) {
   if (!phone) return undefined;
   return String(phone).replace(/\s+/g, "").trim();
@@ -421,6 +424,9 @@ exports.createSale = async (req, res) => {
 
 exports.getSales = async (req, res) => {
   try {
+    /* =====================
+       FILTER
+    ===================== */
     const filter = {};
 
     if (req.query.status) {
@@ -434,12 +440,29 @@ exports.getSales = async (req, res) => {
       filter.customerId = req.query.customerId;
     }
 
+    if (
+      req.query.warehouseId &&
+      mongoose.isValidObjectId(req.query.warehouseId)
+    ) {
+      filter["items.warehouseId"] = req.query.warehouseId;
+    }
+
+    /* =====================
+       QUERY
+    ===================== */
     const rows = await Sale.find(filter)
       .sort({ createdAt: -1 })
       .populate("customerId", "name phone address note")
       .populate("soldBy", "name phone login")
+      .populate({
+        path: "items.warehouseId",
+        select: "name currency",
+      })
       .lean();
 
+    /* =====================
+       MAP RESPONSE
+    ===================== */
     const items = rows.map((sale) => ({
       _id: sale._id,
       invoiceNo: sale.invoiceNo,
@@ -469,6 +492,14 @@ exports.getSales = async (req, res) => {
       items: (sale.items || []).map((it) => ({
         product_id: it.productId,
 
+        warehouse: it.warehouseId
+          ? {
+              _id: it.warehouseId._id,
+              name: it.warehouseId.name,
+              currency: it.warehouseId.currency,
+            }
+          : null,
+
         product_snapshot: {
           name: it.productSnapshot?.name,
           model: it.productSnapshot?.model,
@@ -479,18 +510,15 @@ exports.getSales = async (req, res) => {
         },
 
         qty: Number(it.qty),
-        price_snapshot: Number(it.sell_price),
+        sell_price_snapshot: Number(it.sell_price),
         buy_price_snapshot: Number(it.buy_price),
         subtotal: Number(it.subtotal),
         currency_snapshot: it.currency,
       })),
 
-      totals: sale.totals,
-
-      currencyTotals: sale.currencyTotals,
-
-      payments: sale.payments,
-
+      totals: sale.totals || null,
+      currencyTotals: sale.currencyTotals || null,
+      payments: sale.payments || [],
       note: sale.note || "",
     }));
 
@@ -500,6 +528,7 @@ exports.getSales = async (req, res) => {
       items,
     });
   } catch (err) {
+    console.error("getSales error:", err);
     return res.status(500).json({
       ok: false,
       message: "Sales olishda xato",
@@ -593,13 +622,14 @@ exports.searchSalesByProduct = async (req, res) => {
 
     const rx = new RegExp(escapeRegex(q), "i");
 
+    /* =====================
+       FILTER
+    ===================== */
     const filter = {
-      "items.nameSnapshot": rx,
+      status: "COMPLETED",
+      "items.productSnapshot.name": rx,
+      "items.qty": { $gt: 0 }, // 🔥 faqat qaytariladiganlar
     };
-
-    if (req.query.status) {
-      filter.status = String(req.query.status);
-    }
 
     if (
       req.query.customerId &&
@@ -608,26 +638,52 @@ exports.searchSalesByProduct = async (req, res) => {
       filter.customerId = new mongoose.Types.ObjectId(req.query.customerId);
     }
 
+    if (
+      req.query.warehouseId &&
+      mongoose.isValidObjectId(req.query.warehouseId)
+    ) {
+      filter["items.warehouseId"] = new mongoose.Types.ObjectId(
+        req.query.warehouseId
+      );
+    }
+
+    /* =====================
+       QUERY
+    ===================== */
     const rows = await Sale.find(filter)
       .sort({ createdAt: -1 })
       .select(
-        "invoiceNo createdAt status customerSnapshot customerId totals currencyTotals items"
+        "invoiceNo createdAt status customerSnapshot customerId items totals currencyTotals"
       )
       .lean();
 
-    const items = rows.map((s) => ({
-      _id: s._id,
-      invoiceNo: s.invoiceNo,
-      createdAt: s.createdAt,
-      status: s.status,
-      customerSnapshot: s.customerSnapshot,
-      customerId: s.customerId,
-      totals: s.totals,
-      currencyTotals: s.currencyTotals,
-      matchedItems: (s.items || []).filter((it) =>
-        rx.test(String(it.nameSnapshot || ""))
-      ),
-    }));
+    /* =====================
+       MAP RESPONSE
+    ===================== */
+    const items = rows
+      .map((s) => {
+        const matchedItems = (s.items || []).filter(
+          (it) =>
+            rx.test(String(it.productSnapshot?.name || "")) &&
+            safeNum(it.qty) > 0 &&
+            (!req.query.warehouseId ||
+              String(it.warehouseId) === String(req.query.warehouseId))
+        );
+
+        if (matchedItems.length === 0) return null;
+
+        return {
+          _id: s._id,
+          invoiceNo: s.invoiceNo,
+          createdAt: s.createdAt,
+          status: s.status,
+          customer: s.customerId || s.customerSnapshot,
+          totals: s.totals,
+          currencyTotals: s.currencyTotals,
+          matchedItems,
+        };
+      })
+      .filter(Boolean);
 
     return res.json({
       ok: true,
@@ -638,7 +694,7 @@ exports.searchSalesByProduct = async (req, res) => {
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Product bo'yicha sales qidirishda xato",
+      message: "Product bo‘yicha sales qidirishda xato",
       error: err.message,
     });
   }
