@@ -117,7 +117,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   const profit = profitAgg[0] || { UZS: 0, USD: 0 };
 
   /* =====================
-     EXPENSES
+     EXPENSES (REAL EXPENSE ONLY)
   ===================== */
   const expensesAgg = await Expense.aggregate([
     { $match: buildDateMatch(from, to, "expense_date") },
@@ -130,7 +130,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
   ]);
 
   const expenses = { UZS: { total: 0 }, USD: { total: 0 } };
-  for (const e of expensesAgg) expenses[e._id] = { total: e.total || 0 };
+  for (const e of expensesAgg) {
+    expenses[e._id] = { total: e.total || 0 };
+  }
 
   /* =====================
      BALANCES (REAL)
@@ -166,8 +168,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
       $group: {
         _id: {
           target: "$target_type", // CUSTOMER | SUPPLIER
-          currency: "$currency", // UZS | USD
-          method: { $ifNull: ["$payment_method", "CASH"] }, // CASH | CARD
+          currency: "$currency",
+          method: { $ifNull: ["$payment_method", "CASH"] },
         },
         total: { $sum: "$amount" },
       },
@@ -187,7 +189,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   for (const r of cashInAgg) {
     const { target, currency, method } = r._id;
-
     if (target === "CUSTOMER") {
       cash_in_summary.customers[currency][method] += r.total;
     }
@@ -197,7 +198,30 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASHFLOW TOTAL
+     INVESTOR WITHDRAWALS (🔥 MUHIM)
+  ===================== */
+  const withdrawalAgg = await Withdrawal.aggregate([
+    {
+      $match: {
+        ...buildDateMatch(from, to, "takenAt"),
+        type: "INVESTOR_WITHDRAWAL",
+      },
+    },
+    {
+      $group: {
+        _id: "$currency",
+        total: { $sum: "$amount" },
+      },
+    },
+  ]);
+
+  const investor_withdrawals = { UZS: 0, USD: 0 };
+  for (const w of withdrawalAgg) {
+    investor_withdrawals[w._id] = w.total || 0;
+  }
+
+  /* =====================
+     CASHFLOW TOTAL (REAL)
   ===================== */
   const customersPaid = {
     UZS:
@@ -218,15 +242,20 @@ async function getOverview({ from, to, tz, warehouseId }) {
       (sales.uzs_paid || 0) +
       customersPaid.UZS -
       suppliersPaid.UZS -
-      (expenses.UZS.total || 0),
+      (expenses.UZS.total || 0) -
+      investor_withdrawals.UZS,
 
     USD:
       (sales.usd_paid || 0) +
       customersPaid.USD -
       suppliersPaid.USD -
-      (expenses.USD.total || 0),
+      (expenses.USD.total || 0) -
+      investor_withdrawals.USD,
   };
 
+  /* =====================
+     RESPONSE
+  ===================== */
   return {
     range: { from, to, tz, warehouseId },
 
@@ -243,13 +272,15 @@ async function getOverview({ from, to, tz, warehouseId }) {
     expenses,
     balances,
 
-    cash_in_summary, // 🔥 NAQD / KARTA AJRATILGAN
+    cash_in_summary, // CASH / CARD
+    investor_withdrawals, // 🔥 INVESTOR PULLARI
 
     cashflow: {
       total: cashflowTotal,
     },
   };
 }
+
 
 
 /* =====================

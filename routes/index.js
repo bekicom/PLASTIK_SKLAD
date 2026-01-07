@@ -449,14 +449,14 @@ router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
 router.post(
   "/withdrawals/create",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   withdrawalController.createWithdrawal
 );
 
 router.get(
   "/withdrawals",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   withdrawalController.getWithdrawals
 );
 

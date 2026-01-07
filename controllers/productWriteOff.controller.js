@@ -24,7 +24,7 @@ exports.createProductWriteOff = async (req, res) => {
     }
 
     /* =========================
-       1. PRODUCTNI OLAMIZ
+       1. PRODUCT
     ========================= */
     const product = await Product.findById(product_id).session(session);
     if (!product) throw new Error("Product topilmadi");
@@ -34,18 +34,18 @@ exports.createProductWriteOff = async (req, res) => {
     }
 
     /* =========================
-       2. STOCK KAMAYTIRISH
+       2. STOCK KAMAYADI
     ========================= */
     product.qty -= writeQty;
     await product.save({ session });
 
     /* =========================
-       3. ZARARNI HISOBLASH
+       3. ZARAR (FAKAT HISOB UCHUN)
     ========================= */
     const lossAmount = writeQty * Number(product.buy_price || 0);
 
     /* =========================
-       4. WRITE-OFF LOG
+       4. WRITE-OFF LOG (YAGONA JOY)
     ========================= */
     await ProductWriteOff.create(
       [
@@ -61,23 +61,8 @@ exports.createProductWriteOff = async (req, res) => {
       { session }
     );
 
-    /* =========================
-       5. EXPENSE YOZISH
-    ========================= */
- await Expense.create(
-   [
-     {
-       category: "PRODUCT_WRITE_OFF",
-       amount: lossAmount,
-       currency: product.warehouse_currency,
-       note: `${product.name} – ${writeQty} dona spisat (${reason})`,
-       expense_date: new Date(),
-       createdBy: req.user?._id, // 🔥 MANA SHU YETISHMAYOTGAN EDI
-     },
-   ],
-   { session }
- );
-
+    // ❌ EXPENSE YO‘Q
+    // ❌ CASHFLOW YO‘Q
 
     await session.commitTransaction();
 
@@ -91,7 +76,7 @@ exports.createProductWriteOff = async (req, res) => {
       },
       write_off: {
         qty: writeQty,
-        loss: lossAmount,
+        loss_amount: lossAmount,
         currency: product.warehouse_currency,
       },
     });

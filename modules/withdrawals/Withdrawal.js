@@ -1,6 +1,6 @@
 const mongoose = require("mongoose");
 
-const WithdrawalSchema = new mongoose.Schema(
+const withdrawalSchema = new mongoose.Schema(
   {
     investor_name: {
       type: String,
@@ -11,7 +11,7 @@ const WithdrawalSchema = new mongoose.Schema(
     amount: {
       type: Number,
       required: true,
-      min: 0.01,
+      min: 0,
     },
 
     currency: {
@@ -22,16 +22,26 @@ const WithdrawalSchema = new mongoose.Schema(
 
     purpose: {
       type: String,
-      trim: true,
       required: true,
+      trim: true,
+    },
+
+    // 🔥 MUHIM MAYDON
+    type: {
+      type: String,
+      enum: ["INVESTOR_WITHDRAWAL"],
+      default: "INVESTOR_WITHDRAWAL",
+      index: true,
     },
 
     takenAt: {
       type: Date,
       default: Date.now,
+      index: true,
     },
   },
   { timestamps: true }
 );
 
-module.exports = mongoose.model("Withdrawal", WithdrawalSchema);
+module.exports =
+  mongoose.models.Withdrawal || mongoose.model("Withdrawal", withdrawalSchema);
