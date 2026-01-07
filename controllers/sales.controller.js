@@ -38,96 +38,11 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-// function calcItemsSubtotals(items) {
-//   return items.map((it) => {
-//     const qty = safeNumber(it.qty);
-//     const sell_price = safeNumber(it.sell_price);
-//     const subtotal = +(qty * sell_price).toFixed(6);
+function safeNumber(n, def = 0) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : def;
+}
 
-//     return {
-//       ...it,
-//       qty,
-//       sell_price,
-//       subtotal,
-//     };
-//   });
-// }
-
-// function calcCurrencyTotals(items, discount = 0, payments = []) {
-//   const totals = {
-//     UZS: {
-//       subtotal: 0,
-//       discount: 0,
-//       grandTotal: 0,
-//       paidAmount: 0,
-//       debtAmount: 0,
-//     },
-//     USD: {
-//       subtotal: 0,
-//       discount: 0,
-//       grandTotal: 0,
-//       paidAmount: 0,
-//       debtAmount: 0,
-//     },
-//   };
-
-//   for (const it of items) {
-//     if (!totals[it.currency]) continue;
-//     totals[it.currency].subtotal += safeNumber(it.subtotal);
-//   }
-
-//   const totalAll = totals.UZS.subtotal + totals.USD.subtotal;
-//   const disc = Math.max(0, safeNumber(discount));
-
-//   if (totalAll > 0 && disc > 0) {
-//     const uzsShare = totals.UZS.subtotal / totalAll;
-//     const usdShare = totals.USD.subtotal / totalAll;
-//     totals.UZS.discount = +(disc * uzsShare).toFixed(2);
-//     totals.USD.discount = +(disc * usdShare).toFixed(2);
-//   }
-
-//   totals.UZS.grandTotal = Math.max(
-//     0,
-//     +(totals.UZS.subtotal - totals.UZS.discount).toFixed(2)
-//   );
-//   totals.USD.grandTotal = Math.max(
-//     0,
-//     +(totals.USD.subtotal - totals.USD.discount).toFixed(2)
-//   );
-
-//   for (const p of payments || []) {
-//     const cur = p.currency;
-//     if (!totals[cur]) continue;
-//     totals[cur].paidAmount += Math.max(0, safeNumber(p.amount));
-//   }
-
-//   totals.UZS.paidAmount = +totals.UZS.paidAmount.toFixed(2);
-//   totals.USD.paidAmount = +totals.USD.paidAmount.toFixed(2);
-
-//   totals.UZS.debtAmount = Math.max(
-//     0,
-//     +(totals.UZS.grandTotal - totals.UZS.paidAmount).toFixed(2)
-//   );
-//   totals.USD.debtAmount = Math.max(
-//     0,
-//     +(totals.USD.grandTotal - totals.USD.paidAmount).toFixed(2)
-//   );
-
-//   return totals;
-// }
-
-// async function generateInvoiceNo(session) {
-//   const year = new Date().getFullYear();
-//   const key = `SALE_${year}`;
-//   const counter = await Counter.findOneAndUpdate(
-//     { key },
-//     { $inc: { seq: 1 } },
-//     { new: true, upsert: true, session }
-//   );
-
-//   const seqStr = String(counter.seq).padStart(6, "0");
-//   return `S-${year}-${seqStr}`;
-// }
 
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
