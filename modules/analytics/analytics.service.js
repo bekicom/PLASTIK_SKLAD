@@ -56,11 +56,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
         uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
         uzs_paid: { $sum: "$currencyTotals.UZS.paidAmount" },
-        uzs_discount: { $sum: "$currencyTotals.UZS.discount" },
 
         usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
         usd_paid: { $sum: "$currencyTotals.USD.paidAmount" },
-        usd_discount: { $sum: "$currencyTotals.USD.discount" },
       },
     },
     { $project: { _id: 0 } },
@@ -70,10 +68,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
     count: 0,
     uzs_total: 0,
     uzs_paid: 0,
-    uzs_discount: 0,
     usd_total: 0,
     usd_paid: 0,
-    usd_discount: 0,
   };
 
   /* =====================
@@ -129,79 +125,35 @@ async function getOverview({ from, to, tz, warehouseId }) {
       $group: {
         _id: "$currency",
         total: { $sum: "$amount" },
-        count: { $sum: 1 },
       },
     },
   ]);
 
-  const expenses = {
-    UZS: { total: 0, count: 0 },
-    USD: { total: 0, count: 0 },
-  };
-
-  for (const e of expensesAgg) {
-    if (e._id === "UZS") expenses.UZS = e;
-    if (e._id === "USD") expenses.USD = e;
-  }
+  const expenses = { UZS: { total: 0 }, USD: { total: 0 } };
+  for (const e of expensesAgg) expenses[e._id] = { total: e.total || 0 };
 
   /* =====================
-     ORDERS
-  ===================== */
-  const ordersAgg = await Order.aggregate([
-    { $match: buildDateMatch(from, to, "createdAt") },
-    {
-      $group: {
-        _id: "$status",
-        count: { $sum: 1 },
-        total_uzs: { $sum: "$total_uzs" },
-        total_usd: { $sum: "$total_usd" },
-      },
-    },
-  ]);
-
-  const orders = {
-    NEW: { count: 0, total_uzs: 0, total_usd: 0 },
-    CONFIRMED: { count: 0, total_uzs: 0, total_usd: 0 },
-    CANCELED: { count: 0, total_uzs: 0, total_usd: 0 },
-  };
-
-  for (const o of ordersAgg) {
-    if (orders[o._id]) orders[o._id] = o;
-  }
-
-  /* =====================
-     BALANCES
+     BALANCES (REAL)
   ===================== */
   const balances = {
-    customers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
-    suppliers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
+    customers: { debt: { UZS: 0, USD: 0 } },
+    suppliers: { debt: { UZS: 0, USD: 0 } },
   };
 
-  const customers = await Customer.find(
-    { isActive: true },
-    { balance: 1 }
-  ).lean();
+  const customers = await Customer.find({}, { balance: 1 }).lean();
   for (const c of customers) {
     if (c.balance?.UZS > 0) balances.customers.debt.UZS += c.balance.UZS;
-    if (c.balance?.UZS < 0)
-      balances.customers.prepaid.UZS += Math.abs(c.balance.UZS);
     if (c.balance?.USD > 0) balances.customers.debt.USD += c.balance.USD;
-    if (c.balance?.USD < 0)
-      balances.customers.prepaid.USD += Math.abs(c.balance.USD);
   }
 
   const suppliers = await Supplier.find({}, { balance: 1 }).lean();
   for (const s of suppliers) {
     if (s.balance?.UZS > 0) balances.suppliers.debt.UZS += s.balance.UZS;
-    if (s.balance?.UZS < 0)
-      balances.suppliers.prepaid.UZS += Math.abs(s.balance.UZS);
     if (s.balance?.USD > 0) balances.suppliers.debt.USD += s.balance.USD;
-    if (s.balance?.USD < 0)
-      balances.suppliers.prepaid.USD += Math.abs(s.balance.USD);
   }
 
   /* =====================
-     CASH-IN (FAQAT ALOHIDA TO'LOVLAR)
+     CASH-IN SUMMARY (CUSTOMER / SUPPLIER + CASH / CARD)
   ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
@@ -212,103 +164,68 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
     {
       $group: {
-        _id: "$currency",
-        in: {
-          $sum: {
-            $cond: [{ $eq: ["$target_type", "CUSTOMER"] }, "$amount", 0],
-          },
+        _id: {
+          target: "$target_type", // CUSTOMER | SUPPLIER
+          currency: "$currency", // UZS | USD
+          method: { $ifNull: ["$payment_method", "CASH"] }, // CASH | CARD
         },
-        out: {
-          $sum: {
-            $cond: [{ $eq: ["$target_type", "SUPPLIER"] }, "$amount", 0],
-          },
-        },
-      },
-    },
-  ]);
-
-  const cashInTotal = { UZS: { in: 0, out: 0 }, USD: { in: 0, out: 0 } };
-  for (const r of cashInAgg) {
-    cashInTotal[r._id] = { in: r.in || 0, out: r.out || 0 };
-  }
-
-  /* =====================
-     WITHDRAWALS
-  ===================== */
-  const withdrawalsAgg = await Withdrawal.aggregate([
-    { $match: buildDateMatch(from, to, "takenAt") },
-    {
-      $group: {
-        _id: "$currency",
         total: { $sum: "$amount" },
       },
     },
   ]);
 
-  const withdrawals = { UZS: 0, USD: 0 };
-  for (const w of withdrawalsAgg) {
-    withdrawals[w._id] = w.total || 0;
+  const cash_in_summary = {
+    customers: {
+      UZS: { CASH: 0, CARD: 0 },
+      USD: { CASH: 0, CARD: 0 },
+    },
+    suppliers: {
+      UZS: { CASH: 0, CARD: 0 },
+      USD: { CASH: 0, CARD: 0 },
+    },
+  };
+
+  for (const r of cashInAgg) {
+    const { target, currency, method } = r._id;
+
+    if (target === "CUSTOMER") {
+      cash_in_summary.customers[currency][method] += r.total;
+    }
+    if (target === "SUPPLIER") {
+      cash_in_summary.suppliers[currency][method] += r.total;
+    }
   }
 
   /* =====================
-     ✅ CASHFLOW TOTAL (TO'G'RILANDI)
-     
-     PUL OQIMI = 
-       + Sales to'langan pul (sales.uzs_paid)
-       + Mijozlardan alohida qarz to'lovlari (cashInTotal.in)
-       - Ta'minotchilarga to'lovlar (cashInTotal.out)
-       - Xarajatlar (expenses)
-       - Pul yechish (withdrawals)
+     CASHFLOW TOTAL
   ===================== */
+  const customersPaid = {
+    UZS:
+      cash_in_summary.customers.UZS.CASH + cash_in_summary.customers.UZS.CARD,
+    USD:
+      cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
+  };
+
+  const suppliersPaid = {
+    UZS:
+      cash_in_summary.suppliers.UZS.CASH + cash_in_summary.suppliers.UZS.CARD,
+    USD:
+      cash_in_summary.suppliers.USD.CASH + cash_in_summary.suppliers.USD.CARD,
+  };
+
   const cashflowTotal = {
     UZS:
-      (sales.uzs_paid || 0) + // sotuvdan to'langan
-      cashInTotal.UZS.in - // mijozdan qarz to'lovlari
-      cashInTotal.UZS.out - // ta'minotchiga to'lovlar
-      (expenses.UZS.total || 0) - // xarajatlar
-      withdrawals.UZS, // pul yechish
+      (sales.uzs_paid || 0) +
+      customersPaid.UZS -
+      suppliersPaid.UZS -
+      (expenses.UZS.total || 0),
 
     USD:
       (sales.usd_paid || 0) +
-      cashInTotal.USD.in -
-      cashInTotal.USD.out -
-      (expenses.USD.total || 0) -
-      withdrawals.USD,
+      customersPaid.USD -
+      suppliersPaid.USD -
+      (expenses.USD.total || 0),
   };
-
-  /* =====================
-     CASHFLOW BY METHOD
-  ===================== */
-  const cashInByMethodAgg = await CashIn.aggregate([
-    {
-      $match: {
-        ...buildDateMatch(from, to, "createdAt"),
-        amount: { $gt: 0 },
-      },
-    },
-    {
-      $group: {
-        _id: {
-          currency: "$currency",
-          method: { $ifNull: ["$payment_method", "CASH"] },
-          type: "$target_type",
-        },
-        total: { $sum: "$amount" },
-      },
-    },
-  ]);
-
-  const cashflowByMethod = {
-    UZS: { CASH: 0, CARD: 0 },
-    USD: { CASH: 0, CARD: 0 },
-  };
-
-  for (const r of cashInByMethodAgg) {
-    const cur = r._id.currency;
-    const m = r._id.method || "CASH";
-    if (r._id.type === "CUSTOMER") cashflowByMethod[cur][m] += r.total;
-    if (r._id.type === "SUPPLIER") cashflowByMethod[cur][m] -= r.total;
-  }
 
   return {
     range: { from, to, tz, warehouseId },
@@ -318,30 +235,22 @@ async function getOverview({ from, to, tz, warehouseId }) {
     profit: {
       gross: profit,
       net: {
-        UZS: (profit.UZS || 0) - (expenses.UZS.total || 0),
-        USD: (profit.USD || 0) - (expenses.USD.total || 0),
+        UZS: profit.UZS - expenses.UZS.total,
+        USD: profit.USD - expenses.USD.total,
       },
     },
 
     expenses,
-    orders,
     balances,
+
+    cash_in_summary, // 🔥 NAQD / KARTA AJRATILGAN
 
     cashflow: {
       total: cashflowTotal,
-      by_method: cashflowByMethod,
-      breakdown: {
-        sales_paid: {
-          UZS: sales.uzs_paid || 0,
-          USD: sales.usd_paid || 0,
-        },
-        cash_in: cashInTotal,
-        expenses,
-        withdrawals,
-      },
     },
   };
 }
+
 
 /* =====================
    TIME SERIES

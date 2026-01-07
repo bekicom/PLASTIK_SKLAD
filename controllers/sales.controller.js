@@ -38,96 +38,96 @@ function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function calcItemsSubtotals(items) {
-  return items.map((it) => {
-    const qty = safeNumber(it.qty);
-    const sell_price = safeNumber(it.sell_price);
-    const subtotal = +(qty * sell_price).toFixed(6);
+// function calcItemsSubtotals(items) {
+//   return items.map((it) => {
+//     const qty = safeNumber(it.qty);
+//     const sell_price = safeNumber(it.sell_price);
+//     const subtotal = +(qty * sell_price).toFixed(6);
 
-    return {
-      ...it,
-      qty,
-      sell_price,
-      subtotal,
-    };
-  });
-}
+//     return {
+//       ...it,
+//       qty,
+//       sell_price,
+//       subtotal,
+//     };
+//   });
+// }
 
-function calcCurrencyTotals(items, discount = 0, payments = []) {
-  const totals = {
-    UZS: {
-      subtotal: 0,
-      discount: 0,
-      grandTotal: 0,
-      paidAmount: 0,
-      debtAmount: 0,
-    },
-    USD: {
-      subtotal: 0,
-      discount: 0,
-      grandTotal: 0,
-      paidAmount: 0,
-      debtAmount: 0,
-    },
-  };
+// function calcCurrencyTotals(items, discount = 0, payments = []) {
+//   const totals = {
+//     UZS: {
+//       subtotal: 0,
+//       discount: 0,
+//       grandTotal: 0,
+//       paidAmount: 0,
+//       debtAmount: 0,
+//     },
+//     USD: {
+//       subtotal: 0,
+//       discount: 0,
+//       grandTotal: 0,
+//       paidAmount: 0,
+//       debtAmount: 0,
+//     },
+//   };
 
-  for (const it of items) {
-    if (!totals[it.currency]) continue;
-    totals[it.currency].subtotal += safeNumber(it.subtotal);
-  }
+//   for (const it of items) {
+//     if (!totals[it.currency]) continue;
+//     totals[it.currency].subtotal += safeNumber(it.subtotal);
+//   }
 
-  const totalAll = totals.UZS.subtotal + totals.USD.subtotal;
-  const disc = Math.max(0, safeNumber(discount));
+//   const totalAll = totals.UZS.subtotal + totals.USD.subtotal;
+//   const disc = Math.max(0, safeNumber(discount));
 
-  if (totalAll > 0 && disc > 0) {
-    const uzsShare = totals.UZS.subtotal / totalAll;
-    const usdShare = totals.USD.subtotal / totalAll;
-    totals.UZS.discount = +(disc * uzsShare).toFixed(2);
-    totals.USD.discount = +(disc * usdShare).toFixed(2);
-  }
+//   if (totalAll > 0 && disc > 0) {
+//     const uzsShare = totals.UZS.subtotal / totalAll;
+//     const usdShare = totals.USD.subtotal / totalAll;
+//     totals.UZS.discount = +(disc * uzsShare).toFixed(2);
+//     totals.USD.discount = +(disc * usdShare).toFixed(2);
+//   }
 
-  totals.UZS.grandTotal = Math.max(
-    0,
-    +(totals.UZS.subtotal - totals.UZS.discount).toFixed(2)
-  );
-  totals.USD.grandTotal = Math.max(
-    0,
-    +(totals.USD.subtotal - totals.USD.discount).toFixed(2)
-  );
+//   totals.UZS.grandTotal = Math.max(
+//     0,
+//     +(totals.UZS.subtotal - totals.UZS.discount).toFixed(2)
+//   );
+//   totals.USD.grandTotal = Math.max(
+//     0,
+//     +(totals.USD.subtotal - totals.USD.discount).toFixed(2)
+//   );
 
-  for (const p of payments || []) {
-    const cur = p.currency;
-    if (!totals[cur]) continue;
-    totals[cur].paidAmount += Math.max(0, safeNumber(p.amount));
-  }
+//   for (const p of payments || []) {
+//     const cur = p.currency;
+//     if (!totals[cur]) continue;
+//     totals[cur].paidAmount += Math.max(0, safeNumber(p.amount));
+//   }
 
-  totals.UZS.paidAmount = +totals.UZS.paidAmount.toFixed(2);
-  totals.USD.paidAmount = +totals.USD.paidAmount.toFixed(2);
+//   totals.UZS.paidAmount = +totals.UZS.paidAmount.toFixed(2);
+//   totals.USD.paidAmount = +totals.USD.paidAmount.toFixed(2);
 
-  totals.UZS.debtAmount = Math.max(
-    0,
-    +(totals.UZS.grandTotal - totals.UZS.paidAmount).toFixed(2)
-  );
-  totals.USD.debtAmount = Math.max(
-    0,
-    +(totals.USD.grandTotal - totals.USD.paidAmount).toFixed(2)
-  );
+//   totals.UZS.debtAmount = Math.max(
+//     0,
+//     +(totals.UZS.grandTotal - totals.UZS.paidAmount).toFixed(2)
+//   );
+//   totals.USD.debtAmount = Math.max(
+//     0,
+//     +(totals.USD.grandTotal - totals.USD.paidAmount).toFixed(2)
+//   );
 
-  return totals;
-}
+//   return totals;
+// }
 
-async function generateInvoiceNo(session) {
-  const year = new Date().getFullYear();
-  const key = `SALE_${year}`;
-  const counter = await Counter.findOneAndUpdate(
-    { key },
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true, session }
-  );
+// async function generateInvoiceNo(session) {
+//   const year = new Date().getFullYear();
+//   const key = `SALE_${year}`;
+//   const counter = await Counter.findOneAndUpdate(
+//     { key },
+//     { $inc: { seq: 1 } },
+//     { new: true, upsert: true, session }
+//   );
 
-  const seqStr = String(counter.seq).padStart(6, "0");
-  return `S-${year}-${seqStr}`;
-}
+//   const seqStr = String(counter.seq).padStart(6, "0");
+//   return `S-${year}-${seqStr}`;
+// }
 
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
@@ -576,19 +576,44 @@ exports.cancelSale = async (req, res) => {
     }
 
     // CUSTOMER QARZNI KAMAYTIRISH
+    /* =====================
+   CUSTOMER BALANCE FIX (✅ TO‘G‘RI)
+===================== */
     if (sale.customerId) {
       const customer = await Customer.findById(sale.customerId).session(
         session
       );
+
       if (customer) {
-        customer.balance.UZS = Math.max(
-          0,
-          customer.balance.UZS - sale.currencyTotals.UZS.debtAmount
-        );
-        customer.balance.USD = Math.max(
-          0,
-          customer.balance.USD - sale.currencyTotals.USD.debtAmount
-        );
+        const newDebtUZS = sale.currencyTotals.UZS.debtAmount || 0;
+        const newDebtUSD = sale.currencyTotals.USD.debtAmount || 0;
+
+        const deltaUZS = newDebtUZS - oldDebtUZS;
+        const deltaUSD = newDebtUSD - oldDebtUSD;
+
+        // 🔹 UZS
+        if (deltaUZS !== 0) {
+          customer.balance.UZS += deltaUZS;
+
+          customer.payment_history.push({
+            currency: "UZS",
+            amount: Math.abs(deltaUZS),
+            direction: deltaUZS > 0 ? "DEBT" : "PAYMENT",
+            note: `Sale ${sale.invoiceNo} tahrirlandi`,
+          });
+        }
+
+        // 🔹 USD
+        if (deltaUSD !== 0) {
+          customer.balance.USD += deltaUSD;
+
+          customer.payment_history.push({
+            currency: "USD",
+            amount: Math.abs(deltaUSD),
+            direction: deltaUSD > 0 ? "DEBT" : "PAYMENT",
+            note: `Sale ${sale.invoiceNo} tahrirlandi`,
+          });
+        }
 
         await customer.save({ session });
       }
@@ -699,3 +724,184 @@ exports.searchSalesByProduct = async (req, res) => {
     });
   }
 };
+
+// edit sales
+
+
+exports.adjustSaleItemQty = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { saleId } = req.params;
+    const { productId, newQty } = req.body;
+
+    /* =====================
+       VALIDATION
+    ===================== */
+    if (!mongoose.isValidObjectId(saleId)) throw new Error("Sale ID noto‘g‘ri");
+    if (!mongoose.isValidObjectId(productId))
+      throw new Error("Product ID noto‘g‘ri");
+
+    const qty = Number(newQty);
+    if (!Number.isFinite(qty) || qty < 0)
+      throw new Error("newQty noto‘g‘ri (0 yoki katta bo‘lishi kerak)");
+
+    /* =====================
+       LOAD SALE
+    ===================== */
+    const sale = await Sale.findById(saleId).session(session);
+    if (!sale) throw new Error("Sale topilmadi");
+    if (sale.status !== "COMPLETED")
+      throw new Error("Faqat COMPLETED sale tahrirlanadi");
+
+    const itemIndex = sale.items.findIndex(
+      (it) => String(it.productId) === String(productId)
+    );
+    if (itemIndex === -1) throw new Error("Sale ichida bunday product yo‘q");
+
+    const item = sale.items[itemIndex];
+    const oldQty = Number(item.qty);
+    const delta = qty - oldQty;
+
+    if (delta === 0) throw new Error("Qty o‘zgarmagan");
+
+    /* =====================
+       STOCK ADJUST
+    ===================== */
+    const product = await Product.findById(productId).session(session);
+    if (!product) throw new Error("Product topilmadi");
+
+    if (delta > 0) {
+      // ko‘proq sotilyapti
+      if (product.qty < delta) throw new Error("Stock yetarli emas");
+      product.qty -= delta;
+    } else {
+      // kam sotilyapti (yoki 0)
+      product.qty += Math.abs(delta);
+    }
+
+    await product.save({ session });
+
+    /* =====================
+       SALE ITEM UPDATE
+    ===================== */
+    if (qty === 0) {
+      // ITEMNI BUTUNLAY O‘CHIRAMIZ
+      sale.items.splice(itemIndex, 1);
+    } else {
+      item.qty = qty;
+      item.subtotal = +(qty * item.sell_price).toFixed(2);
+    }
+
+    /* =====================
+       TOTALS RECALC
+    ===================== */
+    let uzsSubtotal = 0;
+    let usdSubtotal = 0;
+
+    for (const it of sale.items) {
+      if (it.currency === "UZS") uzsSubtotal += it.subtotal;
+      if (it.currency === "USD") usdSubtotal += it.subtotal;
+    }
+
+    const oldDebtUZS = sale.currencyTotals.UZS.debtAmount || 0;
+    const oldDebtUSD = sale.currencyTotals.USD.debtAmount || 0;
+
+    sale.currencyTotals.UZS.subtotal = uzsSubtotal;
+    sale.currencyTotals.USD.subtotal = usdSubtotal;
+
+    sale.currencyTotals.UZS.grandTotal = Math.max(
+      0,
+      uzsSubtotal - (sale.currencyTotals.UZS.discount || 0)
+    );
+    sale.currencyTotals.USD.grandTotal = Math.max(
+      0,
+      usdSubtotal - (sale.currencyTotals.USD.discount || 0)
+    );
+
+    sale.currencyTotals.UZS.debtAmount = Math.max(
+      0,
+      sale.currencyTotals.UZS.grandTotal -
+        (sale.currencyTotals.UZS.paidAmount || 0)
+    );
+    sale.currencyTotals.USD.debtAmount = Math.max(
+      0,
+      sale.currencyTotals.USD.grandTotal -
+        (sale.currencyTotals.USD.paidAmount || 0)
+    );
+
+    sale.totals.subtotal = uzsSubtotal + usdSubtotal;
+    sale.totals.grandTotal =
+      sale.currencyTotals.UZS.grandTotal + sale.currencyTotals.USD.grandTotal;
+
+    /* =====================
+       CUSTOMER BALANCE FIX
+    ===================== */
+    if (sale.customerId) {
+      const customer = await Customer.findById(sale.customerId).session(
+        session
+      );
+
+      if (customer) {
+        const extraUZS = oldDebtUZS - sale.currencyTotals.UZS.debtAmount;
+        const extraUSD = oldDebtUSD - sale.currencyTotals.USD.debtAmount;
+
+        if (extraUZS > 0) {
+          customer.balance.UZS += extraUZS;
+          customer.payment_history.push({
+            currency: "UZS",
+            amount: extraUZS,
+            direction: "PAYMENT",
+            note: `Sale ${sale.invoiceNo} qty kamaytirildi`,
+          });
+        }
+
+        if (extraUSD > 0) {
+          customer.balance.USD += extraUSD;
+          customer.payment_history.push({
+            currency: "USD",
+            amount: extraUSD,
+            direction: "PAYMENT",
+            note: `Sale ${sale.invoiceNo} qty kamaytirildi`,
+          });
+        }
+
+        await customer.save({ session });
+      }
+    }
+
+    /* =====================
+       SALE STATUS
+    ===================== */
+    if (sale.items.length === 0) {
+      sale.returnStatus = "FULL_RETURN";
+      sale.isHidden = true;
+    } else {
+      sale.returnStatus = "PARTIAL_RETURN";
+      sale.isHidden = false;
+    }
+
+    await sale.save({ session });
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message:
+        qty === 0
+          ? "Sale item butunlay olib tashlandi"
+          : "Sale item qty muvaffaqiyatli o‘zgartirildi",
+      newQty: qty,
+      delta,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      ok: false,
+      message: err.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+

@@ -217,7 +217,10 @@ exports.getCashInReportAll = async (req, res) => {
       match.payment_method = payment_method;
     }
 
-    const pipeline = [
+    /* =========================
+       LIST
+    ========================= */
+    const list = await CashIn.aggregate([
       { $match: match },
 
       // 🔗 CUSTOMER
@@ -240,12 +243,12 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      // 🎯 TARGET INFO
+      // 🎯 TARGET NAME
       {
         $addFields: {
           target_name: {
             $cond: [
-              { $gt: [{ $size: "$customer" }, 0] },
+              { $eq: ["$target_type", "CUSTOMER"] },
               { $arrayElemAt: ["$customer.name", 0] },
               { $arrayElemAt: ["$supplier.name", 0] },
             ],
@@ -253,7 +256,6 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      // 🧹 KERAKSIZ MAYDONLARNI OLIB TASHLAYMIZ
       {
         $project: {
           customer: 0,
@@ -262,30 +264,30 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      // 🕒 YANGILARI OLDIN
       { $sort: { createdAt: -1 } },
-    ];
+    ]);
 
-    const list = await CashIn.aggregate(pipeline);
-
-    // 📊 SUMMARY (sodda js bilan)
+    /* =========================
+       SUMMARY (MIJOZ / ZAVOD)
+    ========================= */
     const summary = {
-      count: list.length,
-      totals: {
-        UZS: 0,
-        USD: 0,
-      },
+      CUSTOMER: { UZS: 0, USD: 0 },
+      SUPPLIER: { UZS: 0, USD: 0 },
     };
 
-    for (const item of list) {
-      summary.totals[item.currency] += item.amount;
+    for (const it of list) {
+      if (!summary[it.target_type]) continue;
+      summary[it.target_type][it.currency] += Number(it.amount) || 0;
     }
 
     return res.json({
       ok: true,
       date: from.toISOString().slice(0, 10),
-      summary,
-      report: list, // ✅ FLAT LIST
+      summary: {
+        customers_paid: summary.CUSTOMER, // 💰 mijozlardan tushgan
+        suppliers_paid: summary.SUPPLIER, // 🏭 zavodlarga berilgan
+      },
+      report: list,
     });
   } catch (error) {
     return res.status(500).json({
@@ -295,3 +297,4 @@ exports.getCashInReportAll = async (req, res) => {
     });
   }
 };
+

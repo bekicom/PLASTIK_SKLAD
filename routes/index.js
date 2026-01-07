@@ -468,16 +468,12 @@ router.post(
   cashInController.createCashIn
 );
 
-
-
 router.get(
   "/cash-in/report",
   rAuth,
   rRole("ADMIN", "CASHIER"),
   cashInController.getCashInReportAll
 );
-
-
 
 // faqat ADMIN yoki OMBORCHI
 router.post(
@@ -487,5 +483,11 @@ router.post(
   createProductWriteOff
 );
 
+router.patch(
+  "/sales/:saleId/adjust-item",
+  rAuth,
+  rRole("ADMIN", "WAREHOUSE"),
+  salesController.adjustSaleItemQty
+);
 
 module.exports = router;
