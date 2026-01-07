@@ -117,7 +117,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   const profit = profitAgg[0] || { UZS: 0, USD: 0 };
 
   /* =====================
-     EXPENSES (REAL EXPENSE ONLY)
+     EXPENSES (WITH COUNT)
   ===================== */
   const expensesAgg = await Expense.aggregate([
     { $match: buildDateMatch(from, to, "expense_date") },
@@ -125,33 +125,64 @@ async function getOverview({ from, to, tz, warehouseId }) {
       $group: {
         _id: "$currency",
         total: { $sum: "$amount" },
+        count: { $sum: 1 },
       },
     },
   ]);
 
-  const expenses = { UZS: { total: 0 }, USD: { total: 0 } };
+  const expenses = {
+    UZS: { total: 0, count: 0 },
+    USD: { total: 0, count: 0 },
+  };
   for (const e of expensesAgg) {
-    expenses[e._id] = { total: e.total || 0 };
+    expenses[e._id] = {
+      total: e.total || 0,
+      count: e.count || 0,
+    };
   }
 
   /* =====================
      BALANCES (REAL)
   ===================== */
   const balances = {
-    customers: { debt: { UZS: 0, USD: 0 } },
-    suppliers: { debt: { UZS: 0, USD: 0 } },
+    customers: {
+      debt: { UZS: 0, USD: 0 },
+      prepaid: { UZS: 0, USD: 0 },
+    },
+    suppliers: {
+      debt: { UZS: 0, USD: 0 },
+      prepaid: { UZS: 0, USD: 0 },
+    },
   };
 
   const customers = await Customer.find({}, { balance: 1 }).lean();
   for (const c of customers) {
-    if (c.balance?.UZS > 0) balances.customers.debt.UZS += c.balance.UZS;
-    if (c.balance?.USD > 0) balances.customers.debt.USD += c.balance.USD;
+    if (c.balance?.UZS > 0) {
+      balances.customers.debt.UZS += c.balance.UZS;
+    } else if (c.balance?.UZS < 0) {
+      balances.customers.prepaid.UZS += Math.abs(c.balance.UZS);
+    }
+
+    if (c.balance?.USD > 0) {
+      balances.customers.debt.USD += c.balance.USD;
+    } else if (c.balance?.USD < 0) {
+      balances.customers.prepaid.USD += Math.abs(c.balance.USD);
+    }
   }
 
   const suppliers = await Supplier.find({}, { balance: 1 }).lean();
   for (const s of suppliers) {
-    if (s.balance?.UZS > 0) balances.suppliers.debt.UZS += s.balance.UZS;
-    if (s.balance?.USD > 0) balances.suppliers.debt.USD += s.balance.USD;
+    if (s.balance?.UZS > 0) {
+      balances.suppliers.debt.UZS += s.balance.UZS;
+    } else if (s.balance?.UZS < 0) {
+      balances.suppliers.prepaid.UZS += Math.abs(s.balance.UZS);
+    }
+
+    if (s.balance?.USD > 0) {
+      balances.suppliers.debt.USD += s.balance.USD;
+    } else if (s.balance?.USD < 0) {
+      balances.suppliers.prepaid.USD += Math.abs(s.balance.USD);
+    }
   }
 
   /* =====================
@@ -198,7 +229,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     INVESTOR WITHDRAWALS (🔥 MUHIM)
+     INVESTOR WITHDRAWALS
   ===================== */
   const withdrawalAgg = await Withdrawal.aggregate([
     {
@@ -221,35 +252,53 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASHFLOW TOTAL (REAL)
+     CASHFLOW CALCULATION
   ===================== */
-  const customersPaid = {
+
+  // Cash IN (customers to'lagan)
+  const cashInTotal = {
     UZS:
       cash_in_summary.customers.UZS.CASH + cash_in_summary.customers.UZS.CARD,
     USD:
       cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
   };
 
-  const suppliersPaid = {
+  // Cash OUT (suppliers ga to'langan)
+  const cashOutTotal = {
     UZS:
       cash_in_summary.suppliers.UZS.CASH + cash_in_summary.suppliers.UZS.CARD,
     USD:
       cash_in_summary.suppliers.USD.CASH + cash_in_summary.suppliers.USD.CARD,
   };
 
+  // By method (CASH va CARD bo'yicha)
+  const cashflowByMethod = {
+    UZS: {
+      CASH:
+        cash_in_summary.customers.UZS.CASH - cash_in_summary.suppliers.UZS.CASH,
+      CARD:
+        cash_in_summary.customers.UZS.CARD - cash_in_summary.suppliers.UZS.CARD,
+    },
+    USD: {
+      CASH:
+        cash_in_summary.customers.USD.CASH - cash_in_summary.suppliers.USD.CASH,
+      CARD:
+        cash_in_summary.customers.USD.CARD - cash_in_summary.suppliers.USD.CARD,
+    },
+  };
+
+  // Total cashflow
   const cashflowTotal = {
     UZS:
-      (sales.uzs_paid || 0) +
-      customersPaid.UZS -
-      suppliersPaid.UZS -
-      (expenses.UZS.total || 0) -
+      cashInTotal.UZS -
+      cashOutTotal.UZS -
+      expenses.UZS.total -
       investor_withdrawals.UZS,
 
     USD:
-      (sales.usd_paid || 0) +
-      customersPaid.USD -
-      suppliersPaid.USD -
-      (expenses.USD.total || 0) -
+      cashInTotal.USD -
+      cashOutTotal.USD -
+      expenses.USD.total -
       investor_withdrawals.USD,
   };
 
@@ -272,11 +321,35 @@ async function getOverview({ from, to, tz, warehouseId }) {
     expenses,
     balances,
 
-    cash_in_summary, // CASH / CARD
-    investor_withdrawals, // 🔥 INVESTOR PULLARI
+    cash_in_summary,
+    investor_withdrawals,
 
     cashflow: {
       total: cashflowTotal,
+      by_method: cashflowByMethod,
+      breakdown: {
+        cash_in: {
+          UZS: {
+            in: cashInTotal.UZS,
+            out: cashOutTotal.UZS,
+          },
+          USD: {
+            in: cashInTotal.USD,
+            out: cashOutTotal.USD,
+          },
+        },
+        expenses: {
+          UZS: {
+            total: expenses.UZS.total,
+            count: expenses.UZS.count,
+          },
+          USD: {
+            total: expenses.USD.total,
+            count: expenses.USD.count,
+          },
+        },
+        withdrawals: investor_withdrawals,
+      },
     },
   };
 }
