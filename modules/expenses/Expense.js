@@ -20,6 +20,11 @@ const ExpenseSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    payment_method: {
+      type: String,
+      enum: ["CASH", "CARD"],
+      default: "CASH",
+    },
 
     // xarajat sanasi (hisobotlar uchun)
     expense_date: { type: Date, default: Date.now, index: true },

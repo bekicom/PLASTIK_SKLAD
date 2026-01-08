@@ -10,57 +10,52 @@ function safeNum(n, def = 0) {
 
 /* =========================
    CREATE WITHDRAWAL
-   Investor pul yechishi
 ========================= */
 exports.createWithdrawal = async (req, res) => {
   try {
-    const { investor_name, amount, currency, purpose, takenAt } =
-      req.body || {};
+    const {
+      investor_name,
+      amount,
+      currency,
+      payment_method,
+      purpose,
+      takenAt,
+    } = req.body || {};
 
-    /* =====================
-       VALIDATION
-    ===================== */
     if (!investor_name || !String(investor_name).trim()) {
-      return res.status(400).json({
-        ok: false,
-        message: "investor_name majburiy",
-      });
+      return res
+        .status(400)
+        .json({ ok: false, message: "investor_name majburiy" });
     }
 
     const amt = safeNum(amount);
     if (amt <= 0) {
-      return res.status(400).json({
-        ok: false,
-        message: "amount 0 dan katta bo‘lishi kerak",
-      });
+      return res
+        .status(400)
+        .json({ ok: false, message: "amount 0 dan katta bo‘lishi kerak" });
     }
 
     if (!["UZS", "USD"].includes(currency)) {
-      return res.status(400).json({
-        ok: false,
-        message: "currency noto‘g‘ri (UZS yoki USD)",
-      });
+      return res.status(400).json({ ok: false, message: "currency noto‘g‘ri" });
+    }
+
+    if (!["CASH", "CARD"].includes(payment_method)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "payment_method noto‘g‘ri (CASH | CARD)" });
     }
 
     if (!purpose || !String(purpose).trim()) {
-      return res.status(400).json({
-        ok: false,
-        message: "purpose majburiy",
-      });
+      return res.status(400).json({ ok: false, message: "purpose majburiy" });
     }
 
-    /* =====================
-       CREATE DOCUMENT
-    ===================== */
     const doc = await Withdrawal.create({
-      investor_name: String(investor_name).trim(),
+      investor_name: investor_name.trim(),
       amount: amt,
       currency,
-      purpose: String(purpose).trim(),
-
-      // 🔥 MUHIM: Expense bilan aralashmasin
+      payment_method,
+      purpose: purpose.trim(),
       type: "INVESTOR_WITHDRAWAL",
-
       takenAt: takenAt ? new Date(takenAt) : new Date(),
     });
 
@@ -72,7 +67,55 @@ exports.createWithdrawal = async (req, res) => {
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Withdrawal yaratishda server xatosi",
+      message: "Withdrawal yaratishda xato",
+      error: err.message,
+    });
+  }
+};
+
+/* =========================
+   EDIT WITHDRAWAL
+========================= */
+exports.editWithdrawal = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const {
+      investor_name,
+      amount,
+      currency,
+      payment_method,
+      purpose,
+      takenAt,
+    } = req.body || {};
+
+    const doc = await Withdrawal.findById(id);
+    if (!doc) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "Withdrawal topilmadi" });
+    }
+
+    if (investor_name) doc.investor_name = investor_name.trim();
+    if (amount !== undefined) doc.amount = safeNum(amount);
+    if (currency && ["UZS", "USD"].includes(currency)) doc.currency = currency;
+    if (payment_method && ["CASH", "CARD"].includes(payment_method)) {
+      doc.payment_method = payment_method;
+    }
+    if (purpose) doc.purpose = purpose.trim();
+    if (takenAt) doc.takenAt = new Date(takenAt);
+
+    await doc.save();
+
+    return res.json({
+      ok: true,
+      message: "Withdrawal yangilandi",
+      data: doc,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Withdrawal editda xato",
       error: err.message,
     });
   }
@@ -80,24 +123,23 @@ exports.createWithdrawal = async (req, res) => {
 
 /* =========================
    GET WITHDRAWALS
-   Filter + date range
 ========================= */
 exports.getWithdrawals = async (req, res) => {
   try {
-    const { investor_name, currency, from, to } = req.query;
-    const filter = {
-      type: "INVESTOR_WITHDRAWAL", // 🔥 faqat investor pullari
-    };
+    const { investor_name, currency, payment_method, from, to } = req.query;
+
+    const filter = { type: "INVESTOR_WITHDRAWAL" };
 
     if (investor_name) {
-      filter.investor_name = new RegExp(
-        `^${String(investor_name).trim()}$`,
-        "i"
-      );
+      filter.investor_name = new RegExp(`^${investor_name}$`, "i");
     }
 
     if (currency && ["UZS", "USD"].includes(currency)) {
       filter.currency = currency;
+    }
+
+    if (payment_method && ["CASH", "CARD"].includes(payment_method)) {
+      filter.payment_method = payment_method;
     }
 
     if (from || to) {
@@ -116,7 +158,7 @@ exports.getWithdrawals = async (req, res) => {
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Withdrawal olishda server xatosi",
+      message: "Withdrawal olishda xato",
       error: err.message,
     });
   }

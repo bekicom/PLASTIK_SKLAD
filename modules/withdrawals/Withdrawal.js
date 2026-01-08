@@ -20,16 +20,20 @@ const withdrawalSchema = new mongoose.Schema(
       required: true,
     },
 
+    payment_method: {
+      type: String,
+      enum: ["CASH", "CARD"],
+      required: true,
+    },
+
     purpose: {
       type: String,
       required: true,
       trim: true,
     },
 
-    // 🔥 MUHIM MAYDON
     type: {
       type: String,
-      enum: ["INVESTOR_WITHDRAWAL"],
       default: "INVESTOR_WITHDRAWAL",
       index: true,
     },
@@ -37,11 +41,9 @@ const withdrawalSchema = new mongoose.Schema(
     takenAt: {
       type: Date,
       default: Date.now,
-      index: true,
     },
   },
   { timestamps: true }
 );
 
-module.exports =
-  mongoose.models.Withdrawal || mongoose.model("Withdrawal", withdrawalSchema);
+module.exports = mongoose.model("Withdrawal", withdrawalSchema);

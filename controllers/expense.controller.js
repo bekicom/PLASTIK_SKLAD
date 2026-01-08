@@ -31,6 +31,7 @@ exports.createExpense = async (req, res) => {
       category,
       amount,
       currency = "UZS",
+      payment_method = "CASH",
       note,
       expense_date,
     } = req.body || {};
@@ -52,10 +53,18 @@ exports.createExpense = async (req, res) => {
         .json({ ok: false, message: "currency noto‘g‘ri (UZS/USD)" });
     }
 
+    if (!["CASH", "CARD"].includes(payment_method)) {
+      return res.status(400).json({
+        ok: false,
+        message: "payment_method noto‘g‘ri (CASH/CARD)",
+      });
+    }
+
     const doc = await Expense.create({
       category: category.trim(),
       amount: amt,
       currency,
+      payment_method,
       note: note?.trim(),
       expense_date: expense_date ? new Date(expense_date) : new Date(),
       createdBy: userId,
@@ -74,6 +83,7 @@ exports.createExpense = async (req, res) => {
     });
   }
 };
+
 
 /* ================= LIST ================= */
 /**
@@ -169,13 +179,19 @@ exports.updateExpense = async (req, res) => {
       return res.status(404).json({ ok: false, message: "Xarajat topilmadi" });
     }
 
-    const { category, amount, currency, note, expense_date } = req.body || {};
+    const { category, amount, currency, payment_method, note, expense_date } =
+      req.body || {};
 
     if (category !== undefined) doc.category = category.trim();
     if (currency !== undefined && Expense.CUR.includes(currency))
       doc.currency = currency;
     if (amount !== undefined && safeNum(amount) > 0)
       doc.amount = safeNum(amount);
+    if (
+      payment_method !== undefined &&
+      ["CASH", "CARD"].includes(payment_method)
+    )
+      doc.payment_method = payment_method;
     if (note !== undefined) doc.note = note?.trim();
     if (expense_date !== undefined) doc.expense_date = new Date(expense_date);
 
@@ -190,6 +206,7 @@ exports.updateExpense = async (req, res) => {
     });
   }
 };
+
 
 /* ================= DELETE ================= */
 exports.deleteExpense = async (req, res) => {
@@ -213,51 +230,3 @@ exports.deleteExpense = async (req, res) => {
   }
 };
 
-/* ================= SUMMARY ================= */
-/**
- * GET /api/expenses/stats/summary
- */
-exports.getExpenseSummary = async (req, res) => {
-  try {
-    const filter = {};
-
-    const from = parseDate(req.query.from);
-    const to = parseDate(req.query.to, true);
-    if (from || to) {
-      filter.expense_date = {};
-      if (from) filter.expense_date.$gte = from;
-      if (to) filter.expense_date.$lte = to;
-    }
-
-    const rows = await Expense.aggregate([
-      { $match: filter },
-      {
-        $group: {
-          _id: { currency: "$currency", category: "$category" },
-          totalAmount: { $sum: "$amount" },
-          count: { $sum: 1 },
-        },
-      },
-    ]);
-
-    const totals = { UZS: 0, USD: 0 };
-    const byCurrency = { UZS: [], USD: [] };
-
-    for (const r of rows) {
-      totals[r._id.currency] += r.totalAmount;
-      byCurrency[r._id.currency].push({
-        category: r._id.category,
-        totalAmount: r.totalAmount,
-        count: r.count,
-      });
-    }
-
-    return res.json({ ok: true, totals, byCurrency });
-  } catch (err) {
-    return res.status(500).json({
-      ok: false,
-      message: "Server xatoligi",
-      error: err.message,
-    });
-  }
-};

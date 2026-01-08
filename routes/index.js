@@ -440,6 +440,7 @@ router.put("/expenses/:id", rAuth, expenseController.updateExpense);
 
 // DELETE
 router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
+
 router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
 
 /**
@@ -453,6 +454,21 @@ router.post(
   withdrawalController.createWithdrawal
 );
 
+/* =========================
+   EDIT WITHDRAWAL
+   Investor pulini tahrirlash
+========================= */
+router.put(
+  "/withdrawals/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.editWithdrawal
+);
+
+/* =========================
+   GET WITHDRAWALS
+   Filter + date range
+========================= */
 router.get(
   "/withdrawals",
   rAuth,
@@ -474,6 +490,8 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   cashInController.getCashInReportAll
 );
+
+router.put("/cash-edit/:id", cashInController.editCashIn);
 
 // faqat ADMIN yoki OMBORCHI
 router.post(

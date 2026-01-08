@@ -298,3 +298,178 @@ exports.getCashInReportAll = async (req, res) => {
   }
 };
 
+
+/* =========================
+   EDIT CASH-IN
+========================= */
+exports.editCashIn = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    const {
+      amount,
+      currency,
+      payment_method,
+      note,
+    } = req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      throw new Error("CashIn ID noto‘g‘ri");
+    }
+
+    const cashIn = await CashIn.findById(id).session(session);
+    if (!cashIn) throw new Error("Cash-in topilmadi");
+
+    const oldAmount = Number(cashIn.amount);
+    const oldCurrency = cashIn.currency;
+    const oldTargetType = cashIn.target_type;
+
+    const newAmount = Number(amount);
+
+    if (!Number.isFinite(newAmount) || newAmount === 0) {
+      throw new Error("amount 0 bo‘lishi mumkin emas");
+    }
+
+    if (!["UZS", "USD"].includes(currency)) {
+      throw new Error("currency noto‘g‘ri");
+    }
+
+    if (!["CASH", "CARD"].includes(payment_method)) {
+      throw new Error("payment_method noto‘g‘ri");
+    }
+
+    /* =========================
+       TARGET LOAD
+    ========================= */
+    let targetDoc;
+    let label;
+
+    if (oldTargetType === "CUSTOMER") {
+      targetDoc = await Customer.findById(cashIn.customer_id).session(session);
+      label = "Mijoz";
+    } else {
+      targetDoc = await Supplier.findById(cashIn.supplier_id).session(session);
+      label = "Zavod";
+    }
+
+    if (!targetDoc) throw new Error(`${label} topilmadi`);
+
+    /* =========================
+       1️⃣ ESKI TA’SIRNI ORQAGA QAYTARISH
+    ========================= */
+    targetDoc.balance[oldCurrency] =
+      Number(targetDoc.balance?.[oldCurrency] || 0) + oldAmount;
+
+    /* =========================
+       2️⃣ SALE QARZNI ORQAGA OCHISH
+       (FAqat CUSTOMER + oldAmount > 0)
+    ========================= */
+    if (oldTargetType === "CUSTOMER" && oldAmount > 0) {
+      const paidField = `currencyTotals.${oldCurrency}.paidAmount`;
+      const debtField = `currencyTotals.${oldCurrency}.debtAmount`;
+
+      const sales = await Sale.find({
+        customerId: targetDoc._id,
+        status: "COMPLETED",
+        [paidField]: { $gt: 0 },
+      })
+        .sort({ createdAt: -1 }) // LIFO qaytarish
+        .session(session);
+
+      let remaining = oldAmount;
+
+      for (const s of sales) {
+        if (remaining <= 0) break;
+
+        const paid = Number(s.currencyTotals[oldCurrency].paidAmount || 0);
+        const used = Math.min(paid, remaining);
+
+        s.currencyTotals[oldCurrency].paidAmount -= used;
+        s.currencyTotals[oldCurrency].debtAmount += used;
+
+        remaining -= used;
+        await s.save({ session });
+      }
+    }
+
+    /* =========================
+       3️⃣ YANGI TA’SIRNI QO‘LLASH
+    ========================= */
+    targetDoc.balance[currency] =
+      Number(targetDoc.balance?.[currency] || 0) - newAmount;
+
+    /* =========================
+       4️⃣ FIFO SALE QARZ YOPISH
+       (FAqat CUSTOMER + newAmount > 0)
+    ========================= */
+    if (oldTargetType === "CUSTOMER" && newAmount > 0) {
+      const paidField = `currencyTotals.${currency}.paidAmount`;
+      const debtField = `currencyTotals.${currency}.debtAmount`;
+
+      const sales = await Sale.find({
+        customerId: targetDoc._id,
+        status: "COMPLETED",
+        [debtField]: { $gt: 0 },
+      })
+        .sort({ createdAt: 1 }) // FIFO
+        .session(session);
+
+      let remaining = newAmount;
+
+      for (const s of sales) {
+        if (remaining <= 0) break;
+
+        const debt = Number(s.currencyTotals[currency].debtAmount || 0);
+        const used = Math.min(debt, remaining);
+
+        s.currencyTotals[currency].paidAmount += used;
+        s.currencyTotals[currency].debtAmount -= used;
+
+        remaining -= used;
+        await s.save({ session });
+      }
+    }
+
+    /* =========================
+       5️⃣ CASH-IN UPDATE
+    ========================= */
+    cashIn.amount = newAmount;
+    cashIn.currency = currency;
+    cashIn.payment_method = payment_method;
+    cashIn.note = note || cashIn.note;
+
+    await targetDoc.save({ session });
+    await cashIn.save({ session });
+
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message: "Cash-in muvaffaqiyatli tahrirlandi",
+      before: {
+        amount: oldAmount,
+        currency: oldCurrency,
+      },
+      after: {
+        amount: newAmount,
+        currency,
+      },
+      target: {
+        type: oldTargetType,
+        id: targetDoc._id,
+        name: targetDoc.name,
+      },
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      ok: false,
+      message: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
