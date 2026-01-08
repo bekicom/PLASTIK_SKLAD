@@ -136,9 +136,6 @@ exports.createSupplier = async (req, res) => {
   }
 };
 
-
-
-
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;
