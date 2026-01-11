@@ -344,10 +344,12 @@ exports.getSales = async (req, res) => {
     ===================== */
     const filter = {};
 
+    // STATUS
     if (req.query.status) {
       filter.status = String(req.query.status).toUpperCase();
     }
 
+    // CUSTOMER
     if (
       req.query.customerId &&
       mongoose.isValidObjectId(req.query.customerId)
@@ -355,11 +357,25 @@ exports.getSales = async (req, res) => {
       filter.customerId = req.query.customerId;
     }
 
+    // WAREHOUSE
     if (
       req.query.warehouseId &&
       mongoose.isValidObjectId(req.query.warehouseId)
     ) {
       filter["items.warehouseId"] = req.query.warehouseId;
+    }
+
+    // 📅 DATE FILTER (createdAt)
+    if (req.query.from || req.query.to) {
+      filter.createdAt = {};
+
+      if (req.query.from) {
+        filter.createdAt.$gte = new Date(req.query.from);
+      }
+
+      if (req.query.to) {
+        filter.createdAt.$lte = new Date(req.query.to);
+      }
     }
 
     /* =====================
@@ -452,6 +468,7 @@ exports.getSales = async (req, res) => {
   }
 };
 
+
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -473,82 +490,84 @@ exports.getSaleById = async (req, res) => {
 
 exports.cancelSale = async (req, res) => {
   const session = await mongoose.startSession();
-  session.startTransaction();
 
   try {
-    const sale = await Sale.findById(req.params.id).session(session);
-    if (!sale) throw new Error("Sale topilmadi");
+    await session.withTransaction(async () => {
+      const sale = await Sale.findById(req.params.id).session(session);
+      if (!sale) throw new Error("Sale topilmadi");
 
-    if (sale.status === "CANCELED") throw new Error("Sale allaqachon bekor");
-
-    // STOCK QAYTARISH
-    for (const it of sale.items) {
-      await Product.updateOne(
-        { _id: it.productId },
-        { $inc: { qty: it.qty } },
-        { session }
-      );
-    }
-
-    // CUSTOMER QARZNI KAMAYTIRISH
-    /* =====================
-   CUSTOMER BALANCE FIX (✅ TO‘G‘RI)
-===================== */
-    if (sale.customerId) {
-      const customer = await Customer.findById(sale.customerId).session(
-        session
-      );
-
-      if (customer) {
-        const newDebtUZS = sale.currencyTotals.UZS.debtAmount || 0;
-        const newDebtUSD = sale.currencyTotals.USD.debtAmount || 0;
-
-        const deltaUZS = newDebtUZS - oldDebtUZS;
-        const deltaUSD = newDebtUSD - oldDebtUSD;
-
-        // 🔹 UZS
-        if (deltaUZS !== 0) {
-          customer.balance.UZS += deltaUZS;
-
-          customer.payment_history.push({
-            currency: "UZS",
-            amount: Math.abs(deltaUZS),
-            direction: deltaUZS > 0 ? "DEBT" : "PAYMENT",
-            note: `Sale ${sale.invoiceNo} tahrirlandi`,
-          });
-        }
-
-        // 🔹 USD
-        if (deltaUSD !== 0) {
-          customer.balance.USD += deltaUSD;
-
-          customer.payment_history.push({
-            currency: "USD",
-            amount: Math.abs(deltaUSD),
-            direction: deltaUSD > 0 ? "DEBT" : "PAYMENT",
-            note: `Sale ${sale.invoiceNo} tahrirlandi`,
-          });
-        }
-
-        await customer.save({ session });
+      if (sale.status === "CANCELED") {
+        throw new Error("Sale allaqachon bekor qilingan");
       }
-    }
 
-    sale.status = "CANCELED";
-    sale.canceledAt = new Date();
-    sale.cancelReason = req.body?.reason;
+      /* =====================
+         1️⃣ PRODUCT STOCK QAYTARISH
+      ===================== */
+      for (const it of sale.items) {
+        const product = await Product.findOne({
+          _id: it.productId,
+          warehouse_currency: it.currency,
+        }).session(session);
 
-    await sale.save({ session });
+        if (!product) throw new Error("Product topilmadi");
 
-    await session.commitTransaction();
-    return res.json({ ok: true, message: "Sale bekor qilindi" });
+        product.qty += it.qty;
+        await product.save({ session });
+      }
+
+      /* =====================
+         2️⃣ CUSTOMER DEBT QAYTARISH
+      ===================== */
+      if (sale.customerId) {
+        const customer = await Customer.findById(sale.customerId).session(
+          session
+        );
+
+        if (customer && sale.currencyTotals) {
+          if (!customer.balance) {
+            customer.balance = { UZS: 0, USD: 0 };
+          }
+
+          for (const cur of ["UZS", "USD"]) {
+            const debt = sale.currencyTotals[cur]?.debtAmount || 0;
+
+            if (debt > 0) {
+              customer.balance[cur] = (customer.balance[cur] || 0) - debt;
+
+              if (customer.balance[cur] < 0) {
+                customer.balance[cur] = 0;
+              }
+            }
+          }
+
+          await customer.save({ session });
+        }
+      }
+
+      /* =====================
+         3️⃣ SALE CANCELED
+      ===================== */
+      sale.status = "CANCELED";
+      sale.canceledAt = new Date();
+      sale.cancelReason = req.body?.reason || "Sale bekor qilindi";
+
+      await sale.save({ session });
+    });
+
+    return res.json({
+      ok: true,
+      message: "Sale muvaffaqiyatli bekor qilindi",
+    });
   } catch (e) {
-    await session.abortTransaction();
-    return res.status(400).json({ ok: false, message: e.message });
+    return res.status(400).json({
+      ok: false,
+      message: e.message,
+    });
   } finally {
     session.endSession();
   }
 };
+
 
 exports.searchSalesByProduct = async (req, res) => {
   try {

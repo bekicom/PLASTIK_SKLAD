@@ -91,20 +91,35 @@ exports.createExpense = async (req, res) => {
  */
 exports.getExpenses = async (req, res) => {
   try {
-    const page = Math.max(+req.query.page || 1, 1);
-    const limit = Math.min(Math.max(+req.query.limit || 20, 1), 200);
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 200);
     const skip = (page - 1) * limit;
 
+    /* ================= FILTER ================= */
     const filter = {};
 
+    // 🔍 Search (category + note)
     if (req.query.q) {
       const r = new RegExp(req.query.q.trim(), "i");
       filter.$or = [{ category: r }, { note: r }];
     }
 
-    if (req.query.category) filter.category = req.query.category.trim();
-    if (req.query.currency) filter.currency = req.query.currency;
+    // 📂 Category
+    if (req.query.category) {
+      filter.category = req.query.category.trim();
+    }
 
+    // 💱 Currency
+    if (req.query.currency && Expense.CUR.includes(req.query.currency)) {
+      filter.currency = req.query.currency;
+    }
+
+    // 💳 Payment method
+    if (["CASH", "CARD"].includes(req.query.payment_method)) {
+      filter.payment_method = req.query.payment_method;
+    }
+
+    // 👤 Created by
     if (req.query.createdBy) {
       if (!mongoose.isValidObjectId(req.query.createdBy)) {
         return res
@@ -114,25 +129,62 @@ exports.getExpenses = async (req, res) => {
       filter.createdBy = req.query.createdBy;
     }
 
+    // 📆 DATE FILTER (expense_date)
     const from = parseDate(req.query.from);
     const to = parseDate(req.query.to, true);
+
     if (from || to) {
       filter.expense_date = {};
       if (from) filter.expense_date.$gte = from;
       if (to) filter.expense_date.$lte = to;
     }
 
-    const [items, total] = await Promise.all([
+    /* ================= QUERY ================= */
+    const [items, total, totals] = await Promise.all([
       Expense.find(filter)
         .sort({ expense_date: -1, createdAt: -1 })
         .skip(skip)
         .limit(limit)
         .populate("createdBy", "name role")
         .lean(),
+
       Expense.countDocuments(filter),
+
+      // 💰 TOTAL SUMMA (UZS / USD)
+      Expense.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: "$currency",
+            total: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
     ]);
 
-    return res.json({ ok: true, page, limit, total, items });
+    /* ================= FORMAT TOTALS ================= */
+    const summary = {
+      UZS: { total: 0, count: 0 },
+      USD: { total: 0, count: 0 },
+    };
+
+    for (const t of totals) {
+      summary[t._id] = {
+        total: t.total,
+        count: t.count,
+      };
+    }
+
+    /* ================= RESPONSE ================= */
+    return res.json({
+      ok: true,
+      page,
+      limit,
+      total,
+      summary,
+      items,
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,

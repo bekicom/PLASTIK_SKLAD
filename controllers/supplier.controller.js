@@ -139,20 +139,86 @@ exports.createSupplier = async (req, res) => {
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;
-    const filter = {};
 
+    const match = {};
     if (q && q.trim()) {
       const r = new RegExp(q.trim(), "i");
-      filter.$or = [{ name: r }, { phone: r }];
+      match.$or = [{ name: r }, { phone: r }];
     }
 
-    const items = await Supplier.find(filter).sort({ createdAt: -1 });
+    const items = await Supplier.aggregate([
+      { $match: match },
 
-    return res.json({ ok: true, total: items.length, items });
+      // 🔗 PURCHASE JOIN
+      {
+        $lookup: {
+          from: "purchases",
+          localField: "_id",
+          foreignField: "supplier_id",
+          as: "purchases",
+        },
+      },
+
+      // 🔥 JAMI QARZNI HISOBLASH
+      {
+        $addFields: {
+          debt: {
+            UZS: {
+              $sum: {
+                $map: {
+                  input: {
+                    $filter: {
+                      input: "$purchases",
+                      as: "p",
+                      cond: { $ne: ["$$p.status", "PAID"] },
+                    },
+                  },
+                  as: "p",
+                  in: { $ifNull: ["$$p.remaining.UZS", 0] },
+                },
+              },
+            },
+            USD: {
+              $sum: {
+                $map: {
+                  input: {
+                    $filter: {
+                      input: "$purchases",
+                      as: "p",
+                      cond: { $ne: ["$$p.status", "PAID"] },
+                    },
+                  },
+                  as: "p",
+                  in: { $ifNull: ["$$p.remaining.USD", 0] },
+                },
+              },
+            },
+          },
+        },
+      },
+
+      // 🧹 ORTIQCHA FIELDLARNI OLIB TASHLAYMIZ
+      {
+        $project: {
+          purchases: 0,
+          __v: 0,
+        },
+      },
+
+      { $sort: { createdAt: -1 } },
+    ]);
+
+    return res.json({
+      ok: true,
+      total: items.length,
+      items,
+    });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
 exports.getSupplierById = async (req, res) => {

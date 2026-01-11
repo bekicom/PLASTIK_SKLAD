@@ -19,7 +19,7 @@ const purchaseItemSchema = new mongoose.Schema(
 
     currency: { type: String, enum: ["UZS", "USD"], required: true },
 
-    // 🔥 item bo‘yicha summa (o‘z currency’da)
+    // 🔥 item bo‘yicha summa
     row_total: { type: Number, required: true, min: 0 },
   },
   { _id: false }
@@ -31,6 +31,7 @@ const purchaseSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Supplier",
       required: true,
+      index: true,
     },
 
     batch_no: {
@@ -39,10 +40,30 @@ const purchaseSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // 🔥 Purchase umumiy summasi (currency bo‘yicha)
+    // 🔥 umumiy summa
     totals: {
       UZS: { type: Number, default: 0 },
       USD: { type: Number, default: 0 },
+    },
+
+    // 🔥 qancha to‘langan
+    paid: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+
+    // 🔥 qolgan qarz (ASOSIY)
+    remaining: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+
+    // 🔥 batch holati
+    status: {
+      type: String,
+      enum: ["DEBT", "PARTIAL", "PAID"],
+      default: "DEBT",
+      index: true,
     },
 
     items: {

@@ -1,4 +1,4 @@
-// controllers/purchase.controller.js (FAqat createPurchase)
+// controllers/purchase.controller.js (createPurchase)
 
 const mongoose = require("mongoose");
 const Supplier = require("../modules/suppliers/Supplier");
@@ -10,13 +10,11 @@ exports.createPurchase = async (req, res) => {
   session.startTransaction();
 
   try {
-    const {
-      supplier_id,
-      batch_no,
-      paid_amount_uzs = 0,
-      items: itemsRaw,
-    } = req.body || {};
+    const { supplier_id, batch_no, items: itemsRaw } = req.body || {};
 
+    /* =====================
+       VALIDATION
+    ===================== */
     if (!supplier_id || !batch_no) {
       return res.status(400).json({
         ok: false,
@@ -26,36 +24,45 @@ exports.createPurchase = async (req, res) => {
 
     const supplier = await Supplier.findById(supplier_id).session(session);
     if (!supplier) {
-      return res.status(404).json({ message: "Supplier topilmadi" });
+      return res.status(404).json({ ok: false, message: "Supplier topilmadi" });
     }
 
     if (!Array.isArray(itemsRaw) || !itemsRaw.length) {
-      return res.status(400).json({ message: "items majburiy" });
+      return res.status(400).json({
+        ok: false,
+        message: "items majburiy (kamida 1 ta)",
+      });
     }
 
+    /* =====================
+       ITEMS + TOTALS
+    ===================== */
     let totals = { UZS: 0, USD: 0 };
     const purchaseItems = [];
     const affectedProducts = [];
 
     for (const it of itemsRaw) {
-      const name = String(it.name).trim();
+      const name = String(it.name || "").trim();
       const model = String(it.model || "").trim();
       const color = String(it.color || "").trim();
       const category = String(it.category || "").trim();
-      const unit = String(it.unit).trim();
-      const currency = String(it.currency).trim();
+      const unit = String(it.unit || "").trim();
+      const currency = String(it.currency || "").trim();
 
       const qty = Number(it.qty);
       const buy_price = Number(it.buy_price);
       const sell_price = Number(it.sell_price);
 
-      if (!name || !unit || !currency) {
+      if (!name || !unit || !currency || !qty || !buy_price) {
         throw new Error("Item maydonlari noto‘g‘ri");
       }
 
       const rowTotal = qty * buy_price;
       totals[currency] += rowTotal;
 
+      /* =====================
+         PRODUCT UPSERT
+      ===================== */
       const product = await Product.findOneAndUpdate(
         {
           supplier_id,
@@ -86,43 +93,31 @@ exports.createPurchase = async (req, res) => {
       });
     }
 
-    // 🔥 ASOSIY JOY (ESKI BODY → YANGI LOGIKA)
+    /* =====================
+       🔥 BATCH-QARZ LOGIKASI
+    ===================== */
 
-    // 1️⃣ Yuk summasi → qarz qo‘shadi
-    supplier.balance.UZS += totals.UZS;
-    supplier.balance.USD += totals.USD;
+    const paid = { UZS: 0, USD: 0 };
 
-    // 2️⃣ To‘langan pul → balansni kamaytiradi
-    const paidUzs = Number(paid_amount_uzs) || 0;
-    if (paidUzs > 0) {
-      supplier.balance.UZS -= paidUzs;
+    const remaining = {
+      UZS: totals.UZS,
+      USD: totals.USD,
+    };
 
-      supplier.payment_history.push({
-        currency: "UZS",
-        amount: paidUzs,
-        direction: "PREPAYMENT",
-        note: `Kirim uchun to‘lov (batch: ${batch_no})`,
-        date: new Date(),
-      });
-    }
+    const status = remaining.UZS > 0 || remaining.USD > 0 ? "DEBT" : "PAID";
 
-    // 3️⃣ Kirimni tarixga yozamiz
-    supplier.payment_history.push({
-      currency: totals.USD > 0 ? "USD" : "UZS",
-      amount: totals.USD > 0 ? totals.USD : totals.UZS,
-      direction: "DEBT",
-      note: `Kirim (batch: ${batch_no})`,
-      date: new Date(),
-    });
-
-    await supplier.save({ session });
-
+    /* =====================
+       CREATE PURCHASE
+    ===================== */
     const [purchase] = await Purchase.create(
       [
         {
           supplier_id,
           batch_no: String(batch_no).trim(),
           totals,
+          paid,
+          remaining,
+          status,
           items: purchaseItems,
         },
       ],
@@ -133,10 +128,10 @@ exports.createPurchase = async (req, res) => {
 
     return res.status(201).json({
       ok: true,
-      message: "Kirim saqlandi",
+      message: "Kirim (batch) muvaffaqiyatli saqlandi",
       purchase,
       totals,
-      supplier_balance: supplier.balance,
+      remaining,
       products: affectedProducts,
     });
   } catch (err) {
@@ -150,7 +145,6 @@ exports.createPurchase = async (req, res) => {
     session.endSession();
   }
 };
-
 
 exports.addProductImage = async (req, res) => {
   const { id } = req.params;
