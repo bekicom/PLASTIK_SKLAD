@@ -1,13 +1,12 @@
+// controllers/cashIn.controller.js
+
 const mongoose = require("mongoose");
 const CashIn = require("../modules/cashIn/CashIn");
 const Customer = require("../modules/Customer/Customer");
 const Supplier = require("../modules/suppliers/Supplier");
+const Purchase = require("../modules/purchases/Purchase");
+const Sale = require("../modules/sales/Sale");
 
-const Sale = require("../modules/sales/Sale");  
-
-/* =========================
-   CREATE CASH-IN
-========================= */
 exports.createCashIn = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -15,8 +14,15 @@ exports.createCashIn = async (req, res) => {
   try {
     const {
       target_type, // CUSTOMER | SUPPLIER
+
+      // kim
       customer_id,
       supplier_id,
+
+      // qaysi hujjat
+      document_type, // SALE | PURCHASE
+      document_id, // sale_id | purchase_id
+
       amount,
       currency = "UZS",
       payment_method = "CASH",
@@ -27,121 +33,146 @@ exports.createCashIn = async (req, res) => {
        VALIDATION
     ========================= */
     if (!["CUSTOMER", "SUPPLIER"].includes(target_type)) {
-      throw new Error("target_type noto‘g‘ri (CUSTOMER | SUPPLIER)");
+      throw new Error("target_type noto‘g‘ri");
+    }
+
+    if (!["SALE", "PURCHASE"].includes(document_type)) {
+      throw new Error("document_type noto‘g‘ri (SALE | PURCHASE)");
     }
 
     if (!["UZS", "USD"].includes(currency)) {
-      throw new Error("currency noto‘g‘ri (UZS | USD)");
+      throw new Error("currency noto‘g‘ri");
     }
 
     if (!["CASH", "CARD"].includes(payment_method)) {
-      throw new Error("payment_method noto‘g‘ri (CASH | CARD)");
+      throw new Error("payment_method noto‘g‘ri");
     }
 
-    const delta = Number(amount);
-    if (!Number.isFinite(delta) || delta === 0) {
-      throw new Error("amount 0 bo‘lmasligi kerak");
+    const payAmount = Number(amount);
+    if (!Number.isFinite(payAmount) || payAmount <= 0) {
+      throw new Error("amount noto‘g‘ri");
+    }
+
+    if (!mongoose.isValidObjectId(document_id)) {
+      throw new Error("document_id noto‘g‘ri");
     }
 
     /* =========================
-       TARGET ANIQLASH
+       TARGET & DOCUMENT LOAD
     ========================= */
-    let doc;
+    let targetDoc;
+    let documentDoc;
     let label;
+
+    if (target_type === "SUPPLIER") {
+      if (!mongoose.isValidObjectId(supplier_id)) {
+        throw new Error("supplier_id noto‘g‘ri");
+      }
+
+      targetDoc = await Supplier.findById(supplier_id).session(session);
+      if (!targetDoc) throw new Error("Supplier topilmadi");
+
+      if (document_type !== "PURCHASE") {
+        throw new Error(
+          "SUPPLIER uchun document_type = PURCHASE bo‘lishi kerak"
+        );
+      }
+
+      documentDoc = await Purchase.findById(document_id).session(session);
+      if (!documentDoc) throw new Error("Purchase (batch) topilmadi");
+
+      label = "Zavod";
+    }
 
     if (target_type === "CUSTOMER") {
       if (!mongoose.isValidObjectId(customer_id)) {
         throw new Error("customer_id noto‘g‘ri");
       }
-      doc = await Customer.findById(customer_id).session(session);
+
+      targetDoc = await Customer.findById(customer_id).session(session);
+      if (!targetDoc) throw new Error("Customer topilmadi");
+
+      if (document_type !== "SALE") {
+        throw new Error("CUSTOMER uchun document_type = SALE bo‘lishi kerak");
+      }
+
+      documentDoc = await Sale.findById(document_id).session(session);
+      if (!documentDoc) throw new Error("Sale topilmadi");
+
       label = "Mijoz";
-    } else {
-      if (!mongoose.isValidObjectId(supplier_id)) {
-        throw new Error("supplier_id noto‘g‘ri");
-      }
-      doc = await Supplier.findById(supplier_id).session(session);
-      label = "Zavod";
-    }
-
-    if (!doc) {
-      throw new Error(`${label} topilmadi`);
     }
 
     /* =========================
-       🔥 SALE QARZINI YOPISH (FIFO)
-       FAQAT MIJOZ + PUL KELSA
+       🔥 PAYMENT LOGIC
     ========================= */
-    if (target_type === "CUSTOMER" && delta > 0) {
-      const debtField = `currencyTotals.${currency}.debtAmount`;
-      const paidField = `currencyTotals.${currency}.paidAmount`;
+    let remainingPay = payAmount;
+    let used = 0;
 
-      const sales = await Sale.find({
-        customerId: doc._id,
-        status: "COMPLETED",
-        [debtField]: { $gt: 0 },
-      })
-        .sort({ createdAt: 1 }) // FIFO
-        .select("_id currencyTotals")
-        .session(session);
-
-      let remaining = delta;
-      const bulkOps = [];
-
-      for (const s of sales) {
-        if (remaining <= 0) break;
-
-        const cur = s.currencyTotals[currency];
-        const debt = Number(cur.debtAmount || 0);
-        const paid = Number(cur.paidAmount || 0);
-
-        if (debt <= 0) continue;
-
-        const used = Math.min(debt, remaining);
-        remaining -= used;
-
-        bulkOps.push({
-          updateOne: {
-            filter: { _id: s._id },
-            update: {
-              $set: {
-                [paidField]: paid + used,
-                [debtField]: debt - used,
-              },
-            },
-          },
-        });
+    // 🏭 SUPPLIER → PURCHASE (BATCH)
+    if (target_type === "SUPPLIER") {
+      const debt = Number(documentDoc.remaining?.[currency] || 0);
+      if (debt <= 0) {
+        throw new Error("Bu batch bo‘yicha qarz yo‘q");
       }
 
-      if (bulkOps.length) {
-        await Sale.bulkWrite(bulkOps, { session });
+      used = Math.min(debt, remainingPay);
+
+      documentDoc.paid[currency] += used;
+      documentDoc.remaining[currency] -= used;
+
+      documentDoc.status =
+        documentDoc.remaining.UZS === 0 && documentDoc.remaining.USD === 0
+          ? "PAID"
+          : "PARTIAL";
+
+      remainingPay -= used;
+
+      await documentDoc.save({ session });
+
+      // ortiqcha pul → supplier.balance
+      if (remainingPay > 0) {
+        targetDoc.balance[currency] =
+          Number(targetDoc.balance?.[currency] || 0) + remainingPay;
       }
     }
 
-    /* =========================
-       CUSTOMER / SUPPLIER BALANCE
-       FORMULA: old - delta
-    ========================= */
-    const prevBalance = Number(doc.balance?.[currency] || 0);
-    const newBalance = prevBalance - delta;
-    doc.balance[currency] = newBalance;
+    // 👤 CUSTOMER → SALE
+    if (target_type === "CUSTOMER") {
+      const cur = documentDoc.currencyTotals[currency];
+      const debt = Number(cur?.debtAmount || 0);
+      if (debt <= 0) {
+        throw new Error("Bu sale bo‘yicha qarz yo‘q");
+      }
+
+      used = Math.min(debt, remainingPay);
+
+      cur.paidAmount += used;
+      cur.debtAmount -= used;
+
+      remainingPay -= used;
+
+      await documentDoc.save({ session });
+
+      // ortiqcha pul → customer.balance
+      if (remainingPay > 0) {
+        targetDoc.balance[currency] =
+          Number(targetDoc.balance?.[currency] || 0) + remainingPay;
+      }
+    }
 
     /* =========================
        PAYMENT HISTORY
     ========================= */
-    doc.payment_history.push({
+    targetDoc.payment_history.push({
       currency,
-      amount: Math.abs(delta),
-      direction: delta > 0 ? "PAYMENT" : "ADJUSTMENT",
+      amount: payAmount,
+      direction: "PAYMENT",
       method: payment_method,
-      note:
-        note ||
-        (delta > 0
-          ? `${label}dan to‘lov (${payment_method})`
-          : `${label} balansiga tuzatish`),
+      note: note || `${label} uchun to‘lov (${document_type}: ${document_id})`,
       date: new Date(),
     });
 
-    await doc.save({ session });
+    await targetDoc.save({ session });
 
     /* =========================
        CASH-IN LOG
@@ -152,7 +183,9 @@ exports.createCashIn = async (req, res) => {
           target_type,
           customer_id: customer_id || null,
           supplier_id: supplier_id || null,
-          amount: delta,
+          document_type,
+          document_id,
+          amount: payAmount,
           currency,
           payment_method,
           note: note || "",
@@ -165,20 +198,21 @@ exports.createCashIn = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Cash-in muvaffaqiyatli",
+      message: "To‘lov muvaffaqiyatli bajarildi",
       target: {
         type: target_type,
-        id: doc._id,
-        name: doc.name,
+        id: targetDoc._id,
+        name: targetDoc.name,
+      },
+      document: {
+        type: document_type,
+        id: document_id,
       },
       payment: {
         currency,
-        amount: delta,
-        method: payment_method,
-      },
-      balance: {
-        previous: prevBalance,
-        current: newBalance,
+        amount: payAmount,
+        used,
+        excess: remainingPay,
       },
     });
   } catch (error) {
@@ -191,7 +225,6 @@ exports.createCashIn = async (req, res) => {
     session.endSession();
   }
 };
-
 
 /* =========================
    GET CASH-IN REPORT (DAY)
@@ -298,7 +331,6 @@ exports.getCashInReportAll = async (req, res) => {
   }
 };
 
-
 /* =========================
    EDIT CASH-IN
 ========================= */
@@ -309,12 +341,7 @@ exports.editCashIn = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const {
-      amount,
-      currency,
-      payment_method,
-      note,
-    } = req.body || {};
+    const { amount, currency, payment_method, note } = req.body || {};
 
     if (!mongoose.isValidObjectId(id)) {
       throw new Error("CashIn ID noto‘g‘ri");

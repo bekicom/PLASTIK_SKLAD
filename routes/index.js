@@ -173,6 +173,14 @@ router.post(
   rRole("ADMIN"),
   supplierController.updateSupplierBalance
 );
+
+router.get(
+  "/suppliers/:id/purchases",
+  rAuth,
+  rRole("ADMIN"),
+  supplierController.getSupplierPurchases
+);
+
 /**
  * PRODUCTS (ADMIN only)
  */

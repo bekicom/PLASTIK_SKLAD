@@ -392,40 +392,74 @@ exports.getSuppliersDashboard = async (req, res) => {
 exports.getSupplierDetail = async (req, res) => {
   try {
     const { id } = req.params;
+
     if (!mongoose.isValidObjectId(id)) {
       return res
         .status(400)
         .json({ ok: false, message: "supplier id noto‘g‘ri" });
     }
 
-    const supplier = await Supplier.findById(id).lean();
-    if (!supplier)
-      return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
+    /* =========================
+       SUPPLIER
+    ========================= */
+    const supplier = await Supplier.findById(id)
+      .select("_id name phone balance createdAt")
+      .lean();
 
+    if (!supplier) {
+      return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
+    }
+
+    /* =========================
+       DATE FILTER
+    ========================= */
     const fromDate = parseDate(req.query.from, false);
     const toDate = parseDate(req.query.to, true);
 
-    const filter = { supplier_id: new mongoose.Types.ObjectId(id) };
+    const purchaseFilter = {
+      supplier_id: new mongoose.Types.ObjectId(id),
+    };
+
     if (fromDate || toDate) {
-      filter.createdAt = {};
-      if (fromDate) filter.createdAt.$gte = fromDate;
-      if (toDate) filter.createdAt.$lte = toDate;
+      purchaseFilter.createdAt = {};
+      if (fromDate) purchaseFilter.createdAt.$gte = fromDate;
+      if (toDate) purchaseFilter.createdAt.$lte = toDate;
     }
 
-    const purchases = await Purchase.find(filter)
+    /* =========================
+       PURCHASES (PARTIYALAR)
+    ========================= */
+    const purchases = await Purchase.find(purchaseFilter)
       .sort({ createdAt: -1 })
+      .select("batch_no totals paid remaining status items createdAt")
       .lean();
+
+    /* =========================
+       🔥 JAMI QARZ (BACKEND HISOBLAYDI)
+    ========================= */
+    const debt = purchases.reduce(
+      (acc, p) => {
+        acc.UZS += Number(p.remaining?.UZS || 0);
+        acc.USD += Number(p.remaining?.USD || 0);
+        return acc;
+      },
+      { UZS: 0, USD: 0 }
+    );
 
     return res.json({
       ok: true,
+
       supplier: {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-        balance: supplier.balance, // 🔥 ASOSIY HAQIQIY HOLAT
+        balance: supplier.balance, // ✅ FAqat advance
         createdAt: supplier.createdAt,
       },
-      purchases,
+
+      debt, // 🔥 HAQIQIY JAMI QARZ
+
+      purchases, // 🔹 partiyalar ro‘yxati
     });
   } catch (error) {
     return res.status(500).json({
@@ -528,7 +562,42 @@ exports.paySupplierDebt = async (req, res) => {
   }
 };
 
+// controllers/supplier.controller.js
 
+exports.getSupplierPurchases = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "supplier id noto‘g‘ri" });
+    }
+
+    const purchases = await Purchase.find({
+      supplier_id: new mongoose.Types.ObjectId(id),
+
+      // 🔥 FAQAT QARZLI PARTIYALAR
+      status: { $ne: "PAID" },
+      $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
+    })
+      .sort({ createdAt: -1 })
+      .select("batch_no totals paid remaining status createdAt")
+      .lean();
+
+    return res.json({
+      ok: true,
+      total: purchases.length,
+      purchases,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
+  }
+};
 
 
 exports.updateSupplierBalance = async (req, res) => {
