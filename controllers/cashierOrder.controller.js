@@ -136,37 +136,46 @@ exports.confirmOrder = async (req, res) => {
     const cashierId = getUserId(req);
     const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(id))
+    if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({ ok: false, message: "order id noto‘g‘ri" });
+    }
 
     const order = await Order.findById(id).session(session);
-    if (!order)
+    if (!order) {
       return res.status(404).json({ ok: false, message: "Zakas topilmadi" });
+    }
 
-    if (order.status !== "NEW")
+    if (order.status !== "NEW") {
       return res.status(400).json({
         ok: false,
-        message: `Zakas NEW emas (hozirgi: ${order.status})`,
+        message: `Zakas NEW emas (${order.status})`,
       });
+    }
 
     const customer = await Customer.findById(order.customer_id).session(
       session
     );
-    if (!customer)
+    if (!customer) {
       return res.status(404).json({ ok: false, message: "Customer topilmadi" });
+    }
 
-    // 1) STOCK KAMAYTIRISH
+    /* =========================
+       1️⃣ STOCK KAMAYTIRISH
+    ========================= */
     for (const it of order.items) {
       const updated = await Product.findOneAndUpdate(
         { _id: it.product_id, qty: { $gte: it.qty } },
         { $inc: { qty: -it.qty } },
         { new: true, session }
       );
-      if (!updated)
-        throw new Error(`Omborda yetarli qty yo‘q: ${it.product_id}`);
+      if (!updated) {
+        throw new Error("Omborda yetarli qty yo‘q");
+      }
     }
 
-    // 2) SALE ITEMS
+    /* =========================
+       2️⃣ SALE ITEMS + QARZ
+    ========================= */
     const saleItems = [];
     const currencyTotals = {
       UZS: {
@@ -187,7 +196,7 @@ exports.confirmOrder = async (req, res) => {
 
     for (const it of order.items) {
       const cur = normCurrency(it.currency_snapshot);
-      if (!cur) throw new Error(`currency noto‘g‘ri: ${it.currency_snapshot}`);
+      if (!cur) throw new Error("currency noto‘g‘ri");
 
       const warehouse = await Warehouse.findOne({ currency: cur }).session(
         session
@@ -216,11 +225,13 @@ exports.confirmOrder = async (req, res) => {
       grandTotal: currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
     };
 
-    // 3) SALE CREATE
+    /* =========================
+       3️⃣ SALE CREATE (HAR DOIM COMPLETED)
+    ========================= */
     const [sale] = await Sale.create(
       [
         {
-          invoiceNo: `INV-${Date.now()}`,
+          invoiceNo: `S-${Date.now()}`,
           soldBy: cashierId,
           customerId: customer._id,
           customerSnapshot: {
@@ -232,14 +243,47 @@ exports.confirmOrder = async (req, res) => {
           items: saleItems,
           totals,
           currencyTotals,
-          status: "COMPLETED",
-          note: order.note || "Agent zakas (tasdiqlandi)",
+          status: "COMPLETED", // 🔥 MUHIM
+          note: order.note || "Agent zakas (qarzga)",
         },
       ],
       { session }
     );
 
-    // 4) ORDER UPDATE
+    /* =========================
+       4️⃣ CUSTOMER QARZ YOZISH
+    ========================= */
+    if (currencyTotals.UZS.debtAmount > 0) {
+      customer.balance.UZS =
+        Number(customer.balance?.UZS || 0) + currencyTotals.UZS.debtAmount;
+
+      customer.payment_history.push({
+        currency: "UZS",
+        amount: currencyTotals.UZS.debtAmount,
+        direction: "DEBT",
+        note: `Sale ${sale.invoiceNo}`,
+        date: new Date(),
+      });
+    }
+
+    if (currencyTotals.USD.debtAmount > 0) {
+      customer.balance.USD =
+        Number(customer.balance?.USD || 0) + currencyTotals.USD.debtAmount;
+
+      customer.payment_history.push({
+        currency: "USD",
+        amount: currencyTotals.USD.debtAmount,
+        direction: "DEBT",
+        note: `Sale ${sale.invoiceNo}`,
+        date: new Date(),
+      });
+    }
+
+    await customer.save({ session });
+
+    /* =========================
+       5️⃣ ORDER CONFIRM
+    ========================= */
     order.status = "CONFIRMED";
     order.confirmedAt = new Date();
     order.confirmedBy = cashierId;
@@ -247,24 +291,13 @@ exports.confirmOrder = async (req, res) => {
 
     await session.commitTransaction();
 
-    // SOCKET
-    const io = req.app?.get("io");
-    if (io) {
-      const fullOrder = await getOrderFull(order._id);
-      io.to("cashiers").emit("order:confirmed", {
-        order: fullOrder,
-        sale: { _id: String(sale._id), invoiceNo: sale.invoiceNo },
-      });
-    }
-
     return res.json({
       ok: true,
-      message: "Zakas tasdiqlandi, sale yaratildi",
-      order,
+      message: "Zakas tasdiqlandi (qarz yozildi)",
       sale,
     });
   } catch (error) {
-    if (session.inTransaction()) await session.abortTransaction();
+    await session.abortTransaction();
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
@@ -274,6 +307,7 @@ exports.confirmOrder = async (req, res) => {
     session.endSession();
   }
 };
+
 
 /* =======================
    CANCEL ORDER

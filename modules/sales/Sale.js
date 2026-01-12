@@ -97,7 +97,7 @@ const saleSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["COMPLETED", "CANCELED"],
+      enum: ["COMPLETED", "CANCELED", "DEBT", "PARTIALLY_PAID"],
       default: "COMPLETED",
     },
 
