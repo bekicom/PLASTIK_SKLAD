@@ -371,7 +371,7 @@ router.post(
 router.post(
   "/agent/orders",
   rAuth,
-  rRole("AGENT"),
+  rRole("AGENT", "ADMIN", "CASHIER"),
   agentOrderController.createAgentOrder
 );
 

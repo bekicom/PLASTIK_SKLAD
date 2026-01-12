@@ -8,6 +8,7 @@ const Supplier = require("../suppliers/Supplier");
 const Product = require("../products/Product");
 const CashIn = require("../cashIn/CashIn");
 const Withdrawal = require("../withdrawals/Withdrawal");
+const Purchase = require("../purchases/Purchase");
 
 /* =====================
    HELPERS
@@ -53,10 +54,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
       $group: {
         _id: null,
         count: { $sum: 1 },
-
         uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
         uzs_paid: { $sum: "$currencyTotals.UZS.paidAmount" },
-
         usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
         usd_paid: { $sum: "$currencyTotals.USD.paidAmount" },
       },
@@ -117,38 +116,36 @@ async function getOverview({ from, to, tz, warehouseId }) {
   const profit = profitAgg[0] || { UZS: 0, USD: 0 };
 
   /* =====================
-     EXPENSES (WITH COUNT)
+     EXPENSES
   ===================== */
- const expensesAgg = await Expense.aggregate([
-   { $match: buildDateMatch(from, to, "expense_date") },
-   {
-     $group: {
-       _id: {
-         currency: "$currency",
-         method: { $ifNull: ["$payment_method", "CASH"] },
-       },
-       total: { $sum: "$amount" },
-       count: { $sum: 1 },
-     },
-   },
- ]);
+  const expensesAgg = await Expense.aggregate([
+    { $match: buildDateMatch(from, to, "expense_date") },
+    {
+      $group: {
+        _id: {
+          currency: "$currency",
+          method: { $ifNull: ["$payment_method", "CASH"] },
+        },
+        total: { $sum: "$amount" },
+        count: { $sum: 1 },
+      },
+    },
+  ]);
 
- const expenses = {
-   UZS: { total: 0, count: 0, CASH: 0, CARD: 0 },
-   USD: { total: 0, count: 0, CASH: 0, CARD: 0 },
- };
+  const expenses = {
+    UZS: { total: 0, count: 0, CASH: 0, CARD: 0 },
+    USD: { total: 0, count: 0, CASH: 0, CARD: 0 },
+  };
 
- for (const e of expensesAgg) {
-   const { currency, method } = e._id;
-
-   expenses[currency].total += e.total || 0;
-   expenses[currency].count += e.count || 0;
-   expenses[currency][method] += e.total || 0;
- }
-
+  for (const e of expensesAgg) {
+    const { currency, method } = e._id;
+    expenses[currency].total += e.total || 0;
+    expenses[currency].count += e.count || 0;
+    expenses[currency][method] += e.total || 0;
+  }
 
   /* =====================
-     BALANCES (REAL)
+     BALANCES
   ===================== */
   const balances = {
     customers: {
@@ -161,38 +158,64 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 
+  // CUSTOMER BALANCE
   const customers = await Customer.find({}, { balance: 1 }).lean();
   for (const c of customers) {
-    if (c.balance?.UZS > 0) {
-      balances.customers.debt.UZS += c.balance.UZS;
-    } else if (c.balance?.UZS < 0) {
+    if (c.balance?.UZS > 0) balances.customers.debt.UZS += c.balance.UZS;
+    else if (c.balance?.UZS < 0)
       balances.customers.prepaid.UZS += Math.abs(c.balance.UZS);
-    }
 
-    if (c.balance?.USD > 0) {
-      balances.customers.debt.USD += c.balance.USD;
-    } else if (c.balance?.USD < 0) {
+    if (c.balance?.USD > 0) balances.customers.debt.USD += c.balance.USD;
+    else if (c.balance?.USD < 0)
       balances.customers.prepaid.USD += Math.abs(c.balance.USD);
-    }
   }
 
-  const suppliers = await Supplier.find({}, { balance: 1 }).lean();
-  for (const s of suppliers) {
-    if (s.balance?.UZS > 0) {
-      balances.suppliers.debt.UZS += s.balance.UZS;
-    } else if (s.balance?.UZS < 0) {
-      balances.suppliers.prepaid.UZS += Math.abs(s.balance.UZS);
-    }
+  // SUPPLIER DEBT (🔥 FROM PURCHASE)
+  const supplierDebtAgg = await Purchase.aggregate([
+    {
+      $match: {
+        status: { $ne: "PAID" },
+        $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        UZS: { $sum: "$remaining.UZS" },
+        USD: { $sum: "$remaining.USD" },
+      },
+    },
+  ]);
 
-    if (s.balance?.USD > 0) {
-      balances.suppliers.debt.USD += s.balance.USD;
-    } else if (s.balance?.USD < 0) {
-      balances.suppliers.prepaid.USD += Math.abs(s.balance.USD);
-    }
-  }
+  balances.suppliers.debt.UZS = supplierDebtAgg[0]?.UZS || 0;
+  balances.suppliers.debt.USD = supplierDebtAgg[0]?.USD || 0;
+
+  // SUPPLIER PREPAID (BALANCE < 0)
+  const supplierPrepaidAgg = await Supplier.aggregate([
+    {
+      $project: {
+        UZS: {
+          $cond: [{ $lt: ["$balance.UZS", 0] }, { $abs: "$balance.UZS" }, 0],
+        },
+        USD: {
+          $cond: [{ $lt: ["$balance.USD", 0] }, { $abs: "$balance.USD" }, 0],
+        },
+      },
+    },
+    {
+      $group: {
+        _id: null,
+        UZS: { $sum: "$UZS" },
+        USD: { $sum: "$USD" },
+      },
+    },
+  ]);
+
+  balances.suppliers.prepaid.UZS = supplierPrepaidAgg[0]?.UZS || 0;
+  balances.suppliers.prepaid.USD = supplierPrepaidAgg[0]?.USD || 0;
 
   /* =====================
-     CASH-IN SUMMARY (CUSTOMER / SUPPLIER + CASH / CARD)
+     CASH-IN SUMMARY
   ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
@@ -204,7 +227,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
     {
       $group: {
         _id: {
-          target: "$target_type", // CUSTOMER | SUPPLIER
+          target: "$target_type",
           currency: "$currency",
           method: { $ifNull: ["$payment_method", "CASH"] },
         },
@@ -226,123 +249,67 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   for (const r of cashInAgg) {
     const { target, currency, method } = r._id;
-    if (target === "CUSTOMER") {
+    if (target === "CUSTOMER")
       cash_in_summary.customers[currency][method] += r.total;
-    }
-    if (target === "SUPPLIER") {
+    if (target === "SUPPLIER")
       cash_in_summary.suppliers[currency][method] += r.total;
-    }
   }
 
   /* =====================
      INVESTOR WITHDRAWALS
   ===================== */
- const withdrawalAgg = await Withdrawal.aggregate([
-   {
-     $match: {
-       ...buildDateMatch(from, to, "takenAt"),
-       type: "INVESTOR_WITHDRAWAL",
-     },
-   },
-   {
-     $group: {
-       _id: {
-         currency: "$currency",
-         method: { $ifNull: ["$payment_method", "CASH"] },
-       },
-       total: { $sum: "$amount" },
-     },
-   },
- ]);
+  const withdrawalAgg = await Withdrawal.aggregate([
+    {
+      $match: {
+        ...buildDateMatch(from, to, "takenAt"),
+        type: "INVESTOR_WITHDRAWAL",
+      },
+    },
+    {
+      $group: {
+        _id: {
+          currency: "$currency",
+          method: { $ifNull: ["$payment_method", "CASH"] },
+        },
+        total: { $sum: "$amount" },
+      },
+    },
+  ]);
 
+  const investor_withdrawals = {
+    UZS: { total: 0, CASH: 0, CARD: 0 },
+    USD: { total: 0, CASH: 0, CARD: 0 },
+  };
 
- const investor_withdrawals = {
-   UZS: { total: 0, CASH: 0, CARD: 0 },
-   USD: { total: 0, CASH: 0, CARD: 0 },
- };
-
- for (const w of withdrawalAgg) {
-   const { currency, method } = w._id;
-   investor_withdrawals[currency][method] += w.total;
-   investor_withdrawals[currency].total += w.total;
- }
+  for (const w of withdrawalAgg) {
+    const { currency, method } = w._id;
+    investor_withdrawals[currency][method] += w.total;
+    investor_withdrawals[currency].total += w.total;
+  }
 
   /* =====================
-     CASHFLOW CALCULATION
+     CASHFLOW (OLD FORMAT)
   ===================== */
-
-  // Cash IN (customers to'lagan)
-  const cashInTotal = {
+  const cashflowTotal = {
     UZS:
-      cash_in_summary.customers.UZS.CASH + cash_in_summary.customers.UZS.CARD,
+      cash_in_summary.customers.UZS.CASH +
+      cash_in_summary.customers.UZS.CARD -
+      cash_in_summary.suppliers.UZS.CASH -
+      cash_in_summary.suppliers.UZS.CARD -
+      expenses.UZS.total -
+      investor_withdrawals.UZS.total,
+
     USD:
-      cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
+      cash_in_summary.customers.USD.CASH +
+      cash_in_summary.customers.USD.CARD -
+      cash_in_summary.suppliers.USD.CASH -
+      cash_in_summary.suppliers.USD.CARD -
+      expenses.USD.total -
+      investor_withdrawals.USD.total,
   };
 
-  // Cash OUT (suppliers ga to'langan)
-  const cashOutTotal = {
-    UZS:
-      cash_in_summary.suppliers.UZS.CASH + cash_in_summary.suppliers.UZS.CARD,
-    USD:
-      cash_in_summary.suppliers.USD.CASH + cash_in_summary.suppliers.USD.CARD,
-  };
-
-  // By method (CASH va CARD bo'yicha)
-  const cashflowByMethod = {
-    UZS: {
-      CASH:
-        cash_in_summary.customers.UZS.CASH -
-        cash_in_summary.suppliers.UZS.CASH -
-        expenses.UZS.CASH -
-        investor_withdrawals.UZS.CASH,
-
-      CARD:
-        cash_in_summary.customers.UZS.CARD -
-        cash_in_summary.suppliers.UZS.CARD -
-        expenses.UZS.CARD -
-        investor_withdrawals.UZS.CARD,
-    },
-
-    USD: {
-      CASH:
-        cash_in_summary.customers.USD.CASH -
-        cash_in_summary.suppliers.USD.CASH -
-        expenses.USD.CASH -
-        investor_withdrawals.USD.CASH,
-
-      CARD:
-        cash_in_summary.customers.USD.CARD -
-        cash_in_summary.suppliers.USD.CARD -
-        expenses.USD.CARD -
-        investor_withdrawals.USD.CARD,
-    },
-  };
-
-
-  // Total cashflow
- const cashflowTotal = {
-   UZS:
-     cashInTotal.UZS -
-     cashOutTotal.UZS -
-     expenses.UZS.total -
-     investor_withdrawals.UZS.total,
-
-   USD:
-     cashInTotal.USD -
-     cashOutTotal.USD -
-     expenses.USD.total -
-     investor_withdrawals.USD.total,
- };
-
-
-  /* =====================
-     RESPONSE
-  ===================== */
   return {
-    range: { from, to, tz, warehouseId },
-
     sales,
-
     profit: {
       gross: profit,
       net: {
@@ -350,35 +317,45 @@ async function getOverview({ from, to, tz, warehouseId }) {
         USD: profit.USD - expenses.USD.total,
       },
     },
-
     expenses,
     balances,
-
     cash_in_summary,
     investor_withdrawals,
-
     cashflow: {
       total: cashflowTotal,
-      by_method: cashflowByMethod,
-      breakdown: {
-        expenses: {
-          UZS: {
-            total: expenses.UZS.total,
-            count: expenses.UZS.count,
-            CASH: expenses.UZS.CASH,
-            CARD: expenses.UZS.CARD,
-          },
-          USD: {
-            total: expenses.USD.total,
-            count: expenses.USD.count,
-            CASH: expenses.USD.CASH,
-            CARD: expenses.USD.CARD,
-          },
+      by_method: {
+        UZS: {
+          CASH:
+            cash_in_summary.customers.UZS.CASH -
+            cash_in_summary.suppliers.UZS.CASH -
+            expenses.UZS.CASH -
+            investor_withdrawals.UZS.CASH,
+          CARD:
+            cash_in_summary.customers.UZS.CARD -
+            cash_in_summary.suppliers.UZS.CARD -
+            expenses.UZS.CARD -
+            investor_withdrawals.UZS.CARD,
         },
+        USD: {
+          CASH:
+            cash_in_summary.customers.USD.CASH -
+            cash_in_summary.suppliers.USD.CASH -
+            expenses.USD.CASH -
+            investor_withdrawals.USD.CASH,
+          CARD:
+            cash_in_summary.customers.USD.CARD -
+            cash_in_summary.suppliers.USD.CARD -
+            expenses.USD.CARD -
+            investor_withdrawals.USD.CARD,
+        },
+      },
+      breakdown: {
+        expenses,
       },
     },
   };
 }
+
 
 
 

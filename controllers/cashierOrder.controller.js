@@ -137,44 +137,36 @@ exports.confirmOrder = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "order id noto‘g‘ri" });
+      throw new Error("order id noto‘g‘ri");
     }
 
     const order = await Order.findById(id).session(session);
-    if (!order) {
-      return res.status(404).json({ ok: false, message: "Zakas topilmadi" });
-    }
-
+    if (!order) throw new Error("Zakas topilmadi");
     if (order.status !== "NEW") {
-      return res.status(400).json({
-        ok: false,
-        message: `Zakas NEW emas (${order.status})`,
-      });
+      throw new Error(`Zakas NEW emas (${order.status})`);
     }
 
     const customer = await Customer.findById(order.customer_id).session(
       session
     );
-    if (!customer) {
-      return res.status(404).json({ ok: false, message: "Customer topilmadi" });
-    }
+    if (!customer) throw new Error("Customer topilmadi");
 
     /* =========================
        1️⃣ STOCK KAMAYTIRISH
     ========================= */
     for (const it of order.items) {
-      const updated = await Product.findOneAndUpdate(
+      const ok = await Product.updateOne(
         { _id: it.product_id, qty: { $gte: it.qty } },
         { $inc: { qty: -it.qty } },
-        { new: true, session }
+        { session }
       );
-      if (!updated) {
-        throw new Error("Omborda yetarli qty yo‘q");
+      if (ok.modifiedCount === 0) {
+        throw new Error("Omborda yetarli mahsulot yo‘q");
       }
     }
 
     /* =========================
-       2️⃣ SALE ITEMS + QARZ
+       2️⃣ SALE ITEMS + TOTALS
     ========================= */
     const saleItems = [];
     const currencyTotals = {
@@ -196,7 +188,7 @@ exports.confirmOrder = async (req, res) => {
 
     for (const it of order.items) {
       const cur = normCurrency(it.currency_snapshot);
-      if (!cur) throw new Error("currency noto‘g‘ri");
+      if (!cur) throw new Error("Currency noto‘g‘ri");
 
       const warehouse = await Warehouse.findOne({ currency: cur }).session(
         session
@@ -226,7 +218,64 @@ exports.confirmOrder = async (req, res) => {
     };
 
     /* =========================
-       3️⃣ SALE CREATE (HAR DOIM COMPLETED)
+       3️⃣ BALANSDAN AVTO YECHISH
+    ========================= */
+    for (const cur of ["UZS", "USD"]) {
+      const balance = Number(customer.balance?.[cur] || 0);
+      const debt = currencyTotals[cur].debtAmount;
+
+      if (balance > 0 && debt > 0) {
+        const used = Math.min(balance, debt);
+
+        currencyTotals[cur].paidAmount += used;
+        currencyTotals[cur].debtAmount -= used;
+
+        customer.balance[cur] -= used;
+
+        customer.payment_history.push({
+          currency: cur,
+          amount: used,
+          direction: "PAYMENT",
+          note: "Balansdan avtomatik yechildi",
+          date: new Date(),
+        });
+      }
+    }
+
+    /* =========================
+       4️⃣ QOLGAN QARZNI MIJOZGA YOZISH
+    ========================= */
+    for (const cur of ["UZS", "USD"]) {
+      const remain = currencyTotals[cur].debtAmount;
+
+      if (remain > 0) {
+        customer.balance[cur] += remain;
+
+        customer.payment_history.push({
+          currency: cur,
+          amount: remain,
+          direction: "DEBT",
+          note: `Sale ${order._id}`,
+          date: new Date(),
+        });
+      }
+    }
+
+    /* =========================
+       5️⃣ SALE STATUS ANIQLASH
+    ========================= */
+    let saleStatus = "COMPLETED";
+
+    for (const cur of ["UZS", "USD"]) {
+      if (currencyTotals[cur].debtAmount > 0) {
+        saleStatus =
+          currencyTotals[cur].paidAmount > 0 ? "PARTIALLY_PAID" : "DEBT";
+        break;
+      }
+    }
+
+    /* =========================
+       6️⃣ SALE CREATE
     ========================= */
     const [sale] = await Sale.create(
       [
@@ -243,46 +292,17 @@ exports.confirmOrder = async (req, res) => {
           items: saleItems,
           totals,
           currencyTotals,
-          status: "COMPLETED", // 🔥 MUHIM
-          note: order.note || "Agent zakas (qarzga)",
+          status: saleStatus,
+          note: order.note || "Agent zakas",
         },
       ],
       { session }
     );
 
-    /* =========================
-       4️⃣ CUSTOMER QARZ YOZISH
-    ========================= */
-    if (currencyTotals.UZS.debtAmount > 0) {
-      customer.balance.UZS =
-        Number(customer.balance?.UZS || 0) + currencyTotals.UZS.debtAmount;
-
-      customer.payment_history.push({
-        currency: "UZS",
-        amount: currencyTotals.UZS.debtAmount,
-        direction: "DEBT",
-        note: `Sale ${sale.invoiceNo}`,
-        date: new Date(),
-      });
-    }
-
-    if (currencyTotals.USD.debtAmount > 0) {
-      customer.balance.USD =
-        Number(customer.balance?.USD || 0) + currencyTotals.USD.debtAmount;
-
-      customer.payment_history.push({
-        currency: "USD",
-        amount: currencyTotals.USD.debtAmount,
-        direction: "DEBT",
-        note: `Sale ${sale.invoiceNo}`,
-        date: new Date(),
-      });
-    }
-
     await customer.save({ session });
 
     /* =========================
-       5️⃣ ORDER CONFIRM
+       7️⃣ ORDER CONFIRM
     ========================= */
     order.status = "CONFIRMED";
     order.confirmedAt = new Date();
@@ -293,20 +313,21 @@ exports.confirmOrder = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Zakas tasdiqlandi (qarz yozildi)",
+      message: "Zakas tasdiqlandi",
       sale,
+      customerBalance: customer.balance,
     });
-  } catch (error) {
+  } catch (err) {
     await session.abortTransaction();
-    return res.status(500).json({
+    return res.status(400).json({
       ok: false,
-      message: "Server xatoligi",
-      error: error.message,
+      message: err.message,
     });
   } finally {
     session.endSession();
   }
 };
+
 
 
 /* =======================
