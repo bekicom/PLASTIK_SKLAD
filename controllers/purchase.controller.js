@@ -175,3 +175,88 @@ exports.addProductImage = async (req, res) => {
     product,
   });
 };
+
+
+
+
+// controllers/purchase.controller.js
+
+exports.deletePurchase = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "purchase id noto‘g‘ri" });
+    }
+
+    const purchase = await Purchase.findById(id).session(session);
+    if (!purchase) {
+      return res
+        .status(404)
+        .json({ ok: false, message: "Purchase topilmadi" });
+    }
+
+    /* =========================
+       ❌ TO‘LOV BO‘LSA DELETE YO‘Q
+    ========================= */
+    if (
+      (purchase.paid?.UZS || 0) > 0 ||
+      (purchase.paid?.USD || 0) > 0
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Bu batch bo‘yicha to‘lov qilingan. O‘chirish mumkin emas",
+      });
+    }
+
+    /* =========================
+       📦 STOCK QAYTARISH
+    ========================= */
+    for (const it of purchase.items) {
+      const product = await Product.findById(it.product_id).session(session);
+      if (!product) {
+        throw new Error(`Product topilmadi: ${it.product_id}`);
+      }
+
+      // 🔥 aynan shu batchdan kelgan miqdorni qaytaramiz
+      product.qty -= it.qty;
+
+      if (product.qty < 0) {
+        product.qty = 0; // himoya
+      }
+
+      await product.save({ session });
+    }
+
+    /* =========================
+       🗑️ PURCHASE DELETE
+    ========================= */
+    await Purchase.deleteOne({ _id: id }).session(session);
+
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message: "Kirim (batch) muvaffaqiyatli o‘chirildi",
+      deleted_batch: {
+        id: purchase._id,
+        batch_no: purchase.batch_no,
+      },
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    return res.status(500).json({
+      ok: false,
+      message: "Purchase delete qilishda xato",
+      error: err.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};

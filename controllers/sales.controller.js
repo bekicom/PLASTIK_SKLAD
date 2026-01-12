@@ -43,7 +43,6 @@ function safeNumber(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
-
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -62,7 +61,7 @@ exports.createSale = async (req, res) => {
     } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
-      throw new Error("Items bo'sh bo'lishi mumkin emas");
+      throw new Error("Items bo‘sh bo‘lishi mumkin emas");
     }
 
     /* =========================
@@ -88,7 +87,6 @@ exports.createSale = async (req, res) => {
         ],
         { session }
       );
-
       finalCustomerId = newCustomer._id;
     }
 
@@ -116,7 +114,7 @@ exports.createSale = async (req, res) => {
 
       const qty = Number(it.qty);
       if (!Number.isFinite(qty) || qty <= 0) {
-        throw new Error("qty noto'g'ri");
+        throw new Error("qty noto‘g‘ri");
       }
 
       if (p.qty < qty) {
@@ -164,7 +162,7 @@ exports.createSale = async (req, res) => {
       const sellPrice = Number(it.sell_price);
 
       if (!Number.isFinite(sellPrice) || sellPrice < 0) {
-        throw new Error("sell_price noto'g'ri");
+        throw new Error("sell_price noto‘g‘ri");
       }
 
       return {
@@ -187,7 +185,7 @@ exports.createSale = async (req, res) => {
     });
 
     /* =========================
-       6. CURRENCY TOTALS (✅ FIXED)
+       6. CURRENCY TOTALS
     ========================= */
     const currencyTotals = {
       UZS: {
@@ -206,12 +204,12 @@ exports.createSale = async (req, res) => {
       },
     };
 
-    // 1️⃣ SUBTOTAL
+    // SUBTOTAL
     for (const it of saleItems) {
       currencyTotals[it.currency].subtotal += it.subtotal;
     }
 
-    // 2️⃣ DISCOUNT (proportional)
+    // DISCOUNT (proportional)
     const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
     const disc = Math.max(0, safeNumber(discount));
 
@@ -222,7 +220,7 @@ exports.createSale = async (req, res) => {
       currencyTotals.USD.discount = +(disc * usdShare).toFixed(2);
     }
 
-    // 3️⃣ GRAND TOTAL
+    // GRAND TOTAL
     currencyTotals.UZS.grandTotal = Math.max(
       0,
       +(currencyTotals.UZS.subtotal - currencyTotals.UZS.discount).toFixed(2)
@@ -232,10 +230,10 @@ exports.createSale = async (req, res) => {
       +(currencyTotals.USD.subtotal - currencyTotals.USD.discount).toFixed(2)
     );
 
-    // 4️⃣ PAID AMOUNT
+    // PAID AMOUNT (faqat shu sale uchun)
     for (const p of payments) {
       if (!["UZS", "USD"].includes(p.currency)) {
-        throw new Error("Payment currency noto'g'ri");
+        throw new Error("Payment currency noto‘g‘ri");
       }
       currencyTotals[p.currency].paidAmount += Math.max(
         0,
@@ -246,7 +244,7 @@ exports.createSale = async (req, res) => {
     currencyTotals.UZS.paidAmount = +currencyTotals.UZS.paidAmount.toFixed(2);
     currencyTotals.USD.paidAmount = +currencyTotals.USD.paidAmount.toFixed(2);
 
-    // 5️⃣ DEBT AMOUNT
+    // DEBT AMOUNT (🔥 ASOSIY JOY)
     currencyTotals.UZS.debtAmount = Math.max(
       0,
       +(currencyTotals.UZS.grandTotal - currencyTotals.UZS.paidAmount).toFixed(
@@ -286,38 +284,6 @@ exports.createSale = async (req, res) => {
       ],
       { session }
     );
-
-    /* =========================
-       8. CUSTOMER BALANCE
-    ========================= */
-    if (finalCustomerId) {
-      const customerDoc = await Customer.findById(finalCustomerId).session(
-        session
-      );
-      if (!customerDoc) throw new Error("Customer topilmadi");
-
-      if (currencyTotals.UZS.debtAmount > 0) {
-        customerDoc.balance.UZS += currencyTotals.UZS.debtAmount;
-        customerDoc.payment_history.push({
-          currency: "UZS",
-          amount: currencyTotals.UZS.debtAmount,
-          direction: "DEBT",
-          note: `Sale ${invoiceNo}`,
-        });
-      }
-
-      if (currencyTotals.USD.debtAmount > 0) {
-        customerDoc.balance.USD += currencyTotals.USD.debtAmount;
-        customerDoc.payment_history.push({
-          currency: "USD",
-          amount: currencyTotals.USD.debtAmount,
-          direction: "DEBT",
-          note: `Sale ${invoiceNo}`,
-        });
-      }
-
-      await customerDoc.save({ session });
-    }
 
     await session.commitTransaction();
 
@@ -468,7 +434,6 @@ exports.getSales = async (req, res) => {
   }
 };
 
-
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -568,7 +533,6 @@ exports.cancelSale = async (req, res) => {
   }
 };
 
-
 exports.searchSalesByProduct = async (req, res) => {
   try {
     const q = String(req.query.q || "").trim();
@@ -660,7 +624,6 @@ exports.searchSalesByProduct = async (req, res) => {
 };
 
 // edit sales
-
 
 exports.adjustSaleItemQty = async (req, res) => {
   const session = await mongoose.startSession();
@@ -838,4 +801,3 @@ exports.adjustSaleItemQty = async (req, res) => {
     session.endSession();
   }
 };
-

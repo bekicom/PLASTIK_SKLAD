@@ -244,6 +244,12 @@ router.post(
   purchaseController.addProductImage
 );
 
+router.delete(
+  "/purchases/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  purchaseController.deletePurchase
+);
 /**
  * CUSTOMERS (HOZMAKLAR)
  */
@@ -315,6 +321,12 @@ router.post(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   customerController.payCustomerDebt
+);
+router.get(
+  "/customers/:id/debt-sales",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerDebtSales
 );
 /**
  * SALES (SOTUV)

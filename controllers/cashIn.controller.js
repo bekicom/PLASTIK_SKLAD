@@ -15,13 +15,11 @@ exports.createCashIn = async (req, res) => {
     const {
       target_type, // CUSTOMER | SUPPLIER
 
-      // kim
       customer_id,
       supplier_id,
 
-      // qaysi hujjat
       document_type, // SALE | PURCHASE
-      document_id, // sale_id | purchase_id
+      document_id,
 
       amount,
       currency = "UZS",
@@ -37,7 +35,7 @@ exports.createCashIn = async (req, res) => {
     }
 
     if (!["SALE", "PURCHASE"].includes(document_type)) {
-      throw new Error("document_type noto‘g‘ri (SALE | PURCHASE)");
+      throw new Error("document_type noto‘g‘ri");
     }
 
     if (!["UZS", "USD"].includes(currency)) {
@@ -69,17 +67,15 @@ exports.createCashIn = async (req, res) => {
         throw new Error("supplier_id noto‘g‘ri");
       }
 
+      if (document_type !== "PURCHASE") {
+        throw new Error("SUPPLIER uchun document_type = PURCHASE");
+      }
+
       targetDoc = await Supplier.findById(supplier_id).session(session);
       if (!targetDoc) throw new Error("Supplier topilmadi");
 
-      if (document_type !== "PURCHASE") {
-        throw new Error(
-          "SUPPLIER uchun document_type = PURCHASE bo‘lishi kerak"
-        );
-      }
-
       documentDoc = await Purchase.findById(document_id).session(session);
-      if (!documentDoc) throw new Error("Purchase (batch) topilmadi");
+      if (!documentDoc) throw new Error("Purchase topilmadi");
 
       label = "Zavod";
     }
@@ -89,12 +85,12 @@ exports.createCashIn = async (req, res) => {
         throw new Error("customer_id noto‘g‘ri");
       }
 
+      if (document_type !== "SALE") {
+        throw new Error("CUSTOMER uchun document_type = SALE");
+      }
+
       targetDoc = await Customer.findById(customer_id).session(session);
       if (!targetDoc) throw new Error("Customer topilmadi");
-
-      if (document_type !== "SALE") {
-        throw new Error("CUSTOMER uchun document_type = SALE bo‘lishi kerak");
-      }
 
       documentDoc = await Sale.findById(document_id).session(session);
       if (!documentDoc) throw new Error("Sale topilmadi");
@@ -108,55 +104,82 @@ exports.createCashIn = async (req, res) => {
     let remainingPay = payAmount;
     let used = 0;
 
-    // 🏭 SUPPLIER → PURCHASE (BATCH)
+    /* ===== SUPPLIER → PURCHASE ===== */
     if (target_type === "SUPPLIER") {
       const debt = Number(documentDoc.remaining?.[currency] || 0);
-      if (debt <= 0) {
-        throw new Error("Bu batch bo‘yicha qarz yo‘q");
-      }
+      if (debt <= 0) throw new Error("Bu batch bo‘yicha qarz yo‘q");
 
-      used = Math.min(debt, remainingPay);
+      const use = Math.min(debt, remainingPay);
+      used += use;
 
-      documentDoc.paid[currency] += used;
-      documentDoc.remaining[currency] -= used;
+      documentDoc.paid[currency] += use;
+      documentDoc.remaining[currency] -= use;
+      remainingPay -= use;
 
       documentDoc.status =
         documentDoc.remaining.UZS === 0 && documentDoc.remaining.USD === 0
           ? "PAID"
           : "PARTIAL";
 
-      remainingPay -= used;
-
       await documentDoc.save({ session });
 
-      // ortiqcha pul → supplier.balance
+      // ortiqcha → balance
       if (remainingPay > 0) {
         targetDoc.balance[currency] =
           Number(targetDoc.balance?.[currency] || 0) + remainingPay;
+        remainingPay = 0;
       }
     }
 
-    // 👤 CUSTOMER → SALE
+    /* ===== CUSTOMER → SALE (🔥 FIFO) ===== */
     if (target_type === "CUSTOMER") {
-      const cur = documentDoc.currencyTotals[currency];
-      const debt = Number(cur?.debtAmount || 0);
-      if (debt <= 0) {
+      let cur = documentDoc.currencyTotals[currency];
+      if (!cur || cur.debtAmount <= 0) {
         throw new Error("Bu sale bo‘yicha qarz yo‘q");
       }
 
-      used = Math.min(debt, remainingPay);
+      // 1️⃣ AVVAL SHU SALE
+      const useHere = Math.min(cur.debtAmount, remainingPay);
+      used += useHere;
 
-      cur.paidAmount += used;
-      cur.debtAmount -= used;
-
-      remainingPay -= used;
+      cur.paidAmount += useHere;
+      cur.debtAmount -= useHere;
+      remainingPay -= useHere;
 
       await documentDoc.save({ session });
 
-      // ortiqcha pul → customer.balance
+      // 2️⃣ FIFO → BOSHQA SALE’LAR
+      if (remainingPay > 0) {
+        const otherSales = await Sale.find({
+          customerId: targetDoc._id,
+          _id: { $ne: documentDoc._id },
+          status: "COMPLETED",
+          [`currencyTotals.${currency}.debtAmount`]: { $gt: 0 },
+        })
+          .sort({ createdAt: 1 })
+          .session(session);
+
+        for (const s of otherSales) {
+          if (remainingPay <= 0) break;
+
+          const c = s.currencyTotals[currency];
+          const u = Math.min(c.debtAmount, remainingPay);
+
+          c.paidAmount += u;
+          c.debtAmount -= u;
+
+          used += u;
+          remainingPay -= u;
+
+          await s.save({ session });
+        }
+      }
+
+      // 3️⃣ OXIRI → BALANCE (ADVANCE)
       if (remainingPay > 0) {
         targetDoc.balance[currency] =
           Number(targetDoc.balance?.[currency] || 0) + remainingPay;
+        remainingPay = 0;
       }
     }
 
@@ -212,7 +235,7 @@ exports.createCashIn = async (req, res) => {
         currency,
         amount: payAmount,
         used,
-        excess: remainingPay,
+        excess: 0,
       },
     });
   } catch (error) {
@@ -225,6 +248,7 @@ exports.createCashIn = async (req, res) => {
     session.endSession();
   }
 };
+
 
 /* =========================
    GET CASH-IN REPORT (DAY)

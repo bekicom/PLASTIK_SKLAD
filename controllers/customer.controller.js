@@ -91,6 +91,9 @@ exports.createCustomer = async (req, res) => {
 ======================= */
 exports.getCustomers = async (req, res) => {
   try {
+    /* =====================
+       FILTER
+    ===================== */
     const filter = {};
 
     if (req.query.isActive === "true") filter.isActive = true;
@@ -101,30 +104,79 @@ exports.getCustomers = async (req, res) => {
       filter.$or = [{ name: r }, { phone: r }];
     }
 
-    const items = await Customer.find(filter).sort({ createdAt: -1 }).lean();
+    /* =====================
+       CUSTOMERS
+    ===================== */
+    const customers = await Customer.find(filter)
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const total = items.length;
+    const customerIds = customers.map((c) => c._id);
 
-    // 🔥 BALANCE ASOSIDA TOTALS
+    /* =====================
+       SALES → DEBT AGGREGATION
+    ===================== */
+    const debts = await Sale.aggregate([
+      {
+        $match: {
+          status: "COMPLETED",
+          customerId: { $in: customerIds },
+        },
+      },
+      {
+        $group: {
+          _id: "$customerId",
+          debtUZS: {
+            $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
+          },
+          debtUSD: {
+            $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
+          },
+        },
+      },
+    ]);
+
+    const debtMap = new Map(
+      debts.map((d) => [
+        String(d._id),
+        { UZS: d.debtUZS || 0, USD: d.debtUSD || 0 },
+      ])
+    );
+
+    /* =====================
+       RESPONSE MAP
+    ===================== */
+    const items = customers.map((c) => {
+      const debt = debtMap.get(String(c._id)) || { UZS: 0, USD: 0 };
+
+      return {
+        ...c,
+        debt, // 🔥 ASOSIY YANGI QISM
+      };
+    });
+
+    /* =====================
+       TOTALS
+    ===================== */
     const totals = {
       debt: { UZS: 0, USD: 0 },
       prepaid: { UZS: 0, USD: 0 },
     };
 
     items.forEach((c) => {
-      const uzs = Number(c.balance?.UZS || 0);
-      const usd = Number(c.balance?.USD || 0);
+      totals.debt.UZS += Number(c.debt?.UZS || 0);
+      totals.debt.USD += Number(c.debt?.USD || 0);
 
-      if (uzs > 0) totals.debt.UZS += uzs;
-      if (uzs < 0) totals.prepaid.UZS += Math.abs(uzs);
+      const uzsBal = Number(c.balance?.UZS || 0);
+      const usdBal = Number(c.balance?.USD || 0);
 
-      if (usd > 0) totals.debt.USD += usd;
-      if (usd < 0) totals.prepaid.USD += Math.abs(usd);
+      if (uzsBal > 0) totals.prepaid.UZS += uzsBal;
+      if (usdBal > 0) totals.prepaid.USD += usdBal;
     });
 
     return res.json({
       ok: true,
-      total,
+      total: items.length,
       totals,
       items,
     });
@@ -286,11 +338,14 @@ exports.deleteCustomer = async (req, res) => {
  * GET /customers/:id/sales?page=&limit=
  * Customer sotuvlari (history list)
  */
+
 exports.getCustomerSales = async (req, res) => {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "ID noto'g'ri" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "Customer ID noto‘g‘ri" });
     }
 
     const page = Math.max(1, parseInt(req.query.page || "1", 10));
@@ -300,24 +355,102 @@ exports.getCustomerSales = async (req, res) => {
     );
     const skip = (page - 1) * limit;
 
-    const cid = asObjectId(id);
+    const onlyDebt = req.query.onlyDebt === "true";
+    const currencyFilter =
+      req.query.currency && ["UZS", "USD"].includes(req.query.currency)
+        ? req.query.currency
+        : null;
 
-    const filter = { customerId: cid };
+    /* =====================
+       FILTER
+    ===================== */
+    const filter = {
+      customerId: new mongoose.Types.ObjectId(id),
+      status: "COMPLETED",
+    };
 
+    if (onlyDebt) {
+      if (currencyFilter) {
+        filter[`currencyTotals.${currencyFilter}.debtAmount`] = { $gt: 0 };
+      } else {
+        filter.$or = [
+          { "currencyTotals.UZS.debtAmount": { $gt: 0 } },
+          { "currencyTotals.USD.debtAmount": { $gt: 0 } },
+        ];
+      }
+    }
+
+    /* =====================
+       QUERY
+    ===================== */
     const [rows, total] = await Promise.all([
-      Sale.find(filter).sort({ createdAt: -1 }).skip(skip).limit(limit).lean(),
+      Sale.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .select("invoiceNo createdAt items totals currencyTotals payments note")
+        .lean(),
       Sale.countDocuments(filter),
     ]);
 
-    return res.json({ ok: true, page, limit, total, items: rows });
+    /* =====================
+       MAP RESPONSE
+    ===================== */
+    const items = rows.map((s) => {
+      const remUZS = Number(s.currencyTotals?.UZS?.debtAmount || 0);
+      const remUSD = Number(s.currencyTotals?.USD?.debtAmount || 0);
+
+      let status = "PAID";
+      if (remUZS > 0 || remUSD > 0) {
+        const paidUZS = Number(s.currencyTotals?.UZS?.paidAmount || 0);
+        const paidUSD = Number(s.currencyTotals?.USD?.paidAmount || 0);
+        status = paidUZS > 0 || paidUSD > 0 ? "PARTIAL" : "DEBT";
+      }
+
+      return {
+        _id: s._id,
+        invoiceNo: s.invoiceNo,
+        createdAt: s.createdAt,
+        status,
+
+        totals: s.totals,
+        currencyTotals: s.currencyTotals,
+
+        remaining: {
+          UZS: remUZS,
+          USD: remUSD,
+        },
+
+        items: (s.items || []).map((it) => ({
+          productId: it.productId,
+          name: it.productSnapshot?.name,
+          unit: it.productSnapshot?.unit,
+          qty: Number(it.qty),
+          price: Number(it.sell_price),
+          currency: it.currency,
+          subtotal: Number(it.subtotal),
+        })),
+
+        note: s.note || "",
+      };
+    });
+
+    return res.json({
+      ok: true,
+      page,
+      limit,
+      total,
+      items,
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Customer sales xato",
+      message: "Customer sales olishda xato",
       error: err.message,
     });
   }
 };
+
 
 /**
  * GET /customers/:id/statement?dateFrom=&dateTo=
@@ -407,8 +540,10 @@ exports.getCustomerSummary = async (req, res) => {
         .json({ ok: false, message: "customer id noto‘g‘ri" });
     }
 
+    const customerId = new mongoose.Types.ObjectId(id);
+
     /* =========================
-       1. CUSTOMER
+       1. CUSTOMER (AS IS)
     ========================= */
     const customer = await Customer.findById(id)
       .select("name phone address note createdAt balance")
@@ -419,10 +554,10 @@ exports.getCustomerSummary = async (req, res) => {
     }
 
     /* =========================
-       2. ORDERS SUMMARY
+       2. ORDERS SUMMARY (ESKI LOGIKA)
     ========================= */
     const [orderAgg] = await Order.aggregate([
-      { $match: { customerId: new mongoose.Types.ObjectId(id) } },
+      { $match: { customerId } },
       {
         $group: {
           _id: "$customerId",
@@ -444,96 +579,101 @@ exports.getCustomerSummary = async (req, res) => {
     ]);
 
     /* =========================
-       3. ORDERS LIST (DETAIL 🔥)
+       3. SALES AGGREGATION (🔥 MUHIM)
     ========================= */
-    const ordersListRaw = await Order.find({ customerId: id })
-      .sort({ createdAt: -1 })
-      .limit(5)
-      .populate({
-        path: "items.productId",
-        select: "name model category unit",
-      })
-      .lean();
-
-    const ordersList = ordersListRaw.map((o) => ({
-      _id: o._id,
-      status: o.status,
-      createdAt: o.createdAt,
-      items: (o.items || []).map((it) => ({
-        product_id: it.productId?._id || null,
-        name: it.productId?.name || "",
-        model: it.productId?.model || "",
-        category: it.productId?.category || "",
-        unit: it.productId?.unit || "",
-        qty: it.qty,
-        price: it.price,
-        currency: it.currency,
-        subtotal: it.subtotal,
-      })),
-      total_uzs: o.total_uzs || 0,
-      total_usd: o.total_usd || 0,
-    }));
-
-    /* =========================
-       4. SALES SUMMARY
-    ========================= */
-    const [saleAgg] = await Sale.aggregate([
-      { $match: { customerId: new mongoose.Types.ObjectId(id) } },
+    const [salesAgg] = await Sale.aggregate([
+      { $match: { customerId, status: "COMPLETED" } },
       {
         $group: {
           _id: "$customerId",
           salesCount: { $sum: 1 },
-          uzsTotal: {
+
+          totalUZS: {
             $sum: { $ifNull: ["$currencyTotals.UZS.grandTotal", 0] },
           },
-          usdTotal: {
+          totalUSD: {
             $sum: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
           },
+
+          paidUZS: {
+            $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] },
+          },
+          paidUSD: {
+            $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] },
+          },
+
+          debtUZS: {
+            $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
+          },
+          debtUSD: {
+            $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
+          },
+
           lastSaleAt: { $max: "$createdAt" },
         },
       },
     ]);
 
     /* =========================
-       5. LAST SALES (DETAIL 🔥)
+       4. LAST SALES (DETAIL 🔥)
     ========================= */
-    const lastSalesRaw = await Sale.find({ customerId: id })
+    const lastSalesRaw = await Sale.find({ customerId, status: "COMPLETED" })
       .sort({ createdAt: -1 })
       .limit(10)
-      .populate({
-        path: "items.productId",
-        select: "name model category unit",
-      })
       .lean();
 
-    const lastSales = lastSalesRaw.map((s) => ({
-      _id: s._id,
-      invoiceNo: s.invoiceNo,
-      status: s.status,
-      createdAt: s.createdAt,
-      items: (s.items || []).map((it) => ({
-        product_id: it.productId?._id || null,
-        name: it.productId?.name || "",
-        model: it.productId?.model || "",
-        category: it.productId?.category || "",
-        unit: it.productId?.unit || "",
-        qty: it.qty,
-        sell_price: it.sell_price,
-        currency: it.currency,
-        subtotal: it.subtotal,
-      })),
-      totals: s.totals || {},
-      currencyTotals: s.currencyTotals || {},
-      note: s.note || "",
-    }));
+    const lastSales = lastSalesRaw.map((s) => {
+      const remUZS = Number(s.currencyTotals?.UZS?.debtAmount || 0);
+      const remUSD = Number(s.currencyTotals?.USD?.debtAmount || 0);
+
+      let saleStatus = "PAID";
+      if (remUZS > 0 || remUSD > 0) {
+        const paid =
+          Number(s.currencyTotals?.UZS?.paidAmount || 0) +
+          Number(s.currencyTotals?.USD?.paidAmount || 0);
+        saleStatus = paid > 0 ? "PARTIAL" : "DEBT";
+      }
+
+      return {
+        _id: s._id,
+        invoiceNo: s.invoiceNo,
+        createdAt: s.createdAt,
+        status: saleStatus,
+
+        totals: s.totals,
+        currencyTotals: s.currencyTotals,
+
+        remaining: {
+          UZS: remUZS,
+          USD: remUSD,
+        },
+
+        items: (s.items || []).map((it) => ({
+          productId: it.productId,
+          name: it.productSnapshot?.name,
+          unit: it.productSnapshot?.unit,
+          qty: it.qty,
+          price: it.sell_price,
+          currency: it.currency,
+          subtotal: it.subtotal,
+        })),
+
+        note: s.note || "",
+      };
+    });
+
+    const salesSummary = salesAgg || {};
 
     /* =========================
-       6. RESPONSE
+       5. RESPONSE
     ========================= */
     return res.json({
       ok: true,
       data: {
-        customer,
+        customer: {
+          ...customer,
+          balance: customer.balance || { UZS: 0, USD: 0 }, // advance
+        },
 
         orders: {
           total: orderAgg?.ordersCount || 0,
@@ -545,20 +685,27 @@ exports.getCustomerSummary = async (req, res) => {
             USD: orderAgg?.totalUSD || 0,
           },
           lastOrderAt: orderAgg?.lastOrderAt || null,
-          list: ordersList, // 🔥 DETAIL QO‘SHILDI
         },
 
         sales: {
-          total: saleAgg?.salesCount || 0,
+          total: salesSummary.salesCount || 0,
           totals: {
-            UZS: saleAgg?.uzsTotal || 0,
-            USD: saleAgg?.usdTotal || 0,
+            UZS: salesSummary.totalUZS || 0,
+            USD: salesSummary.totalUSD || 0,
           },
-          lastSaleAt: saleAgg?.lastSaleAt || null,
+          paid: {
+            UZS: salesSummary.paidUZS || 0,
+            USD: salesSummary.paidUSD || 0,
+          },
+          debt: {
+            UZS: salesSummary.debtUZS || 0,
+            USD: salesSummary.debtUSD || 0,
+          },
+          lastSaleAt: salesSummary.lastSaleAt || null,
         },
 
         history: {
-          lastSales, // 🔥 ITEMS BILAN
+          lastSales,
         },
       },
     });
@@ -714,3 +861,85 @@ exports.payCustomerDebt = async (req, res) => {
 };
 
 
+// controllers/customer.controller.js
+
+exports.getCustomerDebtSales = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { currency } = req.query;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res
+        .status(400)
+        .json({ ok: false, message: "customer id noto‘g‘ri" });
+    }
+
+    const match = {
+      customerId: new mongoose.Types.ObjectId(id),
+      status: { $ne: "CANCELED" },
+      $or: [
+        { "currencyTotals.UZS.debtAmount": { $gt: 0 } },
+        { "currencyTotals.USD.debtAmount": { $gt: 0 } },
+      ],
+    };
+
+    if (currency && ["UZS", "USD"].includes(currency)) {
+      match[`currencyTotals.${currency}.debtAmount`] = { $gt: 0 };
+    }
+
+    const rows = await Sale.find(match)
+      .sort({ createdAt: 1 }) // FIFO 🔥
+      .lean();
+
+    const totals = { UZS: 0, USD: 0 };
+
+    const items = rows.map((s) => {
+      const uzsDebt = Number(s.currencyTotals?.UZS?.debtAmount || 0);
+      const usdDebt = Number(s.currencyTotals?.USD?.debtAmount || 0);
+
+      totals.UZS += uzsDebt;
+      totals.USD += usdDebt;
+
+      return {
+        _id: s._id,
+        invoiceNo: s.invoiceNo,
+        createdAt: s.createdAt,
+        status:
+          uzsDebt === 0 && usdDebt === 0
+            ? "PAID"
+            : uzsDebt > 0 &&
+              (s.currencyTotals.UZS.paidAmount || 0) > 0
+            ? "PARTIAL"
+            : "DEBT",
+
+        remaining: {
+          UZS: uzsDebt,
+          USD: usdDebt,
+        },
+
+        items: (s.items || []).map((it) => ({
+          productId: it.productId,
+          name: it.productSnapshot?.name || "",
+          unit: it.productSnapshot?.unit || "",
+          qty: it.qty,
+          price: it.sell_price,
+          currency: it.currency,
+          subtotal: it.subtotal,
+        })),
+      };
+    });
+
+    return res.json({
+      ok: true,
+      total: items.length,
+      totals,
+      items,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Customer debt sales olishda xato",
+      error: err.message,
+    });
+  }
+};
