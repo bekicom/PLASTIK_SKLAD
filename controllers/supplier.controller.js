@@ -77,50 +77,67 @@ exports.createSupplier = async (req, res) => {
     const {
       name,
       phone,
-      opening_balance_uzs = 0,
-      opening_balance_usd = 0,
+      address = "",
+      note = "",
+      balance = {},
     } = req.body;
 
     if (!name || !phone) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "name va phone majburiy" });
+      return res.status(400).json({
+        ok: false,
+        message: "name va phone majburiy",
+      });
     }
 
     const exists = await Supplier.findOne({ phone });
     if (exists) {
-      return res.status(409).json({ ok: false, message: "Bu telefon band" });
-    }
-
-    const balUzs = Number(opening_balance_uzs) || 0;
-    const balUsd = Number(opening_balance_usd) || 0;
-
-    const payment_history = [];
-
-    if (balUzs !== 0) {
-      payment_history.push({
-        currency: "UZS",
-        amount: Math.abs(balUzs),
-        direction: balUzs > 0 ? "DEBT" : "PREPAYMENT",
-        note:
-          balUzs > 0 ? "Boshlang‘ich qarz (UZS)" : "Boshlang‘ich avans (UZS)",
+      return res.status(409).json({
+        ok: false,
+        message: "Bu telefon band",
       });
     }
 
-    if (balUsd !== 0) {
+    const balUZS = Number(balance.UZS || 0);
+    const balUSD = Number(balance.USD || 0);
+
+    const payment_history = [];
+
+    // 🔥 Boshlang‘ich balans tarixga yoziladi
+    if (balUZS !== 0) {
+      payment_history.push({
+        currency: "UZS",
+        amount: Math.abs(balUZS),
+        direction: balUZS > 0 ? "DEBT" : "PREPAYMENT",
+        note:
+          balUZS > 0
+            ? "Boshlang‘ich qarz (UZS)"
+            : "Boshlang‘ich avans (UZS)",
+        date: new Date(),
+      });
+    }
+
+    if (balUSD !== 0) {
       payment_history.push({
         currency: "USD",
-        amount: Math.abs(balUsd),
-        direction: balUsd > 0 ? "DEBT" : "PREPAYMENT",
+        amount: Math.abs(balUSD),
+        direction: balUSD > 0 ? "DEBT" : "PREPAYMENT",
         note:
-          balUsd > 0 ? "Boshlang‘ich qarz (USD)" : "Boshlang‘ich avans (USD)",
+          balUSD > 0
+            ? "Boshlang‘ich qarz (USD)"
+            : "Boshlang‘ich avans (USD)",
+        date: new Date(),
       });
     }
 
     const supplier = await Supplier.create({
       name: String(name).trim(),
       phone: String(phone).trim(),
-      balance: { UZS: balUzs, USD: balUsd },
+      address: String(address).trim(),
+      note: String(note).trim(),
+      balance: {
+        UZS: balUZS,
+        USD: balUSD,
+      },
       payment_history,
     });
 
@@ -130,83 +147,55 @@ exports.createSupplier = async (req, res) => {
       supplier,
     });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
+
 
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;
 
-    const match = {};
+    const filter = {};
     if (q && q.trim()) {
       const r = new RegExp(q.trim(), "i");
-      match.$or = [{ name: r }, { phone: r }];
+      filter.$or = [{ name: r }, { phone: r }];
     }
 
-    const items = await Supplier.aggregate([
-      { $match: match },
+    const suppliers = await Supplier.find(filter)
+      .select("name phone balance createdAt updatedAt")
+      .sort({ createdAt: -1 })
+      .lean();
 
-      // 🔗 PURCHASE JOIN
-      {
-        $lookup: {
-          from: "purchases",
-          localField: "_id",
-          foreignField: "supplier_id",
-          as: "purchases",
+    const items = suppliers.map((s) => {
+      const uzs = Number(s.balance?.UZS || 0);
+      const usd = Number(s.balance?.USD || 0);
+
+      return {
+        _id: s._id,
+        name: s.name,
+        phone: s.phone,
+
+        // 🔥 ASOSIY NARSA – REAL BALANCE
+        balance: {
+          UZS: uzs,
+          USD: usd,
         },
-      },
 
-      // 🔥 JAMI QARZNI HISOBLASH
-      {
-        $addFields: {
-          debt: {
-            UZS: {
-              $sum: {
-                $map: {
-                  input: {
-                    $filter: {
-                      input: "$purchases",
-                      as: "p",
-                      cond: { $ne: ["$$p.status", "PAID"] },
-                    },
-                  },
-                  as: "p",
-                  in: { $ifNull: ["$$p.remaining.UZS", 0] },
-                },
-              },
-            },
-            USD: {
-              $sum: {
-                $map: {
-                  input: {
-                    $filter: {
-                      input: "$purchases",
-                      as: "p",
-                      cond: { $ne: ["$$p.status", "PAID"] },
-                    },
-                  },
-                  as: "p",
-                  in: { $ifNull: ["$$p.remaining.USD", 0] },
-                },
-              },
-            },
-          },
+        // frontend uchun qulay status
+        status: {
+          UZS: uzs > 0 ? "DEBT" : uzs < 0 ? "PREPAID" : "CLEAR",
+          USD: usd > 0 ? "DEBT" : usd < 0 ? "PREPAID" : "CLEAR",
         },
-      },
 
-      // 🧹 ORTIQCHA FIELDLARNI OLIB TASHLAYMIZ
-      {
-        $project: {
-          purchases: 0,
-          __v: 0,
-        },
-      },
-
-      { $sort: { createdAt: -1 } },
-    ]);
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+      };
+    });
 
     return res.json({
       ok: true,
@@ -221,6 +210,7 @@ exports.getSuppliers = async (req, res) => {
     });
   }
 };
+
 exports.getSupplierById = async (req, res) => {
   try {
     const supplier = await Supplier.findById(req.params.id);

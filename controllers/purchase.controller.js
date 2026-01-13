@@ -1,5 +1,3 @@
-// controllers/purchase.controller.js (createPurchase)
-
 const mongoose = require("mongoose");
 const Supplier = require("../modules/suppliers/Supplier");
 const Product = require("../modules/products/Product");
@@ -15,29 +13,21 @@ exports.createPurchase = async (req, res) => {
     /* =====================
        VALIDATION
     ===================== */
-    if (!supplier_id || !batch_no) {
-      return res.status(400).json({
-        ok: false,
-        message: "supplier_id va batch_no majburiy",
-      });
+    if (!mongoose.isValidObjectId(supplier_id) || !batch_no) {
+      throw new Error("supplier_id yoki batch_no noto‘g‘ri");
     }
 
     const supplier = await Supplier.findById(supplier_id).session(session);
-    if (!supplier) {
-      return res.status(404).json({ ok: false, message: "Supplier topilmadi" });
-    }
+    if (!supplier) throw new Error("Supplier topilmadi");
 
-    if (!Array.isArray(itemsRaw) || !itemsRaw.length) {
-      return res.status(400).json({
-        ok: false,
-        message: "items majburiy (kamida 1 ta)",
-      });
+    if (!Array.isArray(itemsRaw) || itemsRaw.length === 0) {
+      throw new Error("items majburiy (kamida 1 ta)");
     }
 
     /* =====================
        ITEMS + TOTALS
     ===================== */
-    let totals = { UZS: 0, USD: 0 };
+    const totals = { UZS: 0, USD: 0 };
     const purchaseItems = [];
     const affectedProducts = [];
 
@@ -53,7 +43,15 @@ exports.createPurchase = async (req, res) => {
       const buy_price = Number(it.buy_price);
       const sell_price = Number(it.sell_price);
 
-      if (!name || !unit || !currency || !qty || !buy_price) {
+      if (
+        !name ||
+        !unit ||
+        !["UZS", "USD"].includes(currency) ||
+        !Number.isFinite(qty) ||
+        qty <= 0 ||
+        !Number.isFinite(buy_price) ||
+        buy_price <= 0
+      ) {
         throw new Error("Item maydonlari noto‘g‘ri");
       }
 
@@ -72,7 +70,12 @@ exports.createPurchase = async (req, res) => {
           warehouse_currency: currency,
         },
         {
-          $set: { category, unit, buy_price, sell_price },
+          $set: {
+            category,
+            unit,
+            buy_price,
+            sell_price,
+          },
           $inc: { qty },
         },
         { new: true, upsert: true, session }
@@ -94,9 +97,8 @@ exports.createPurchase = async (req, res) => {
     }
 
     /* =====================
-       🔥 BATCH-QARZ LOGIKASI
+       TOTALS / STATUS
     ===================== */
-
     const paid = { UZS: 0, USD: 0 };
 
     const remaining = {
@@ -124,6 +126,36 @@ exports.createPurchase = async (req, res) => {
       { session }
     );
 
+    /* =====================
+       🔥 SUPPLIER BALANCE UPDATE (ASOSIY JOY)
+       + → qarz oshadi
+       - → avans kamayadi
+    ===================== */
+    supplier.balance.UZS += remaining.UZS || 0;
+    supplier.balance.USD += remaining.USD || 0;
+
+    if (remaining.UZS > 0) {
+      supplier.payment_history.push({
+        currency: "UZS",
+        amount: remaining.UZS,
+        direction: "DEBT",
+        note: `Kirim ${batch_no}`,
+        date: new Date(),
+      });
+    }
+
+    if (remaining.USD > 0) {
+      supplier.payment_history.push({
+        currency: "USD",
+        amount: remaining.USD,
+        direction: "DEBT",
+        note: `Kirim ${batch_no}`,
+        date: new Date(),
+      });
+    }
+
+    await supplier.save({ session });
+
     await session.commitTransaction();
 
     return res.status(201).json({
@@ -133,13 +165,13 @@ exports.createPurchase = async (req, res) => {
       totals,
       remaining,
       products: affectedProducts,
+      supplier_balance: supplier.balance,
     });
   } catch (err) {
     await session.abortTransaction();
-    return res.status(500).json({
+    return res.status(400).json({
       ok: false,
-      message: "Server xatoligi",
-      error: err.message,
+      message: err.message,
     });
   } finally {
     session.endSession();
@@ -176,9 +208,6 @@ exports.addProductImage = async (req, res) => {
   });
 };
 
-
-
-
 // controllers/purchase.controller.js
 
 exports.deletePurchase = async (req, res) => {
@@ -189,54 +218,55 @@ exports.deletePurchase = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "purchase id noto‘g‘ri" });
+      throw new Error("purchase id noto‘g‘ri");
     }
 
     const purchase = await Purchase.findById(id).session(session);
-    if (!purchase) {
-      return res
-        .status(404)
-        .json({ ok: false, message: "Purchase topilmadi" });
+    if (!purchase) throw new Error("Purchase topilmadi");
+
+    if ((purchase.paid?.UZS || 0) > 0 || (purchase.paid?.USD || 0) > 0) {
+      throw new Error(
+        "Bu batch bo‘yicha to‘lov qilingan. O‘chirish mumkin emas"
+      );
     }
 
-    /* =========================
-       ❌ TO‘LOV BO‘LSA DELETE YO‘Q
-    ========================= */
-    if (
-      (purchase.paid?.UZS || 0) > 0 ||
-      (purchase.paid?.USD || 0) > 0
-    ) {
-      return res.status(400).json({
-        ok: false,
-        message:
-          "Bu batch bo‘yicha to‘lov qilingan. O‘chirish mumkin emas",
-      });
-    }
+    /* =====================
+       SUPPLIER BALANCE ROLLBACK
+    ===================== */
+    const supplier = await Supplier.findById(purchase.supplier_id).session(
+      session
+    );
+    if (!supplier) throw new Error("Supplier topilmadi");
 
-    /* =========================
-       📦 STOCK QAYTARISH
-    ========================= */
+    supplier.balance.UZS -= purchase.remaining?.UZS || 0;
+    supplier.balance.USD -= purchase.remaining?.USD || 0;
+
+    supplier.payment_history.push({
+      currency: purchase.remaining?.UZS > 0 ? "UZS" : "USD",
+      amount:
+        purchase.remaining?.UZS > 0
+          ? purchase.remaining.UZS
+          : purchase.remaining.USD,
+      direction: "PREPAYMENT",
+      note: `Kirim bekor qilindi ${purchase.batch_no}`,
+      date: new Date(),
+    });
+
+    await supplier.save({ session });
+
+    /* =====================
+       STOCK ROLLBACK
+    ===================== */
     for (const it of purchase.items) {
       const product = await Product.findById(it.product_id).session(session);
-      if (!product) {
-        throw new Error(`Product topilmadi: ${it.product_id}`);
-      }
+      if (!product) throw new Error("Product topilmadi");
 
-      // 🔥 aynan shu batchdan kelgan miqdorni qaytaramiz
       product.qty -= it.qty;
-
-      if (product.qty < 0) {
-        product.qty = 0; // himoya
-      }
+      if (product.qty < 0) product.qty = 0;
 
       await product.save({ session });
     }
 
-    /* =========================
-       🗑️ PURCHASE DELETE
-    ========================= */
     await Purchase.deleteOne({ _id: id }).session(session);
 
     await session.commitTransaction();
@@ -244,19 +274,16 @@ exports.deletePurchase = async (req, res) => {
     return res.json({
       ok: true,
       message: "Kirim (batch) muvaffaqiyatli o‘chirildi",
-      deleted_batch: {
-        id: purchase._id,
-        batch_no: purchase.batch_no,
-      },
+      supplier_balance: supplier.balance,
     });
   } catch (err) {
     await session.abortTransaction();
-    return res.status(500).json({
+    return res.status(400).json({
       ok: false,
-      message: "Purchase delete qilishda xato",
-      error: err.message,
+      message: err.message,
     });
   } finally {
     session.endSession();
   }
 };
+

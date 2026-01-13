@@ -5,44 +5,22 @@ const Product = require("../modules/products/Product");
 const Warehouse = require("../modules/Warehouse/Warehouse");
 const Customer = require("../modules/Customer/Customer");
 
-// Counter (invoiceNo uchun)
-const Counter =
-  mongoose.models.Counter ||
-  mongoose.model(
-    "Counter",
-    new mongoose.Schema(
-      {
-        key: { type: String, required: true, unique: true },
-        seq: { type: Number, default: 0 },
-      },
-      { timestamps: true }
-    )
-  );
-
-/**
- * Utils
- */
-function safeNum(n, def = 0) {
-  const x = Number(n);
-  return Number.isFinite(x) ? x : def;
-}
-
-function escapeRegex(text = "") {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-function normalizePhone(phone) {
-  if (!phone) return undefined;
-  return String(phone).replace(/\s+/g, "").trim();
-}
-function escapeRegex(s) {
-  return String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
+/* =====================
+   HELPERS
+===================== */
 function safeNumber(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
 }
 
+function normalizePhone(phone) {
+  if (!phone) return undefined;
+  return String(phone).replace(/\s+/g, "").trim();
+}
+
+/* =====================
+   CREATE SALE
+===================== */
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -52,7 +30,7 @@ exports.createSale = async (req, res) => {
     if (!soldBy) throw new Error("Auth required");
 
     const {
-      items,
+      items = [],
       customerId,
       customer,
       payments = [],
@@ -64,9 +42,9 @@ exports.createSale = async (req, res) => {
       throw new Error("Items bo‘sh bo‘lishi mumkin emas");
     }
 
-    /* =========================
-       0. CUSTOMER ANIQLASH / YARATISH
-    ========================= */
+    /* =====================
+       1️⃣ CUSTOMER ANIQLASH
+    ===================== */
     let finalCustomerId = null;
 
     if (mongoose.isValidObjectId(customerId)) {
@@ -74,7 +52,7 @@ exports.createSale = async (req, res) => {
     }
 
     if (!finalCustomerId && customer?.name) {
-      const [newCustomer] = await Customer.create(
+      const [c] = await Customer.create(
         [
           {
             name: customer.name,
@@ -87,12 +65,12 @@ exports.createSale = async (req, res) => {
         ],
         { session }
       );
-      finalCustomerId = newCustomer._id;
+      finalCustomerId = c._id;
     }
 
-    /* =========================
-       1. PRODUCTLARNI OLAMIZ
-    ========================= */
+    /* =====================
+       2️⃣ PRODUCTLARNI OLISH
+    ===================== */
     const productIds = items.map((i) => i.productId);
 
     const products = await Product.find({
@@ -105,26 +83,24 @@ exports.createSale = async (req, res) => {
 
     const pMap = new Map(products.map((p) => [String(p._id), p]));
 
-    /* =========================
-       2. STOCK TEKSHIRISH
-    ========================= */
+    /* =====================
+       3️⃣ STOCK TEKSHIRISH
+    ===================== */
     for (const it of items) {
       const p = pMap.get(String(it.productId));
       if (!p) throw new Error("Product topilmadi");
 
       const qty = Number(it.qty);
-      if (!Number.isFinite(qty) || qty <= 0) {
+      if (!Number.isFinite(qty) || qty <= 0)
         throw new Error("qty noto‘g‘ri");
-      }
 
-      if (p.qty < qty) {
+      if (p.qty < qty)
         throw new Error(`Stock yetarli emas: ${p.name}`);
-      }
     }
 
-    /* =========================
-       3. STOCK KAMAYTIRISH
-    ========================= */
+    /* =====================
+       4️⃣ STOCK KAMAYTIRISH
+    ===================== */
     for (const it of items) {
       await Product.updateOne(
         { _id: it.productId, qty: { $gte: it.qty } },
@@ -133,37 +109,35 @@ exports.createSale = async (req, res) => {
       );
     }
 
-    /* =========================
-       4. WAREHOUSE MAP
-    ========================= */
+    /* =====================
+       5️⃣ WAREHOUSE MAP
+    ===================== */
     const currencies = [...new Set(products.map((p) => p.warehouse_currency))];
 
     const warehouses = await Warehouse.find({
       currency: { $in: currencies },
     })
-      .select("_id currency")
+      .select("_id currency name")
       .session(session);
 
     const wMap = new Map(warehouses.map((w) => [w.currency, w._id]));
 
-    /* =========================
-       5. SALE ITEMS
-    ========================= */
+    /* =====================
+       6️⃣ SALE ITEMS
+    ===================== */
     const saleItems = items.map((it) => {
       const p = pMap.get(String(it.productId));
-      const currency = p.warehouse_currency;
-      const warehouseId = wMap.get(currency);
-
-      if (!warehouseId) {
-        throw new Error(`Warehouse topilmadi: ${currency}`);
-      }
-
       const qty = Number(it.qty);
       const sellPrice = Number(it.sell_price);
 
       if (!Number.isFinite(sellPrice) || sellPrice < 0) {
         throw new Error("sell_price noto‘g‘ri");
       }
+
+      const currency = p.warehouse_currency;
+      const warehouseId = wMap.get(currency);
+      if (!warehouseId)
+        throw new Error(`Warehouse topilmadi: ${currency}`);
 
       return {
         productId: p._id,
@@ -179,90 +153,61 @@ exports.createSale = async (req, res) => {
         currency,
         qty,
         sell_price: sellPrice,
-        buy_price: Number(p.buy_price),
+        buy_price: Number(p.buy_price), // 🔥 snapshot
         subtotal: +(qty * sellPrice).toFixed(2),
       };
     });
 
-    /* =========================
-       6. CURRENCY TOTALS
-    ========================= */
+    /* =====================
+       7️⃣ CURRENCY TOTALS
+    ===================== */
     const currencyTotals = {
-      UZS: {
-        subtotal: 0,
-        discount: 0,
-        grandTotal: 0,
-        paidAmount: 0,
-        debtAmount: 0,
-      },
-      USD: {
-        subtotal: 0,
-        discount: 0,
-        grandTotal: 0,
-        paidAmount: 0,
-        debtAmount: 0,
-      },
+      UZS: { subtotal: 0, discount: 0, grandTotal: 0, paidAmount: 0, debtAmount: 0 },
+      USD: { subtotal: 0, discount: 0, grandTotal: 0, paidAmount: 0, debtAmount: 0 },
     };
 
-    // SUBTOTAL
     for (const it of saleItems) {
       currencyTotals[it.currency].subtotal += it.subtotal;
     }
 
-    // DISCOUNT (proportional)
-    const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
+    const totalAll =
+      currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
     const disc = Math.max(0, safeNumber(discount));
 
     if (totalAll > 0 && disc > 0) {
-      const uzsShare = currencyTotals.UZS.subtotal / totalAll;
-      const usdShare = currencyTotals.USD.subtotal / totalAll;
-      currencyTotals.UZS.discount = +(disc * uzsShare).toFixed(2);
-      currencyTotals.USD.discount = +(disc * usdShare).toFixed(2);
+      currencyTotals.UZS.discount = +(disc * (currencyTotals.UZS.subtotal / totalAll)).toFixed(2);
+      currencyTotals.USD.discount = +(disc * (currencyTotals.USD.subtotal / totalAll)).toFixed(2);
     }
 
-    // GRAND TOTAL
-    currencyTotals.UZS.grandTotal = Math.max(
-      0,
-      +(currencyTotals.UZS.subtotal - currencyTotals.UZS.discount).toFixed(2)
-    );
-    currencyTotals.USD.grandTotal = Math.max(
-      0,
-      +(currencyTotals.USD.subtotal - currencyTotals.USD.discount).toFixed(2)
-    );
+    for (const cur of ["UZS", "USD"]) {
+      currencyTotals[cur].grandTotal = Math.max(
+        0,
+        +(currencyTotals[cur].subtotal - currencyTotals[cur].discount).toFixed(2)
+      );
+    }
 
-    // PAID AMOUNT (faqat shu sale uchun)
     for (const p of payments) {
-      if (!["UZS", "USD"].includes(p.currency)) {
+      if (!["UZS", "USD"].includes(p.currency))
         throw new Error("Payment currency noto‘g‘ri");
-      }
       currencyTotals[p.currency].paidAmount += Math.max(
         0,
         safeNumber(p.amount)
       );
     }
 
-    currencyTotals.UZS.paidAmount = +currencyTotals.UZS.paidAmount.toFixed(2);
-    currencyTotals.USD.paidAmount = +currencyTotals.USD.paidAmount.toFixed(2);
+    for (const cur of ["UZS", "USD"]) {
+      currencyTotals[cur].paidAmount = +currencyTotals[cur].paidAmount.toFixed(2);
+      currencyTotals[cur].debtAmount = Math.max(
+        0,
+        +(currencyTotals[cur].grandTotal - currencyTotals[cur].paidAmount).toFixed(2)
+      );
+    }
 
-    // DEBT AMOUNT (🔥 ASOSIY JOY)
-    currencyTotals.UZS.debtAmount = Math.max(
-      0,
-      +(currencyTotals.UZS.grandTotal - currencyTotals.UZS.paidAmount).toFixed(
-        2
-      )
-    );
-    currencyTotals.USD.debtAmount = Math.max(
-      0,
-      +(currencyTotals.USD.grandTotal - currencyTotals.USD.paidAmount).toFixed(
-        2
-      )
-    );
-
+    /* =====================
+       8️⃣ SALE CREATE
+    ===================== */
     const invoiceNo = `S-${Date.now()}`;
 
-    /* =========================
-       7. SALE CREATE
-    ========================= */
     const [sale] = await Sale.create(
       [
         {
@@ -302,6 +247,7 @@ exports.createSale = async (req, res) => {
     session.endSession();
   }
 };
+
 
 exports.getSales = async (req, res) => {
   try {
