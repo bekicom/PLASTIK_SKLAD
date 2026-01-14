@@ -19,6 +19,22 @@ function normCurrency(c) {
   return x === "UZS" || x === "USD" ? x : null;
 }
 
+// ✅ MANA SHU YERGA
+function parseDate(value, endOfDay = false) {
+  if (!value) return null;
+
+  const d = new Date(value);
+  if (isNaN(d.getTime())) return null;
+
+  if (endOfDay) {
+    d.setHours(23, 59, 59, 999);
+  } else {
+    d.setHours(0, 0, 0, 0);
+  }
+
+  return d;
+}
+
 /* =======================
    CONFIRM ORDER → SALE
 ======================= */
