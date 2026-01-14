@@ -1,7 +1,9 @@
 const mongoose = require("mongoose");
 const Expense = require("../modules/expenses/Expense");
 
-/* ================= utils ================= */
+/* =========================
+   UTILS
+========================= */
 function safeNum(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
@@ -16,10 +18,10 @@ function parseDate(d, endOfDay = false) {
   return dt;
 }
 
-/* ================= CREATE ================= */
-/**
- * POST /api/expenses/create
- */
+/* =========================
+   CREATE EXPENSE
+   POST /api/expenses
+========================= */
 exports.createExpense = async (req, res) => {
   try {
     const userId = req.user?._id || req.user?.id || req.userId;
@@ -37,26 +39,31 @@ exports.createExpense = async (req, res) => {
     } = req.body || {};
 
     if (!category || !String(category).trim()) {
-      return res.status(400).json({ ok: false, message: "category majburiy" });
+      return res.status(400).json({
+        ok: false,
+        message: "category majburiy",
+      });
     }
 
     const amt = safeNum(amount);
     if (amt <= 0) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "amount 0 dan katta bo‘lsin" });
+      return res.status(400).json({
+        ok: false,
+        message: "amount 0 dan katta bo‘lishi kerak",
+      });
     }
 
     if (!Expense.CUR.includes(currency)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "currency noto‘g‘ri (UZS/USD)" });
+      return res.status(400).json({
+        ok: false,
+        message: "currency noto‘g‘ri (UZS / USD)",
+      });
     }
 
     if (!["CASH", "CARD"].includes(payment_method)) {
       return res.status(400).json({
         ok: false,
-        message: "payment_method noto‘g‘ri (CASH/CARD)",
+        message: "payment_method noto‘g‘ri (CASH / CARD)",
       });
     }
 
@@ -65,7 +72,7 @@ exports.createExpense = async (req, res) => {
       amount: amt,
       currency,
       payment_method,
-      note: note?.trim(),
+      note: note?.trim() || "",
       expense_date: expense_date ? new Date(expense_date) : new Date(),
       createdBy: userId,
     });
@@ -84,18 +91,19 @@ exports.createExpense = async (req, res) => {
   }
 };
 
-
-/* ================= LIST ================= */
-/**
- * GET /api/expenses
- */
+/* =========================
+   GET EXPENSES (DATE FILTER 🔥)
+   GET /api/expenses
+========================= */
 exports.getExpenses = async (req, res) => {
   try {
     const page = Math.max(Number(req.query.page) || 1, 1);
     const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 200);
     const skip = (page - 1) * limit;
 
-    /* ================= FILTER ================= */
+    /* =========================
+       FILTER
+    ========================= */
     const filter = {};
 
     // 🔍 Search (category + note)
@@ -122,16 +130,20 @@ exports.getExpenses = async (req, res) => {
     // 👤 Created by
     if (req.query.createdBy) {
       if (!mongoose.isValidObjectId(req.query.createdBy)) {
-        return res
-          .status(400)
-          .json({ ok: false, message: "createdBy noto‘g‘ri" });
+        return res.status(400).json({
+          ok: false,
+          message: "createdBy noto‘g‘ri",
+        });
       }
       filter.createdBy = req.query.createdBy;
     }
 
-    // 📆 DATE FILTER (expense_date)
-    const from = parseDate(req.query.from);
-    const to = parseDate(req.query.to, true);
+    /* =========================
+       📆 DATE FILTER (ASOSIY QISM)
+       expense_date BO‘YICHA
+    ========================= */
+    const from = parseDate(req.query.from); // 00:00:00
+    const to = parseDate(req.query.to, true); // 23:59:59
 
     if (from || to) {
       filter.expense_date = {};
@@ -139,7 +151,9 @@ exports.getExpenses = async (req, res) => {
       if (to) filter.expense_date.$lte = to;
     }
 
-    /* ================= QUERY ================= */
+    /* =========================
+       QUERY
+    ========================= */
     const [items, total, totals] = await Promise.all([
       Expense.find(filter)
         .sort({ expense_date: -1, createdAt: -1 })
@@ -163,7 +177,9 @@ exports.getExpenses = async (req, res) => {
       ]),
     ]);
 
-    /* ================= FORMAT TOTALS ================= */
+    /* =========================
+       FORMAT TOTALS
+    ========================= */
     const summary = {
       UZS: { total: 0, count: 0 },
       USD: { total: 0, count: 0 },
@@ -176,7 +192,9 @@ exports.getExpenses = async (req, res) => {
       };
     }
 
-    /* ================= RESPONSE ================= */
+    /* =========================
+       RESPONSE
+    ========================= */
     return res.json({
       ok: true,
       page,
@@ -194,11 +212,16 @@ exports.getExpenses = async (req, res) => {
   }
 };
 
-/* ================= GET BY ID ================= */
+/* =========================
+   GET EXPENSE BY ID
+========================= */
 exports.getExpenseById = async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ ok: false, message: "id noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "id noto‘g‘ri",
+      });
     }
 
     const doc = await Expense.findById(req.params.id)
@@ -206,7 +229,10 @@ exports.getExpenseById = async (req, res) => {
       .lean();
 
     if (!doc) {
-      return res.status(404).json({ ok: false, message: "Xarajat topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Xarajat topilmadi",
+      });
     }
 
     return res.json({ ok: true, data: doc });
@@ -219,16 +245,24 @@ exports.getExpenseById = async (req, res) => {
   }
 };
 
-/* ================= UPDATE ================= */
+/* =========================
+   UPDATE EXPENSE
+========================= */
 exports.updateExpense = async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ ok: false, message: "id noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "id noto‘g‘ri",
+      });
     }
 
     const doc = await Expense.findById(req.params.id);
     if (!doc) {
-      return res.status(404).json({ ok: false, message: "Xarajat topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Xarajat topilmadi",
+      });
     }
 
     const { category, amount, currency, payment_method, note, expense_date } =
@@ -244,12 +278,16 @@ exports.updateExpense = async (req, res) => {
       ["CASH", "CARD"].includes(payment_method)
     )
       doc.payment_method = payment_method;
-    if (note !== undefined) doc.note = note?.trim();
+    if (note !== undefined) doc.note = note?.trim() || "";
     if (expense_date !== undefined) doc.expense_date = new Date(expense_date);
 
     await doc.save();
 
-    return res.json({ ok: true, message: "Xarajat yangilandi", data: doc });
+    return res.json({
+      ok: true,
+      message: "Xarajat yangilandi",
+      data: doc,
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,
@@ -259,20 +297,30 @@ exports.updateExpense = async (req, res) => {
   }
 };
 
-
-/* ================= DELETE ================= */
+/* =========================
+   DELETE EXPENSE
+========================= */
 exports.deleteExpense = async (req, res) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
-      return res.status(400).json({ ok: false, message: "id noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "id noto‘g‘ri",
+      });
     }
 
     const doc = await Expense.findByIdAndDelete(req.params.id);
     if (!doc) {
-      return res.status(404).json({ ok: false, message: "Xarajat topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Xarajat topilmadi",
+      });
     }
 
-    return res.json({ ok: true, message: "Xarajat o‘chirildi" });
+    return res.json({
+      ok: true,
+      message: "Xarajat o‘chirildi",
+    });
   } catch (err) {
     return res.status(500).json({
       ok: false,
@@ -281,4 +329,3 @@ exports.deleteExpense = async (req, res) => {
     });
   }
 };
-

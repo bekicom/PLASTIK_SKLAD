@@ -1,8 +1,9 @@
-// controllers/cashIn.controller.js
+
 
 const mongoose = require("mongoose");
 const CashIn = require("../modules/cashIn/CashIn");
 const Customer = require("../modules/Customer/Customer");
+const Supplier = require("../modules/suppliers/Supplier");
 const Sale = require("../modules/sales/Sale");
 
 exports.createCashIn = async (req, res) => {
@@ -11,24 +12,19 @@ exports.createCashIn = async (req, res) => {
 
   try {
     const {
-      target_type,
+      target_type, // CUSTOMER | SUPPLIER
       customer_id,
+      supplier_id,
       amount,
       currency = "UZS",
       payment_method = "CASH",
       note,
-      paymentDate, // 🆕
+      paymentDate,
     } = req.body || {};
 
-    /* =========================
-       VALIDATION
-    ========================= */
-    if (target_type !== "CUSTOMER") {
-      throw new Error("Faqat CUSTOMER cash-in ruxsat etilgan");
-    }
-
-    if (!mongoose.isValidObjectId(customer_id)) {
-      throw new Error("customer_id noto‘g‘ri");
+    /* ================= VALIDATION ================= */
+    if (!["CUSTOMER", "SUPPLIER"].includes(target_type)) {
+      throw new Error("target_type CUSTOMER yoki SUPPLIER bo‘lishi kerak");
     }
 
     if (!["UZS", "USD"].includes(currency)) {
@@ -44,91 +40,132 @@ exports.createCashIn = async (req, res) => {
       throw new Error("amount musbat bo‘lishi kerak");
     }
 
-    /* =========================
-       LOAD CUSTOMER
-    ========================= */
-    const customer = await Customer.findById(customer_id).session(session);
-    if (!customer) throw new Error("Customer topilmadi");
+    const payDate = paymentDate ? new Date(paymentDate) : new Date();
 
-    const prevBalance = Number(customer.balance?.[currency] || 0);
+    /* =================================================
+       🔵 CUSTOMER CASH-IN
+    ================================================= */
+    if (target_type === "CUSTOMER") {
+      if (!mongoose.isValidObjectId(customer_id))
+        throw new Error("customer_id noto‘g‘ri");
 
-    /* =========================
-       1️⃣ SALE QARZLARINI FIFO YOPISH
-    ========================= */
-    let remaining = payAmount;
+      const customer = await Customer.findById(customer_id).session(session);
+      if (!customer) throw new Error("Customer topilmadi");
 
-    const debtField = `currencyTotals.${currency}.debtAmount`;
-    const paidField = `currencyTotals.${currency}.paidAmount`;
+      const beforeBalance = Number(customer.balance?.[currency] || 0);
 
-    const sales = await Sale.find({
-      customerId: customer._id,
-      status: "COMPLETED",
-      [debtField]: { $gt: 0 },
-    })
-      .sort({ createdAt: 1 }) // FIFO
-      .session(session);
+      /* 🔥 FIFO SALE QARZ YOPISH */
+      let remaining = payAmount;
 
-    for (const s of sales) {
-      if (remaining <= 0) break;
+      const sales = await Sale.find({
+        customerId: customer._id,
+        [`currencyTotals.${currency}.debtAmount`]: { $gt: 0 },
+      })
+        .sort({ saleDate: 1 })
+        .session(session);
 
-      const debt = Number(s.currencyTotals[currency].debtAmount || 0);
-      if (debt <= 0) continue;
+      for (const sale of sales) {
+        if (remaining <= 0) break;
 
-      const used = Math.min(debt, remaining);
+        const debt = Number(
+          sale.currencyTotals[currency].debtAmount || 0
+        );
+        const used = Math.min(debt, remaining);
 
-      s.currencyTotals[currency].paidAmount += used;
-      s.currencyTotals[currency].debtAmount -= used;
+        sale.currencyTotals[currency].paidAmount += used;
+        sale.currencyTotals[currency].debtAmount -= used;
 
-      remaining -= used;
-      await s.save({ session });
+        remaining -= used;
+        await sale.save({ session });
+      }
+
+      /* 🔥 BALANCE */
+      customer.balance[currency] = beforeBalance - payAmount;
+
+      customer.payment_history.push({
+        currency,
+        amount: payAmount,
+        direction: "PAYMENT",
+        note: note || "Mijoz to‘lovi",
+        date: payDate,
+      });
+
+      await customer.save({ session });
+
+      await CashIn.create(
+        [
+          {
+            target_type: "CUSTOMER",
+            customer_id,
+            amount: payAmount,
+            currency,
+            payment_method,
+            paymentDate: payDate,
+            note: note || "",
+          },
+        ],
+        { session }
+      );
+
+      await session.commitTransaction();
+
+      return res.json({
+        ok: true,
+        message: "Mijozdan to‘lov qabul qilindi",
+        before_balance: beforeBalance,
+        after_balance: customer.balance[currency],
+      });
     }
 
-    /* =========================
-       2️⃣ CUSTOMER BALANCE
-       + → qarz
-       - → avans
-    ========================= */
-    customer.balance[currency] = prevBalance - payAmount;
+    /* =================================================
+       🟠 SUPPLIER CASH-IN
+    ================================================= */
+    if (target_type === "SUPPLIER") {
+      if (!mongoose.isValidObjectId(supplier_id))
+        throw new Error("supplier_id noto‘g‘ri");
 
-    /* =========================
-       3️⃣ PAYMENT HISTORY
-    ========================= */
-    customer.payment_history.push({
-      currency,
-      amount: payAmount,
-      direction: "PAYMENT",
-      note: note || "Mijoz to‘lovi",
-      date: paymentDate ? new Date(paymentDate) : new Date(),
-    });
+      const supplier = await Supplier.findById(supplier_id).session(session);
+      if (!supplier) throw new Error("Supplier topilmadi");
 
-    await customer.save({ session });
+      const beforeBalance = Number(supplier.balance?.[currency] || 0);
 
-    /* =========================
-       4️⃣ CASH-IN LOG
-    ========================= */
-    await CashIn.create(
-      [
-        {
-          target_type: "CUSTOMER",
-          customer_id,
-          amount: payAmount,
-          currency,
-          payment_method,
-          paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
-          note: note || "",
-        },
-      ],
-      { session }
-    );
+      /* 🔥 SUPPLIER BALANCE */
+      supplier.balance[currency] = beforeBalance - payAmount;
 
-    await session.commitTransaction();
+      supplier.payment_history.push({
+        currency,
+        amount: payAmount,
+        direction: "PAYMENT",
+        note: note || "Supplierga to‘lov",
+        date: payDate,
+      });
 
-    return res.json({
-      ok: true,
-      message: "Mijozdan to‘lov qabul qilindi",
-      before_balance: prevBalance,
-      after_balance: customer.balance[currency],
-    });
+      await supplier.save({ session });
+
+      await CashIn.create(
+        [
+          {
+            target_type: "SUPPLIER",
+            supplier_id,
+            amount: payAmount,
+            currency,
+            payment_method,
+            paymentDate: payDate,
+            note: note || "",
+          },
+        ],
+        { session }
+      );
+
+      await session.commitTransaction();
+
+      return res.json({
+        ok: true,
+        message: "Supplierga to‘lov amalga oshirildi",
+        before_balance: beforeBalance,
+        after_balance: supplier.balance[currency],
+      });
+    }
   } catch (err) {
     await session.abortTransaction();
     return res.status(400).json({
@@ -140,31 +177,38 @@ exports.createCashIn = async (req, res) => {
   }
 };
 
+
 /* =========================
    GET CASH-IN REPORT (DAY)
 ========================= */
 exports.getCashInReportAll = async (req, res) => {
   try {
-    const { date, currency, payment_method } = req.query;
+    const { from, to, currency, payment_method } = req.query;
 
-    // 📆 Sana (default: bugun)
-    const baseDay = date ? new Date(date) : new Date();
-    const from = new Date(baseDay.setHours(0, 0, 0, 0));
-    const to = new Date(baseDay.setHours(23, 59, 59, 999));
+    /* =========================
+       📆 DATE RANGE
+       agar berilmasa → bugun
+    ========================= */
+    const fromDate = from
+      ? new Date(new Date(from).setHours(0, 0, 0, 0))
+      : new Date(new Date().setHours(0, 0, 0, 0));
+
+    const toDate = to
+      ? new Date(new Date(to).setHours(23, 59, 59, 999))
+      : new Date(new Date().setHours(23, 59, 59, 999));
 
     /* =========================
        🔥 ASOSIY MATCH
-       paymentDate bo‘lsa → shuni oladi
-       bo‘lmasa → createdAt
+       paymentDate ustun
     ========================= */
     const match = {
       $expr: {
         $and: [
           {
-            $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, from],
+            $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, fromDate],
           },
           {
-            $lte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, to],
+            $lte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, toDate],
           },
         ],
       },
@@ -184,7 +228,6 @@ exports.getCashInReportAll = async (req, res) => {
     const list = await CashIn.aggregate([
       { $match: match },
 
-      // 🔗 CUSTOMER
       {
         $lookup: {
           from: "customers",
@@ -193,8 +236,6 @@ exports.getCashInReportAll = async (req, res) => {
           as: "customer",
         },
       },
-
-      // 🔗 SUPPLIER
       {
         $lookup: {
           from: "suppliers",
@@ -204,7 +245,6 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      // 🎯 TARGET NAME
       {
         $addFields: {
           target_name: {
@@ -214,8 +254,6 @@ exports.getCashInReportAll = async (req, res) => {
               { $arrayElemAt: ["$supplier.name", 0] },
             ],
           },
-
-          // 🔥 REPORT SANASI (frontend uchun)
           reportDate: {
             $ifNull: ["$paymentDate", "$createdAt"],
           },
@@ -230,12 +268,11 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      // 🔥 HISOBOT SANASI BO‘YICHA SORT
       { $sort: { reportDate: -1 } },
     ]);
 
     /* =========================
-       SUMMARY (MIJOZ / ZAVOD)
+       SUMMARY
     ========================= */
     const summary = {
       CUSTOMER: { UZS: 0, USD: 0 },
@@ -249,10 +286,13 @@ exports.getCashInReportAll = async (req, res) => {
 
     return res.json({
       ok: true,
-      date: from.toISOString().slice(0, 10),
+      range: {
+        from: fromDate.toISOString().slice(0, 10),
+        to: toDate.toISOString().slice(0, 10),
+      },
       summary: {
-        customers_paid: summary.CUSTOMER, // 💰 mijozlardan tushgan
-        suppliers_paid: summary.SUPPLIER, // 🏭 zavodlarga berilgan
+        customers_paid: summary.CUSTOMER,
+        suppliers_paid: summary.SUPPLIER,
       },
       report: list,
     });
@@ -264,6 +304,7 @@ exports.getCashInReportAll = async (req, res) => {
     });
   }
 };
+
 
 
 /* =========================

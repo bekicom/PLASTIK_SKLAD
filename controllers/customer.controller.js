@@ -349,24 +349,38 @@ exports.updateCustomerBalance = async (req, res) => {
 exports.deleteCustomer = async (req, res) => {
   try {
     const { id } = req.params;
+
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "ID noto'g'ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "Customer ID noto‘g‘ri",
+      });
     }
 
-    const updated = await Customer.findByIdAndUpdate(
-      id,
-      { isActive: false },
-      { new: true }
-    ).lean();
-
-    if (!updated) {
-      return res.status(404).json({ ok: false, message: "Customer topilmadi" });
+    const customer = await Customer.findById(id);
+    if (!customer) {
+      return res.status(404).json({
+        ok: false,
+        message: "Customer topilmadi",
+      });
     }
+
+    // 🔥 AGAR QARZI BO‘LSA → O‘CHIRILMAYDI
+    if (
+      Number(customer.balance?.UZS || 0) !== 0 ||
+      Number(customer.balance?.USD || 0) !== 0
+    ) {
+      return res.status(400).json({
+        ok: false,
+        message: "Customer balansida qarz/avans bor, o‘chirish mumkin emas",
+      });
+    }
+
+    await Customer.deleteOne({ _id: id });
 
     return res.json({
       ok: true,
-      message: "Customer o'chirildi (inactive)",
-      data: updated,
+      message: "Customer butunlay o‘chirildi",
     });
   } catch (err) {
     return res.status(500).json({
@@ -377,10 +391,8 @@ exports.deleteCustomer = async (req, res) => {
   }
 };
 
-/**
- * GET /customers/:id/sales?page=&limit=
- * Customer sotuvlari (history list)
- */
+
+
 
 exports.getCustomerSales = async (req, res) => {
   try {
