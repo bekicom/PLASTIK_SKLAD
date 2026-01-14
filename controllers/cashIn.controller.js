@@ -3,13 +3,7 @@
 const mongoose = require("mongoose");
 const CashIn = require("../modules/cashIn/CashIn");
 const Customer = require("../modules/Customer/Customer");
-const Supplier = require("../modules/suppliers/Supplier");
-const Purchase = require("../modules/purchases/Purchase");
 const Sale = require("../modules/sales/Sale");
-
-// controllers/cashIn.controller.js
-
-// controllers/cashIn.controller.js (CUSTOMER)
 
 exports.createCashIn = async (req, res) => {
   const session = await mongoose.startSession();
@@ -23,6 +17,7 @@ exports.createCashIn = async (req, res) => {
       currency = "UZS",
       payment_method = "CASH",
       note,
+      paymentDate, // 🆕
     } = req.body || {};
 
     /* =========================
@@ -45,10 +40,9 @@ exports.createCashIn = async (req, res) => {
     }
 
     const payAmount = Number(amount);
- if (!Number.isFinite(payAmount) || payAmount === 0) {
-   throw new Error("amount 0 bo‘lishi mumkin emas");
- }
-
+    if (!Number.isFinite(payAmount) || payAmount <= 0) {
+      throw new Error("amount musbat bo‘lishi kerak");
+    }
 
     /* =========================
        LOAD CUSTOMER
@@ -71,7 +65,7 @@ exports.createCashIn = async (req, res) => {
       status: "COMPLETED",
       [debtField]: { $gt: 0 },
     })
-      .sort({ createdAt: 1 }) // FIFO 🔥
+      .sort({ createdAt: 1 }) // FIFO
       .session(session);
 
     for (const s of sales) {
@@ -90,8 +84,9 @@ exports.createCashIn = async (req, res) => {
     }
 
     /* =========================
-       2️⃣ CUSTOMER BALANCE UPDATE
-       🔥 ASOSIY FORMULA
+       2️⃣ CUSTOMER BALANCE
+       + → qarz
+       - → avans
     ========================= */
     customer.balance[currency] = prevBalance - payAmount;
 
@@ -102,9 +97,8 @@ exports.createCashIn = async (req, res) => {
       currency,
       amount: payAmount,
       direction: "PAYMENT",
-      method: payment_method,
       note: note || "Mijoz to‘lovi",
-      date: new Date(),
+      date: paymentDate ? new Date(paymentDate) : new Date(),
     });
 
     await customer.save({ session });
@@ -120,6 +114,7 @@ exports.createCashIn = async (req, res) => {
           amount: payAmount,
           currency,
           payment_method,
+          paymentDate: paymentDate ? new Date(paymentDate) : new Date(),
           note: note || "",
         },
       ],
@@ -145,9 +140,6 @@ exports.createCashIn = async (req, res) => {
   }
 };
 
-
-
-
 /* =========================
    GET CASH-IN REPORT (DAY)
 ========================= */
@@ -160,8 +152,22 @@ exports.getCashInReportAll = async (req, res) => {
     const from = new Date(baseDay.setHours(0, 0, 0, 0));
     const to = new Date(baseDay.setHours(23, 59, 59, 999));
 
+    /* =========================
+       🔥 ASOSIY MATCH
+       paymentDate bo‘lsa → shuni oladi
+       bo‘lmasa → createdAt
+    ========================= */
     const match = {
-      createdAt: { $gte: from, $lte: to },
+      $expr: {
+        $and: [
+          {
+            $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, from],
+          },
+          {
+            $lte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, to],
+          },
+        ],
+      },
     };
 
     if (currency && ["UZS", "USD"].includes(currency)) {
@@ -208,6 +214,11 @@ exports.getCashInReportAll = async (req, res) => {
               { $arrayElemAt: ["$supplier.name", 0] },
             ],
           },
+
+          // 🔥 REPORT SANASI (frontend uchun)
+          reportDate: {
+            $ifNull: ["$paymentDate", "$createdAt"],
+          },
         },
       },
 
@@ -219,7 +230,8 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      { $sort: { createdAt: -1 } },
+      // 🔥 HISOBOT SANASI BO‘YICHA SORT
+      { $sort: { reportDate: -1 } },
     ]);
 
     /* =========================
@@ -253,6 +265,7 @@ exports.getCashInReportAll = async (req, res) => {
   }
 };
 
+
 /* =========================
    EDIT CASH-IN
 ========================= */
@@ -262,7 +275,7 @@ exports.editCashIn = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { amount, currency, payment_method, note } = req.body || {};
+    const { amount, currency, payment_method, note, paymentDate } = req.body;
 
     if (!mongoose.isValidObjectId(id)) {
       throw new Error("CashIn ID noto‘g‘ri");
@@ -271,12 +284,13 @@ exports.editCashIn = async (req, res) => {
     const cashIn = await CashIn.findById(id).session(session);
     if (!cashIn) throw new Error("Cash-in topilmadi");
 
-    const oldAmount = Number(cashIn.amount);
-    const oldCurrency = cashIn.currency;
+    if (cashIn.target_type !== "CUSTOMER") {
+      throw new Error("Faqat CUSTOMER cash-in tahrirlanadi");
+    }
 
     const newAmount = Number(amount);
     if (!Number.isFinite(newAmount) || newAmount <= 0) {
-      throw new Error("amount noto‘g‘ri");
+      throw new Error("amount musbat bo‘lishi kerak");
     }
 
     if (!["UZS", "USD"].includes(currency)) {
@@ -287,38 +301,38 @@ exports.editCashIn = async (req, res) => {
       throw new Error("payment_method noto‘g‘ri");
     }
 
-    const supplier = await Supplier.findById(cashIn.supplier_id).session(
+    const customer = await Customer.findById(cashIn.customer_id).session(
       session
     );
-    if (!supplier) throw new Error("Supplier topilmadi");
+    if (!customer) throw new Error("Customer topilmadi");
 
     /* =========================
        1️⃣ ESKI TA’SIRNI ORQAGA QAYTARISH
     ========================= */
-    supplier.balance[oldCurrency] =
-      Number(supplier.balance?.[oldCurrency] || 0) + oldAmount;
+    customer.balance[cashIn.currency] += cashIn.amount;
 
     /* =========================
-       2️⃣ YANGI TA’SIRNI QO‘LLASH
+       2️⃣ YANGI TA’SIR
     ========================= */
-    supplier.balance[currency] =
-      Number(supplier.balance?.[currency] || 0) - newAmount;
+    customer.balance[currency] -= newAmount;
 
-    supplier.payment_history.push({
+    customer.payment_history.push({
       currency,
       amount: newAmount,
-      direction: "PREPAYMENT",
-      method: payment_method,
+      direction: "PAYMENT",
       note: note || "Cash-in tahrirlandi",
-      date: new Date(),
+      date: paymentDate ? new Date(paymentDate) : new Date(),
     });
 
     cashIn.amount = newAmount;
     cashIn.currency = currency;
     cashIn.payment_method = payment_method;
     cashIn.note = note || cashIn.note;
+    cashIn.paymentDate = paymentDate
+      ? new Date(paymentDate)
+      : cashIn.paymentDate;
 
-    await supplier.save({ session });
+    await customer.save({ session });
     await cashIn.save({ session });
 
     await session.commitTransaction();
@@ -326,9 +340,7 @@ exports.editCashIn = async (req, res) => {
     return res.json({
       ok: true,
       message: "Cash-in muvaffaqiyatli tahrirlandi",
-      before: { amount: oldAmount, currency: oldCurrency },
-      after: { amount: newAmount, currency },
-      balance: supplier.balance,
+      balance: customer.balance,
     });
   } catch (error) {
     await session.abortTransaction();

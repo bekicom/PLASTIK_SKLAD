@@ -52,6 +52,15 @@ const cashInSchema = new mongoose.Schema(
     },
 
     /* =========================
+       🆕 PAYMENT DATE (MUHIM)
+    ========================= */
+    paymentDate: {
+      type: Date,
+      default: Date.now, // 👈 agar yuborilmasa — hozirgi vaqt
+      index: true,
+    },
+
+    /* =========================
        META
     ========================= */
     note: {
@@ -83,10 +92,16 @@ cashInSchema.pre("validate", function (next) {
     this.customer_id = null;
   }
 
-  // payment_method fallback (extra safety)
+  // payment_method fallback
   if (!this.payment_method) {
     this.payment_method = "CASH";
   }
+
+  // 🆕 paymentDate fallback
+  if (!this.paymentDate) {
+    this.paymentDate = new Date();
+  }
+
 });
 
 module.exports =

@@ -586,7 +586,7 @@ exports.getCustomerSummary = async (req, res) => {
     const customerId = new mongoose.Types.ObjectId(id);
 
     /* =========================
-       1. CUSTOMER (AS IS)
+       1. CUSTOMER
     ========================= */
     const customer = await Customer.findById(id)
       .select("name phone address note createdAt balance")
@@ -597,7 +597,7 @@ exports.getCustomerSummary = async (req, res) => {
     }
 
     /* =========================
-       2. ORDERS SUMMARY (ESKI LOGIKA)
+       2. ORDERS SUMMARY
     ========================= */
     const [orderAgg] = await Order.aggregate([
       { $match: { customerId } },
@@ -622,7 +622,7 @@ exports.getCustomerSummary = async (req, res) => {
     ]);
 
     /* =========================
-       3. SALES AGGREGATION (🔥 MUHIM)
+       3. SALES AGGREGATION 🔥
     ========================= */
     const [salesAgg] = await Sale.aggregate([
       { $match: { customerId, status: "COMPLETED" } },
@@ -638,23 +638,34 @@ exports.getCustomerSummary = async (req, res) => {
             $sum: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
           },
 
-          paidUZS: { $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] } },
-          paidUSD: { $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] } },
+          paidUZS: {
+            $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] },
+          },
+          paidUSD: {
+            $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] },
+          },
 
-          debtUZS: { $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] } },
-          debtUSD: { $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] } },
+          debtUZS: {
+            $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
+          },
+          debtUSD: {
+            $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
+          },
 
-          lastSaleAt: { $max: "$saleDate" }, // 🔥 MUHIM
+          // 🔥 MUHIM: createdAt emas
+          lastSaleAt: { $max: "$saleDate" },
         },
       },
     ]);
 
-
     /* =========================
-       4. LAST SALES (DETAIL 🔥)
+       4. LAST SALES (DETAIL)
     ========================= */
-    const lastSalesRaw = await Sale.find({ customerId, status: "COMPLETED" })
-      .sort({ createdAt: -1 })
+    const lastSalesRaw = await Sale.find({
+      customerId,
+      status: "COMPLETED",
+    })
+      .sort({ saleDate: -1 }) // 🔥 ASOSIY SANA
       .limit(10)
       .lean();
 
@@ -673,7 +684,10 @@ exports.getCustomerSummary = async (req, res) => {
       return {
         _id: s._id,
         invoiceNo: s.invoiceNo,
-        createdAt: s.createdAt,
+
+        // 🔥 frontend ishlatadigan sana
+        saleDate: s.saleDate || s.createdAt,
+
         status: saleStatus,
 
         totals: s.totals,
@@ -684,10 +698,16 @@ exports.getCustomerSummary = async (req, res) => {
           USD: remUSD,
         },
 
+        // 🔥 FAQAT SNAPSHOT
         items: (s.items || []).map((it) => ({
           productId: it.productId,
-          name: it.productSnapshot?.name,
-          unit: it.productSnapshot?.unit,
+
+          name: it.productSnapshot?.name || "",
+          model: it.productSnapshot?.model || "",
+          color: it.productSnapshot?.color || "",
+          category: it.productSnapshot?.category || "",
+          unit: it.productSnapshot?.unit || "",
+
           qty: it.qty,
           price: it.sell_price,
           currency: it.currency,
@@ -708,7 +728,7 @@ exports.getCustomerSummary = async (req, res) => {
       data: {
         customer: {
           ...customer,
-          balance: customer.balance || { UZS: 0, USD: 0 }, // advance
+          balance: customer.balance || { UZS: 0, USD: 0 },
         },
 
         orders: {
@@ -753,6 +773,7 @@ exports.getCustomerSummary = async (req, res) => {
     });
   }
 };
+
 
 
 
