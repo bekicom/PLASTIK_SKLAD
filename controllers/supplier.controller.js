@@ -167,7 +167,7 @@ exports.getSuppliers = async (req, res) => {
     }
 
     const suppliers = await Supplier.find(filter)
-      .select("name phone balance createdAt updatedAt")
+      .select("name phone balance payment_history createdAt updatedAt")
       .sort({ createdAt: -1 })
       .lean();
 
@@ -180,17 +180,27 @@ exports.getSuppliers = async (req, res) => {
         name: s.name,
         phone: s.phone,
 
-        // 🔥 ASOSIY NARSA – REAL BALANCE
+        // 🔥 REAL BALANCE
         balance: {
           UZS: uzs,
           USD: usd,
         },
 
-        // frontend uchun qulay status
+        // 🔥 FRONTEND STATUS
         status: {
           UZS: uzs > 0 ? "DEBT" : uzs < 0 ? "PREPAID" : "CLEAR",
           USD: usd > 0 ? "DEBT" : usd < 0 ? "PREPAID" : "CLEAR",
         },
+
+        // 🔥 MUHIM — TO‘LOVLAR TARIXI
+        payment_history: (s.payment_history || []).map((p) => ({
+          currency: p.currency,
+          amount: Number(p.amount),
+          direction: p.direction, // DEBT | PAYMENT | PREPAYMENT
+          method: p.method || null,
+          note: p.note || "",
+          date: p.date,
+        })),
 
         createdAt: s.createdAt,
         updatedAt: s.updatedAt,
@@ -205,11 +215,12 @@ exports.getSuppliers = async (req, res) => {
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: "Server xatoligi",
+      message: "Supplier list olishda xato",
       error: error.message,
     });
   }
 };
+
 
 exports.getSupplierById = async (req, res) => {
   try {

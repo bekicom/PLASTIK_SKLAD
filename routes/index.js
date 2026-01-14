@@ -339,6 +339,14 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   customerController.getCustomerDebtSales
 );
+
+
+router.get(
+  "/customers/:id/timeline",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerTimeline
+);
 /**
  * SALES (SOTUV)
  */

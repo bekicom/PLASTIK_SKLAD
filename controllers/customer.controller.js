@@ -101,9 +101,6 @@ exports.createCustomer = async (req, res) => {
 ======================= */
 exports.getCustomers = async (req, res) => {
   try {
-    /* =====================
-       FILTER
-    ===================== */
     const match = {};
 
     if (req.query.isActive === "true") match.isActive = true;
@@ -114,13 +111,10 @@ exports.getCustomers = async (req, res) => {
       match.$or = [{ name: r }, { phone: r }];
     }
 
-    /* =====================
-       AGGREGATION
-    ===================== */
     const items = await Customer.aggregate([
       { $match: match },
 
-      /* 🔗 SALES JOIN */
+      /* 🔗 SALES */
       {
         $lookup: {
           from: "sales",
@@ -147,7 +141,7 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 DEBT CALC */
+      /* 🔥 DEBT */
       {
         $addFields: {
           debt: {
@@ -157,7 +151,7 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 STATUS CALC */
+      /* 🔥 STATUS */
       {
         $addFields: {
           status: {
@@ -183,11 +177,22 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
+      /* ⭐ PAYMENT HISTORY SORT */
+      {
+        $addFields: {
+          payment_history: {
+            $sortArray: {
+              input: "$payment_history",
+              sortBy: { date: -1 },
+            },
+          },
+        },
+      },
+
       /* 🧹 CLEAN */
       {
         $project: {
           sales: 0,
-          payment_history: 0,
           __v: 0,
         },
       },
@@ -970,6 +975,109 @@ exports.getCustomerDebtSales = async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: "Customer debt sales olishda xato",
+      error: err.message,
+    });
+  }
+};
+// controllers/customer.controller.js
+exports.getCustomerTimeline = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ ok: false, message: "customer id noto‘g‘ri" });
+    }
+
+    const customerId = new mongoose.Types.ObjectId(id);
+
+    /* =====================
+       DATE FILTER
+    ===================== */
+    const dateFilter = {};
+    if (req.query.from) dateFilter.$gte = new Date(req.query.from);
+    if (req.query.to) dateFilter.$lte = new Date(req.query.to);
+
+    /* =====================
+       1️⃣ SALES
+    ===================== */
+    const sales = await Sale.find({
+      customerId,
+      status: "COMPLETED",
+      ...(Object.keys(dateFilter).length ? { saleDate: dateFilter } : {}),
+    })
+      .select("invoiceNo saleDate currencyTotals")
+      .lean();
+
+    const saleEvents = sales.map((s) => ({
+      type: "SALE",
+      date: s.saleDate || s.createdAt,
+      ref: s.invoiceNo,
+      UZS: {
+        debit: Number(s.currencyTotals?.UZS?.debtAmount || 0),
+        credit: 0,
+      },
+      USD: {
+        debit: Number(s.currencyTotals?.USD?.debtAmount || 0),
+        credit: 0,
+      },
+    }));
+
+    /* =====================
+       2️⃣ PAYMENTS (history)
+    ===================== */
+    const customer = await Customer.findById(id)
+      .select("payment_history")
+      .lean();
+
+    const paymentEvents = (customer.payment_history || []).map((p) => ({
+      type: p.direction === "PAYMENT" ? "PAYMENT" : p.direction,
+      date: p.date,
+      note: p.note || "",
+      UZS: {
+        debit: p.currency === "UZS" && p.direction !== "PAYMENT" ? p.amount : 0,
+        credit: p.currency === "UZS" && p.direction === "PAYMENT" ? p.amount : 0,
+      },
+      USD: {
+        debit: p.currency === "USD" && p.direction !== "PAYMENT" ? p.amount : 0,
+        credit: p.currency === "USD" && p.direction === "PAYMENT" ? p.amount : 0,
+      },
+    }));
+
+    /* =====================
+       3️⃣ MERGE + SORT
+    ===================== */
+    const timelineRaw = [...saleEvents, ...paymentEvents].sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    );
+
+    /* =====================
+       4️⃣ RUNNING BALANCE
+    ===================== */
+    let balUZS = 0;
+    let balUSD = 0;
+
+    const timeline = timelineRaw.map((e) => {
+      balUZS += (e.UZS.debit || 0) - (e.UZS.credit || 0);
+      balUSD += (e.USD.debit || 0) - (e.USD.credit || 0);
+
+      return {
+        ...e,
+        balanceAfter: {
+          UZS: balUZS,
+          USD: balUSD,
+        },
+      };
+    });
+
+    return res.json({
+      ok: true,
+      customerId: id,
+      total: timeline.length,
+      timeline,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Customer timeline olishda xato",
       error: err.message,
     });
   }
