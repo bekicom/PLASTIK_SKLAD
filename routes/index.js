@@ -181,6 +181,17 @@ router.get(
   supplierController.getSupplierPurchases
 );
 
+router.get(
+  "/suppliers/:id/timeline",
+  rAuth,
+  rRole("ADMIN"),
+  supplierController.getSupplierTimeline
+);
+
+
+
+
+
 /**
  * PRODUCTS (ADMIN only)
  */

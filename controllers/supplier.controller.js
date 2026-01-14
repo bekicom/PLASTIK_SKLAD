@@ -1,7 +1,7 @@
 const Supplier = require("../modules/suppliers/Supplier");
 const mongoose = require("mongoose");
 const Purchase = require("../modules/purchases/Purchase");
-
+const CashIn = require("../modules/cashIn/CashIn");
 const CUR = ["UZS", "USD"];
 function parseDate(d, endOfDay = false) {
   if (!d) return null;
@@ -631,6 +631,84 @@ exports.updateSupplierBalance = async (req, res) => {
     return res.status(500).json({
       message: "Server xato",
       error: err.message,
+    });
+  }
+};
+
+
+
+exports.getSupplierTimeline = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "supplier id noto‘g‘ri",
+      });
+    }
+
+    /* =========================
+       1️⃣ PURCHASES (YUKLAR)
+    ========================= */
+    const purchases = await Purchase.find({ supplier_id: id })
+      .select("batch_no totals remaining status createdAt")
+      .lean();
+
+    const purchaseItems = purchases.map((p) => ({
+      type: "PURCHASE",
+      date: p.createdAt,
+      title: `Yuk olindi (${p.batch_no})`,
+      amount: {
+        UZS: p.totals?.UZS || 0,
+        USD: p.totals?.USD || 0,
+      },
+      remaining: p.remaining,
+      status: p.status,
+      ref_id: p._id,
+    }));
+
+    /* =========================
+       2️⃣ CASH-IN (TO‘LOVLAR)
+    ========================= */
+    const cashIns = await CashIn.find({
+      target_type: "SUPPLIER",
+      supplier_id: id,
+    })
+      .select("amount currency payment_method note createdAt")
+      .lean();
+
+    const cashInItems = cashIns.map((c) => ({
+      type: "CASH_IN",
+      date: c.createdAt,
+      title: "Zavodga to‘lov",
+      amount: {
+        UZS: c.currency === "UZS" ? c.amount : 0,
+        USD: c.currency === "USD" ? c.amount : 0,
+      },
+      payment_method: c.payment_method,
+      note: c.note || "",
+      ref_id: c._id,
+    }));
+
+    /* =========================
+       3️⃣ ARALASHTIRIB SORT QILAMIZ
+    ========================= */
+    const timeline = [...purchaseItems, ...cashInItems].sort(
+      (a, b) => new Date(a.date) - new Date(b.date)
+    );
+
+    return res.json({
+      ok: true,
+      supplier_id: id,
+      total: timeline.length,
+      timeline,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Supplier timeline olishda xato",
+      error: error.message,
     });
   }
 };

@@ -17,9 +17,8 @@ function safeNum(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
-/* =======================
-   CREATE CUSTOMER
-======================= */
+
+
 exports.createCustomer = async (req, res) => {
   try {
     const {
@@ -27,49 +26,58 @@ exports.createCustomer = async (req, res) => {
       phone,
       address,
       note,
-      opening_balance_uzs = 0,
-      opening_balance_usd = 0,
-    } = req.body;
+      balance = {}, // 🔥 ASOSIY
+    } = req.body || {};
 
     if (!name) {
-      return res.status(400).json({ ok: false, message: "name majburiy" });
-    }
-
-    const balUzs = safeNum(opening_balance_uzs, 0);
-    const balUsd = safeNum(opening_balance_usd, 0);
-
-    const payment_history = [];
-
-    if (balUzs !== 0) {
-      payment_history.push({
-        currency: "UZS",
-        amount: Math.abs(balUzs),
-        direction: balUzs > 0 ? "DEBT" : "PREPAYMENT",
-        note:
-          balUzs > 0 ? "Boshlang‘ich qarz (UZS)" : "Boshlang‘ich avans (UZS)",
+      return res.status(400).json({
+        ok: false,
+        message: "name majburiy",
       });
     }
 
-    if (balUsd !== 0) {
+    const balUZS = Number(balance.UZS || 0);
+    const balUSD = Number(balance.USD || 0);
+
+    const payment_history = [];
+
+    if (balUZS !== 0) {
+      payment_history.push({
+        currency: "UZS",
+        amount: Math.abs(balUZS),
+        direction: balUZS > 0 ? "DEBT" : "PREPAYMENT",
+        note:
+          balUZS > 0
+            ? "Boshlang‘ich qarz (UZS)"
+            : "Boshlang‘ich avans (UZS)",
+        date: new Date(),
+      });
+    }
+
+    if (balUSD !== 0) {
       payment_history.push({
         currency: "USD",
-        amount: Math.abs(balUsd),
-        direction: balUsd > 0 ? "DEBT" : "PREPAYMENT",
+        amount: Math.abs(balUSD),
+        direction: balUSD > 0 ? "DEBT" : "PREPAYMENT",
         note:
-          balUsd > 0 ? "Boshlang‘ich qarz (USD)" : "Boshlang‘ich avans (USD)",
+          balUSD > 0
+            ? "Boshlang‘ich qarz (USD)"
+            : "Boshlang‘ich avans (USD)",
+        date: new Date(),
       });
     }
 
     const customer = await Customer.create({
-      name: name.trim(),
+      name: String(name).trim(),
       phone: normalizePhone(phone),
-      address: address?.trim(),
-      note: note?.trim(),
+      address: address?.trim() || "",
+      note: note?.trim() || "",
       balance: {
-        UZS: balUzs,
-        USD: balUsd,
+        UZS: balUZS,
+        USD: balUSD,
       },
       payment_history,
+      isActive: true,
     });
 
     return res.status(201).json({
@@ -86,6 +94,8 @@ exports.createCustomer = async (req, res) => {
   }
 };
 
+
+
 /* =======================
    GET CUSTOMERS (LIST)
 ======================= */
@@ -94,66 +104,96 @@ exports.getCustomers = async (req, res) => {
     /* =====================
        FILTER
     ===================== */
-    const filter = {};
+    const match = {};
 
-    if (req.query.isActive === "true") filter.isActive = true;
-    if (req.query.isActive === "false") filter.isActive = false;
+    if (req.query.isActive === "true") match.isActive = true;
+    if (req.query.isActive === "false") match.isActive = false;
 
     if (req.query.search) {
       const r = new RegExp(req.query.search.trim(), "i");
-      filter.$or = [{ name: r }, { phone: r }];
+      match.$or = [{ name: r }, { phone: r }];
     }
 
     /* =====================
-       CUSTOMERS
+       AGGREGATION
     ===================== */
-    const customers = await Customer.find(filter)
-      .sort({ createdAt: -1 })
-      .lean();
+    const items = await Customer.aggregate([
+      { $match: match },
 
-    const customerIds = customers.map((c) => c._id);
-
-    /* =====================
-       SALES → DEBT AGGREGATION
-    ===================== */
-    const debts = await Sale.aggregate([
+      /* 🔗 SALES JOIN */
       {
-        $match: {
-          status: "COMPLETED",
-          customerId: { $in: customerIds },
+        $lookup: {
+          from: "sales",
+          let: { customerId: "$_id" },
+          pipeline: [
+            {
+              $match: {
+                $expr: {
+                  $and: [
+                    { $eq: ["$customerId", "$$customerId"] },
+                    { $eq: ["$status", "COMPLETED"] },
+                  ],
+                },
+              },
+            },
+            {
+              $project: {
+                uzsDebt: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
+                usdDebt: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
+              },
+            },
+          ],
+          as: "sales",
         },
       },
+
+      /* 🔥 DEBT CALC */
       {
-        $group: {
-          _id: "$customerId",
-          debtUZS: {
-            $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
-          },
-          debtUSD: {
-            $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
+        $addFields: {
+          debt: {
+            UZS: { $sum: "$sales.uzsDebt" },
+            USD: { $sum: "$sales.usdDebt" },
           },
         },
       },
+
+      /* 🔥 STATUS CALC */
+      {
+        $addFields: {
+          status: {
+            UZS: {
+              $cond: [
+                { $gt: ["$debt.UZS", 0] },
+                "DEBT",
+                {
+                  $cond: [{ $lt: ["$balance.UZS", 0] }, "PREPAID", "CLEAR"],
+                },
+              ],
+            },
+            USD: {
+              $cond: [
+                { $gt: ["$debt.USD", 0] },
+                "DEBT",
+                {
+                  $cond: [{ $lt: ["$balance.USD", 0] }, "PREPAID", "CLEAR"],
+                },
+              ],
+            },
+          },
+        },
+      },
+
+      /* 🧹 CLEAN */
+      {
+        $project: {
+          sales: 0,
+          payment_history: 0,
+          __v: 0,
+        },
+      },
+
+      { $sort: { createdAt: -1 } },
     ]);
-
-    const debtMap = new Map(
-      debts.map((d) => [
-        String(d._id),
-        { UZS: d.debtUZS || 0, USD: d.debtUSD || 0 },
-      ])
-    );
-
-    /* =====================
-       RESPONSE MAP
-    ===================== */
-    const items = customers.map((c) => {
-      const debt = debtMap.get(String(c._id)) || { UZS: 0, USD: 0 };
-
-      return {
-        ...c,
-        debt, // 🔥 ASOSIY YANGI QISM
-      };
-    });
 
     /* =====================
        TOTALS
@@ -163,16 +203,13 @@ exports.getCustomers = async (req, res) => {
       prepaid: { UZS: 0, USD: 0 },
     };
 
-    items.forEach((c) => {
+    for (const c of items) {
       totals.debt.UZS += Number(c.debt?.UZS || 0);
       totals.debt.USD += Number(c.debt?.USD || 0);
 
-      const uzsBal = Number(c.balance?.UZS || 0);
-      const usdBal = Number(c.balance?.USD || 0);
-
-      if (uzsBal > 0) totals.prepaid.UZS += uzsBal;
-      if (usdBal > 0) totals.prepaid.USD += usdBal;
-    });
+      if (c.balance?.UZS < 0) totals.prepaid.UZS += Math.abs(c.balance.UZS);
+      if (c.balance?.USD < 0) totals.prepaid.USD += Math.abs(c.balance.USD);
+    }
 
     return res.json({
       ok: true,
@@ -188,6 +225,7 @@ exports.getCustomers = async (req, res) => {
     });
   }
 };
+
 
 
 
@@ -595,24 +633,17 @@ exports.getCustomerSummary = async (req, res) => {
             $sum: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
           },
 
-          paidUZS: {
-            $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] },
-          },
-          paidUSD: {
-            $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] },
-          },
+          paidUZS: { $sum: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] } },
+          paidUSD: { $sum: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] } },
 
-          debtUZS: {
-            $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
-          },
-          debtUSD: {
-            $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
-          },
+          debtUZS: { $sum: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] } },
+          debtUSD: { $sum: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] } },
 
-          lastSaleAt: { $max: "$createdAt" },
+          lastSaleAt: { $max: "$saleDate" }, // 🔥 MUHIM
         },
       },
     ]);
+
 
     /* =========================
        4. LAST SALES (DETAIL 🔥)

@@ -43,7 +43,11 @@ const saleItemSchema = new mongoose.Schema(
 const saleSchema = new mongoose.Schema(
   {
     invoiceNo: { type: String, required: true, unique: true },
-
+    saleDate: {
+      type: Date,
+      required: true,
+      index: true, // 🔥 hisobotlar tez bo‘lsin
+    },
     soldBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

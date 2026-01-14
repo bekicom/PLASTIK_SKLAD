@@ -1,3 +1,5 @@
+// controllers/sale.controller.js
+
 const mongoose = require("mongoose");
 
 const Sale = require("../modules/sales/Sale");
@@ -19,7 +21,7 @@ function normalizePhone(phone) {
 }
 
 /* =====================
-   CREATE SALE
+   CREATE SALE (CUSTOMER)
 ===================== */
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
@@ -36,10 +38,24 @@ exports.createSale = async (req, res) => {
       payments = [],
       discount = 0,
       note,
+      saleDate, // 🔥 MUHIM
     } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
       throw new Error("Items bo‘sh bo‘lishi mumkin emas");
+    }
+
+    /* =====================
+       0️⃣ SALE DATE
+    ===================== */
+    let finalSaleDate = new Date();
+
+    if (saleDate) {
+      const d = new Date(saleDate);
+      if (Number.isNaN(d.getTime())) {
+        throw new Error("saleDate noto‘g‘ri formatda");
+      }
+      finalSaleDate = d;
     }
 
     /* =====================
@@ -55,7 +71,7 @@ exports.createSale = async (req, res) => {
       const [c] = await Customer.create(
         [
           {
-            name: customer.name,
+            name: customer.name.trim(),
             phone: normalizePhone(customer.phone),
             address: customer.address || "",
             note: customer.note || "",
@@ -91,11 +107,13 @@ exports.createSale = async (req, res) => {
       if (!p) throw new Error("Product topilmadi");
 
       const qty = Number(it.qty);
-      if (!Number.isFinite(qty) || qty <= 0)
+      if (!Number.isFinite(qty) || qty <= 0) {
         throw new Error("qty noto‘g‘ri");
+      }
 
-      if (p.qty < qty)
+      if (p.qty < qty) {
         throw new Error(`Stock yetarli emas: ${p.name}`);
+      }
     }
 
     /* =====================
@@ -117,7 +135,7 @@ exports.createSale = async (req, res) => {
     const warehouses = await Warehouse.find({
       currency: { $in: currencies },
     })
-      .select("_id currency name")
+      .select("_id currency")
       .session(session);
 
     const wMap = new Map(warehouses.map((w) => [w.currency, w._id]));
@@ -136,8 +154,9 @@ exports.createSale = async (req, res) => {
 
       const currency = p.warehouse_currency;
       const warehouseId = wMap.get(currency);
-      if (!warehouseId)
+      if (!warehouseId) {
         throw new Error(`Warehouse topilmadi: ${currency}`);
+      }
 
       return {
         productId: p._id,
@@ -153,7 +172,7 @@ exports.createSale = async (req, res) => {
         currency,
         qty,
         sell_price: sellPrice,
-        buy_price: Number(p.buy_price), // 🔥 snapshot
+        buy_price: Number(p.buy_price),
         subtotal: +(qty * sellPrice).toFixed(2),
       };
     });
@@ -162,33 +181,53 @@ exports.createSale = async (req, res) => {
        7️⃣ CURRENCY TOTALS
     ===================== */
     const currencyTotals = {
-      UZS: { subtotal: 0, discount: 0, grandTotal: 0, paidAmount: 0, debtAmount: 0 },
-      USD: { subtotal: 0, discount: 0, grandTotal: 0, paidAmount: 0, debtAmount: 0 },
+      UZS: {
+        subtotal: 0,
+        discount: 0,
+        grandTotal: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+      },
+      USD: {
+        subtotal: 0,
+        discount: 0,
+        grandTotal: 0,
+        paidAmount: 0,
+        debtAmount: 0,
+      },
     };
 
     for (const it of saleItems) {
       currencyTotals[it.currency].subtotal += it.subtotal;
     }
 
-    const totalAll =
-      currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
+    const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
     const disc = Math.max(0, safeNumber(discount));
 
     if (totalAll > 0 && disc > 0) {
-      currencyTotals.UZS.discount = +(disc * (currencyTotals.UZS.subtotal / totalAll)).toFixed(2);
-      currencyTotals.USD.discount = +(disc * (currencyTotals.USD.subtotal / totalAll)).toFixed(2);
+      currencyTotals.UZS.discount = +(
+        disc *
+        (currencyTotals.UZS.subtotal / totalAll)
+      ).toFixed(2);
+      currencyTotals.USD.discount = +(
+        disc *
+        (currencyTotals.USD.subtotal / totalAll)
+      ).toFixed(2);
     }
 
     for (const cur of ["UZS", "USD"]) {
       currencyTotals[cur].grandTotal = Math.max(
         0,
-        +(currencyTotals[cur].subtotal - currencyTotals[cur].discount).toFixed(2)
+        +(currencyTotals[cur].subtotal - currencyTotals[cur].discount).toFixed(
+          2
+        )
       );
     }
 
     for (const p of payments) {
-      if (!["UZS", "USD"].includes(p.currency))
+      if (!["UZS", "USD"].includes(p.currency)) {
         throw new Error("Payment currency noto‘g‘ri");
+      }
       currencyTotals[p.currency].paidAmount += Math.max(
         0,
         safeNumber(p.amount)
@@ -196,10 +235,13 @@ exports.createSale = async (req, res) => {
     }
 
     for (const cur of ["UZS", "USD"]) {
-      currencyTotals[cur].paidAmount = +currencyTotals[cur].paidAmount.toFixed(2);
+      currencyTotals[cur].paidAmount =
+        +currencyTotals[cur].paidAmount.toFixed(2);
       currencyTotals[cur].debtAmount = Math.max(
         0,
-        +(currencyTotals[cur].grandTotal - currencyTotals[cur].paidAmount).toFixed(2)
+        +(
+          currencyTotals[cur].grandTotal - currencyTotals[cur].paidAmount
+        ).toFixed(2)
       );
     }
 
@@ -212,6 +254,7 @@ exports.createSale = async (req, res) => {
       [
         {
           invoiceNo,
+          saleDate: finalSaleDate, // 🔥 ASOSIY QO‘SHILGAN QISM
           soldBy,
           customerId: finalCustomerId || undefined,
           items: saleItems,
@@ -229,6 +272,34 @@ exports.createSale = async (req, res) => {
       ],
       { session }
     );
+
+    /* =====================
+       9️⃣ CUSTOMER BALANCE
+    ===================== */
+    if (finalCustomerId) {
+      const customerDoc = await Customer.findById(finalCustomerId).session(
+        session
+      );
+
+      if (customerDoc) {
+        for (const cur of ["UZS", "USD"]) {
+          const debt = sale.currencyTotals[cur]?.debtAmount || 0;
+          if (debt > 0) {
+            customerDoc.balance[cur] =
+              Number(customerDoc.balance?.[cur] || 0) + debt;
+
+            customerDoc.payment_history.push({
+              currency: cur,
+              amount: debt,
+              direction: "DEBT",
+              note: `Sale ${sale.invoiceNo}`,
+              date: finalSaleDate, // 🔥 MUHIM
+            });
+          }
+        }
+        await customerDoc.save({ session });
+      }
+    }
 
     await session.commitTransaction();
 
