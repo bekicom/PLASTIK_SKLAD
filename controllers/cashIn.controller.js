@@ -1,5 +1,3 @@
-
-
 const mongoose = require("mongoose");
 const CashIn = require("../modules/cashIn/CashIn");
 const Customer = require("../modules/Customer/Customer");
@@ -67,9 +65,7 @@ exports.createCashIn = async (req, res) => {
       for (const sale of sales) {
         if (remaining <= 0) break;
 
-        const debt = Number(
-          sale.currencyTotals[currency].debtAmount || 0
-        );
+        const debt = Number(sale.currencyTotals[currency].debtAmount || 0);
         const used = Math.min(debt, remaining);
 
         sale.currencyTotals[currency].paidAmount += used;
@@ -177,7 +173,6 @@ exports.createCashIn = async (req, res) => {
   }
 };
 
-
 /* =========================
    GET CASH-IN REPORT (DAY)
 ========================= */
@@ -187,32 +182,36 @@ exports.getCashInReportAll = async (req, res) => {
 
     /* =========================
        📆 DATE RANGE
-       agar berilmasa → bugun
+       agar from/to YO‘Q bo‘lsa → HAMMASI
     ========================= */
     const fromDate = from
       ? new Date(new Date(from).setHours(0, 0, 0, 0))
-      : new Date(new Date().setHours(0, 0, 0, 0));
+      : null;
 
-    const toDate = to
-      ? new Date(new Date(to).setHours(23, 59, 59, 999))
-      : new Date(new Date().setHours(23, 59, 59, 999));
+    const toDate = to ? new Date(new Date(to).setHours(23, 59, 59, 999)) : null;
 
     /* =========================
        🔥 ASOSIY MATCH
-       paymentDate ustun
+       doim paymentDate ustun
     ========================= */
-    const match = {
-      $expr: {
+    const match = {};
+
+    if (fromDate || toDate) {
+      match.$expr = {
         $and: [
-          {
-            $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, fromDate],
-          },
-          {
-            $lte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, toDate],
-          },
+          ...(fromDate
+            ? [
+                {
+                  $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, fromDate],
+                },
+              ]
+            : []),
+          ...(toDate
+            ? [{ $lte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, toDate] }]
+            : []),
         ],
-      },
-    };
+      };
+    }
 
     if (currency && ["UZS", "USD"].includes(currency)) {
       match.currency = currency;
@@ -254,9 +253,7 @@ exports.getCashInReportAll = async (req, res) => {
               { $arrayElemAt: ["$supplier.name", 0] },
             ],
           },
-          reportDate: {
-            $ifNull: ["$paymentDate", "$createdAt"],
-          },
+         
         },
       },
 
@@ -268,7 +265,6 @@ exports.getCashInReportAll = async (req, res) => {
         },
       },
 
-      { $sort: { reportDate: -1 } },
     ]);
 
     /* =========================
@@ -280,15 +276,14 @@ exports.getCashInReportAll = async (req, res) => {
     };
 
     for (const it of list) {
-      if (!summary[it.target_type]) continue;
       summary[it.target_type][it.currency] += Number(it.amount) || 0;
     }
 
     return res.json({
       ok: true,
       range: {
-        from: fromDate.toISOString().slice(0, 10),
-        to: toDate.toISOString().slice(0, 10),
+        from: from || "ALL",
+        to: to || "ALL",
       },
       summary: {
         customers_paid: summary.CUSTOMER,
@@ -304,7 +299,6 @@ exports.getCashInReportAll = async (req, res) => {
     });
   }
 };
-
 
 
 /* =========================
@@ -393,4 +387,3 @@ exports.editCashIn = async (req, res) => {
     session.endSession();
   }
 };
-
