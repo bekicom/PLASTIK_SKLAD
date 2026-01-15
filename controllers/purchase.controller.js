@@ -41,7 +41,7 @@ exports.createPurchase = async (req, res) => {
 
       const qty = Number(it.qty);
       const buy_price = Number(it.buy_price);
-      const sell_price = Number(it.sell_price);
+      const sell_price = Number(it.sell_price || 0);
 
       if (
         !name ||
@@ -127,32 +127,15 @@ exports.createPurchase = async (req, res) => {
     );
 
     /* =====================
-       🔥 SUPPLIER BALANCE UPDATE (ASOSIY JOY)
-       + → qarz oshadi
-       - → avans kamayadi
+       🔥 SUPPLIER BALANCE UPDATE
+       (FAqat qarz oshadi)
     ===================== */
     supplier.balance.UZS += remaining.UZS || 0;
     supplier.balance.USD += remaining.USD || 0;
 
-    if (remaining.UZS > 0) {
-      supplier.payment_history.push({
-        currency: "UZS",
-        amount: remaining.UZS,
-        direction: "DEBT",
-        note: `Kirim ${batch_no}`,
-        date: new Date(),
-      });
-    }
-
-    if (remaining.USD > 0) {
-      supplier.payment_history.push({
-        currency: "USD",
-        amount: remaining.USD,
-        direction: "DEBT",
-        note: `Kirim ${batch_no}`,
-        date: new Date(),
-      });
-    }
+    // ❗ MUHIM:
+    // BU YERDA payment_history YO‘Q
+    // To‘lovlar faqat payment controller orqali yoziladi
 
     await supplier.save({ session });
 
@@ -177,6 +160,7 @@ exports.createPurchase = async (req, res) => {
     session.endSession();
   }
 };
+
 
 exports.addProductImage = async (req, res) => {
   const { id } = req.params;
@@ -224,6 +208,7 @@ exports.deletePurchase = async (req, res) => {
     const purchase = await Purchase.findById(id).session(session);
     if (!purchase) throw new Error("Purchase topilmadi");
 
+    // ❗ Agar to‘lov qilingan bo‘lsa — o‘chirish mumkin emas
     if ((purchase.paid?.UZS || 0) > 0 || (purchase.paid?.USD || 0) > 0) {
       throw new Error(
         "Bu batch bo‘yicha to‘lov qilingan. O‘chirish mumkin emas"
@@ -232,6 +217,7 @@ exports.deletePurchase = async (req, res) => {
 
     /* =====================
        SUPPLIER BALANCE ROLLBACK
+       (faqat qarzni qaytarish)
     ===================== */
     const supplier = await Supplier.findById(purchase.supplier_id).session(
       session
@@ -241,16 +227,9 @@ exports.deletePurchase = async (req, res) => {
     supplier.balance.UZS -= purchase.remaining?.UZS || 0;
     supplier.balance.USD -= purchase.remaining?.USD || 0;
 
-    supplier.payment_history.push({
-      currency: purchase.remaining?.UZS > 0 ? "UZS" : "USD",
-      amount:
-        purchase.remaining?.UZS > 0
-          ? purchase.remaining.UZS
-          : purchase.remaining.USD,
-      direction: "PREPAYMENT",
-      note: `Kirim bekor qilindi ${purchase.batch_no}`,
-      date: new Date(),
-    });
+    // ❗ MUHIM:
+    // payment_history YOZILMAYDI
+    // chunki bu pul harakati emas
 
     await supplier.save({ session });
 
@@ -267,6 +246,9 @@ exports.deletePurchase = async (req, res) => {
       await product.save({ session });
     }
 
+    /* =====================
+       DELETE PURCHASE
+    ===================== */
     await Purchase.deleteOne({ _id: id }).session(session);
 
     await session.commitTransaction();
@@ -286,4 +268,5 @@ exports.deletePurchase = async (req, res) => {
     session.endSession();
   }
 };
+
 

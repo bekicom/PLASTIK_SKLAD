@@ -170,25 +170,39 @@ async function getOverview({ from, to, tz, warehouseId }) {
       balances.customers.prepaid.USD += Math.abs(c.balance.USD);
   }
 
-  // SUPPLIER DEBT (🔥 FROM PURCHASE)
-  const supplierDebtAgg = await Purchase.aggregate([
+  // ✅ SUPPLIER BALANCE (SOURCE OF TRUTH)
+  const supplierBalanceAgg = await Supplier.aggregate([
     {
-      $match: {
-        status: { $ne: "PAID" },
-        $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
+      $project: {
+        debtUZS: {
+          $cond: [{ $gt: ["$balance.UZS", 0] }, "$balance.UZS", 0],
+        },
+        debtUSD: {
+          $cond: [{ $gt: ["$balance.USD", 0] }, "$balance.USD", 0],
+        },
+        prepaidUZS: {
+          $cond: [{ $lt: ["$balance.UZS", 0] }, { $abs: "$balance.UZS" }, 0],
+        },
+        prepaidUSD: {
+          $cond: [{ $lt: ["$balance.USD", 0] }, { $abs: "$balance.USD" }, 0],
+        },
       },
     },
     {
       $group: {
         _id: null,
-        UZS: { $sum: "$remaining.UZS" },
-        USD: { $sum: "$remaining.USD" },
+        debtUZS: { $sum: "$debtUZS" },
+        debtUSD: { $sum: "$debtUSD" },
+        prepaidUZS: { $sum: "$prepaidUZS" },
+        prepaidUSD: { $sum: "$prepaidUSD" },
       },
     },
   ]);
 
-  balances.suppliers.debt.UZS = supplierDebtAgg[0]?.UZS || 0;
-  balances.suppliers.debt.USD = supplierDebtAgg[0]?.USD || 0;
+  balances.suppliers.debt.UZS = supplierBalanceAgg[0]?.debtUZS || 0;
+  balances.suppliers.debt.USD = supplierBalanceAgg[0]?.debtUSD || 0;
+  balances.suppliers.prepaid.UZS = supplierBalanceAgg[0]?.prepaidUZS || 0;
+  balances.suppliers.prepaid.USD = supplierBalanceAgg[0]?.prepaidUSD || 0;
 
   // SUPPLIER PREPAID (BALANCE < 0)
   const supplierPrepaidAgg = await Supplier.aggregate([
@@ -290,20 +304,20 @@ async function getOverview({ from, to, tz, warehouseId }) {
   /* =====================
      CASHFLOW (OLD FORMAT)
   ===================== */
+  /* =====================
+     CASHFLOW (FIXED)
+     ❗ Supplier payments EXCLUDED
+  ===================== */
   const cashflowTotal = {
     UZS:
       cash_in_summary.customers.UZS.CASH +
       cash_in_summary.customers.UZS.CARD -
-      cash_in_summary.suppliers.UZS.CASH -
-      cash_in_summary.suppliers.UZS.CARD -
       expenses.UZS.total -
       investor_withdrawals.UZS.total,
 
     USD:
       cash_in_summary.customers.USD.CASH +
       cash_in_summary.customers.USD.CARD -
-      cash_in_summary.suppliers.USD.CASH -
-      cash_in_summary.suppliers.USD.CARD -
       expenses.USD.total -
       investor_withdrawals.USD.total,
   };
@@ -327,24 +341,20 @@ async function getOverview({ from, to, tz, warehouseId }) {
         UZS: {
           CASH:
             cash_in_summary.customers.UZS.CASH -
-            cash_in_summary.suppliers.UZS.CASH -
             expenses.UZS.CASH -
             investor_withdrawals.UZS.CASH,
           CARD:
             cash_in_summary.customers.UZS.CARD -
-            cash_in_summary.suppliers.UZS.CARD -
             expenses.UZS.CARD -
             investor_withdrawals.UZS.CARD,
         },
         USD: {
           CASH:
             cash_in_summary.customers.USD.CASH -
-            cash_in_summary.suppliers.USD.CASH -
             expenses.USD.CASH -
             investor_withdrawals.USD.CASH,
           CARD:
             cash_in_summary.customers.USD.CARD -
-            cash_in_summary.suppliers.USD.CARD -
             expenses.USD.CARD -
             investor_withdrawals.USD.CARD,
         },
