@@ -387,3 +387,76 @@ exports.editCashIn = async (req, res) => {
     session.endSession();
   }
 };
+
+
+/* =========================
+   DELETE CASH-IN (CUSTOMER)
+========================= */
+exports.deleteCashIn = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+
+    if (!mongoose.isValidObjectId(id)) {
+      throw new Error("CashIn ID noto‘g‘ri");
+    }
+
+    const cashIn = await CashIn.findById(id).session(session);
+    if (!cashIn) {
+      throw new Error("Cash-in topilmadi");
+    }
+
+    if (cashIn.target_type !== "CUSTOMER") {
+      throw new Error("Faqat CUSTOMER cash-in o‘chiriladi");
+    }
+
+    const customer = await Customer.findById(cashIn.customer_id).session(
+      session
+    );
+    if (!customer) {
+      throw new Error("Customer topilmadi");
+    }
+
+    /* =========================
+       1️⃣ BALANCE ORQAGA QAYTARISH
+    ========================= */
+    customer.balance[cashIn.currency] =
+      Number(customer.balance?.[cashIn.currency] || 0) + cashIn.amount;
+
+    /* =========================
+       2️⃣ PAYMENT HISTORY LOG
+    ========================= */
+    customer.payment_history.push({
+      currency: cashIn.currency,
+      amount: cashIn.amount,
+      direction: "ROLLBACK",
+      note: `Cash-in o‘chirildi (${cashIn._id})`,
+      date: new Date(),
+    });
+
+    await customer.save({ session });
+
+    /* =========================
+       3️⃣ CASH-IN O‘CHIRISH
+    ========================= */
+    await CashIn.deleteOne({ _id: cashIn._id }).session(session);
+
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message: "Cash-in muvaffaqiyatli o‘chirildi",
+      balance: customer.balance,
+    });
+  } catch (error) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      ok: false,
+      message: error.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};

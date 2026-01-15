@@ -530,7 +530,19 @@ router.get(
   cashInController.getCashInReportAll
 );
 
-router.put("/cash-edit/:id", cashInController.editCashIn);
+router.put(
+  "/cash-edit/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashInController.editCashIn
+);
+router.delete(
+  "/cash-in/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashInController.deleteCashIn
+);
+
 
 // faqat ADMIN yoki OMBORCHI
 router.post(

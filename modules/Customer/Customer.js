@@ -40,7 +40,7 @@ const customerSchema = new mongoose.Schema(
         // PREPAYMENT → avans
         direction: {
           type: String,
-          enum: ["DEBT", "PAYMENT", "PREPAYMENT"],
+          enum: ["DEBT", "PAYMENT", "PREPAYMENT", "PAYMENT_CANCEL", "ROLLBACK"],
           required: true,
         },
 
