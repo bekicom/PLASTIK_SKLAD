@@ -32,7 +32,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
-    status: "COMPLETED",
+    status: { $in: ["COMPLETED", "DEBT"] },
   };
 
   let salesPipeline = [{ $match: saleMatch }];
@@ -365,9 +365,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 }
-
-
-
 
 /* =====================
    TIME SERIES
