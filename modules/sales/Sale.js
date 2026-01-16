@@ -1,20 +1,23 @@
+// modules/sales/Sale.js
 const mongoose = require("mongoose");
 
+/* =========================
+   SALE ITEM
+========================= */
 const saleItemSchema = new mongoose.Schema(
   {
     productId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",
       required: true,
-      index: true,
     },
 
     productSnapshot: {
-      name: { type: String, required: true },
-      model: { type: String },
-      color: { type: String },
-      category: { type: String },
-      unit: { type: String, required: true },
+      name: String,
+      model: String,
+      color: String,
+      category: String,
+      unit: String,
       images: [String],
     },
 
@@ -30,35 +33,82 @@ const saleItemSchema = new mongoose.Schema(
       required: true,
     },
 
-    qty: { type: Number, required: true, min: 0.0001 },
+    qty: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
 
-    sell_price: { type: Number, required: true, min: 0 },
-    buy_price: { type: Number, required: true, min: 0 },
+    sell_price: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
 
-    subtotal: { type: Number, required: true, min: 0 },
+    buy_price: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
+
+    subtotal: {
+      type: Number,
+      required: true,
+      min: 0,
+    },
   },
   { _id: false }
 );
 
+/* =========================
+   CURRENCY TOTAL
+========================= */
+const currencyTotalSchema = new mongoose.Schema(
+  {
+    subtotal: { type: Number, default: 0 },
+    discount: { type: Number, default: 0 },
+    grandTotal: { type: Number, default: 0 },
+
+    paidAmount: { type: Number, default: 0 },
+    debtAmount: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+/* =========================
+   SALE
+========================= */
 const saleSchema = new mongoose.Schema(
   {
-    invoiceNo: { type: String, required: true, unique: true },
+    invoiceNo: {
+      type: String,
+      required: true,
+      unique: true,
+      index: true,
+    },
+
     saleDate: {
-  type: Date,
-  default: Date.now
-}
-,
+      type: Date,
+      required: true,
+      index: true,
+    },
+
     soldBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
     },
 
+    // agar walk-in bo‘lsa null
     customerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
+      default: null,
+      index: true,
     },
 
+    // agar customer keyin o‘chsa ham tarix qoladi
     customerSnapshot: {
       name: String,
       phone: String,
@@ -66,52 +116,53 @@ const saleSchema = new mongoose.Schema(
       note: String,
     },
 
-    items: { type: [saleItemSchema], required: true },
+    items: {
+      type: [saleItemSchema],
+      required: true,
+    },
 
     totals: {
-      subtotal: Number,
-      discount: Number,
-      grandTotal: Number,
+      subtotal: { type: Number, default: 0 },
+      discount: { type: Number, default: 0 },
+      grandTotal: { type: Number, default: 0 },
     },
 
     currencyTotals: {
-      UZS: {
-        subtotal: Number,
-        discount: Number,
-        grandTotal: Number,
-        paidAmount: Number,
-        debtAmount: Number,
-      },
-      USD: {
-        subtotal: Number,
-        discount: Number,
-        grandTotal: Number,
-        paidAmount: Number,
-        debtAmount: Number,
-      },
+      UZS: { type: currencyTotalSchema, default: () => ({}) },
+      USD: { type: currencyTotalSchema, default: () => ({}) },
     },
-
-    payments: [
-      {
-        currency: { type: String, enum: ["UZS", "USD"] },
-        method: { type: String, enum: ["CASH", "CARD", "TRANSFER"] },
-        amount: Number,
-      },
-    ],
 
     status: {
       type: String,
-      enum: ["COMPLETED", "CANCELED", "DEBT", "PARTIALLY_PAID"],
+      enum: ["COMPLETED", "CANCELED"],
       default: "COMPLETED",
+      index: true,
     },
 
-    note: String,
+    note: {
+      type: String,
+      default: "",
+    },
 
-    canceledAt: Date,
-    canceledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
-    cancelReason: String,
+    canceledAt: {
+      type: Date,
+      default: null,
+    },
+
+    cancelReason: {
+      type: String,
+      default: "",
+    },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
+
+/* =========================
+   INDEXES
+========================= */
+saleSchema.index({ saleDate: -1 });
+saleSchema.index({ customerId: 1, saleDate: -1 });
 
 module.exports = mongoose.models.Sale || mongoose.model("Sale", saleSchema);

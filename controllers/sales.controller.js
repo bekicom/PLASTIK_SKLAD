@@ -1,5 +1,4 @@
 // controllers/sale.controller.js
-
 const mongoose = require("mongoose");
 
 const Sale = require("../modules/sales/Sale");
@@ -15,77 +14,91 @@ function safeNumber(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
-function normalizePhone(phone) {
-  if (!phone) return undefined;
-  return String(phone).replace(/\s+/g, "").trim();
-}
-
 /* =====================
-   CREATE SALE (CUSTOMER)
+   CREATE SALE
 ===================== */
 exports.createSale = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
+    /* =====================
+       1️⃣ AUTH
+    ===================== */
     const soldBy = req.user?._id || req.user?.id;
     if (!soldBy) throw new Error("Auth required");
 
     const {
-      items = [],
+      saleDate,
       customerId,
-      customer,
-      payments = [],
+      customer, // yangi customer bo‘lishi mumkin
+      items = [],
       discount = 0,
-      note,
-      saleDate, // 🔥 MUHIM
+      note = "",
     } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
-      throw new Error("Items bo‘sh bo‘lishi mumkin emas");
+      throw new Error("items bo‘sh bo‘lishi mumkin emas");
     }
 
     /* =====================
-       0️⃣ SALE DATE
+       2️⃣ SALE DATE
     ===================== */
     let finalSaleDate = new Date();
-
     if (saleDate) {
       const d = new Date(saleDate);
       if (Number.isNaN(d.getTime())) {
-        throw new Error("saleDate noto‘g‘ri formatda");
+        throw new Error("saleDate noto‘g‘ri");
       }
       finalSaleDate = d;
     }
 
     /* =====================
-       1️⃣ CUSTOMER ANIQLASH
+       3️⃣ CUSTOMER
+       priority:
+       1) customerId
+       2) customer object
+       3) null (walk-in)
     ===================== */
     let finalCustomerId = null;
+    let customerSnapshot = null;
 
     if (mongoose.isValidObjectId(customerId)) {
-      finalCustomerId = customerId;
-    }
+      const c = await Customer.findById(customerId).session(session);
+      if (!c) throw new Error("Customer topilmadi");
 
-    if (!finalCustomerId && customer?.name) {
-      const [c] = await Customer.create(
+      finalCustomerId = c._id;
+      customerSnapshot = {
+        name: c.name,
+        phone: c.phone,
+        address: c.address,
+        note: c.note,
+      };
+    } else if (customer && customer.name) {
+      const created = await Customer.create(
         [
           {
-            name: customer.name.trim(),
-            phone: normalizePhone(customer.phone),
+            name: customer.name,
+            phone: customer.phone || "",
             address: customer.address || "",
             note: customer.note || "",
             balance: { UZS: 0, USD: 0 },
-            payment_history: [],
           },
         ],
         { session }
       );
-      finalCustomerId = c._id;
+
+      finalCustomerId = created[0]._id;
+      customerSnapshot = {
+        name: created[0].name,
+        phone: created[0].phone,
+        address: created[0].address,
+        note: created[0].note,
+      };
     }
 
     /* =====================
-       2️⃣ PRODUCTLARNI OLISH
+       4️⃣ PRODUCTS LOAD
     ===================== */
     const productIds = items.map((i) => i.productId);
 
@@ -97,19 +110,21 @@ exports.createSale = async (req, res) => {
       )
       .session(session);
 
+    if (products.length !== productIds.length) {
+      throw new Error("Ba’zi productlar topilmadi");
+    }
+
     const pMap = new Map(products.map((p) => [String(p._id), p]));
 
     /* =====================
-       3️⃣ STOCK TEKSHIRISH
+       5️⃣ STOCK CHECK
     ===================== */
     for (const it of items) {
       const p = pMap.get(String(it.productId));
       if (!p) throw new Error("Product topilmadi");
 
-      const qty = Number(it.qty);
-      if (!Number.isFinite(qty) || qty <= 0) {
-        throw new Error("qty noto‘g‘ri");
-      }
+      const qty = safeNumber(it.qty);
+      if (qty <= 0) throw new Error("qty noto‘g‘ri");
 
       if (p.qty < qty) {
         throw new Error(`Stock yetarli emas: ${p.name}`);
@@ -117,7 +132,7 @@ exports.createSale = async (req, res) => {
     }
 
     /* =====================
-       4️⃣ STOCK KAMAYTIRISH
+       6️⃣ STOCK DECREASE
     ===================== */
     for (const it of items) {
       await Product.updateOne(
@@ -128,7 +143,7 @@ exports.createSale = async (req, res) => {
     }
 
     /* =====================
-       5️⃣ WAREHOUSE MAP
+       7️⃣ WAREHOUSES
     ===================== */
     const currencies = [...new Set(products.map((p) => p.warehouse_currency))];
 
@@ -141,14 +156,14 @@ exports.createSale = async (req, res) => {
     const wMap = new Map(warehouses.map((w) => [w.currency, w._id]));
 
     /* =====================
-       6️⃣ SALE ITEMS
+       8️⃣ SALE ITEMS
     ===================== */
     const saleItems = items.map((it) => {
       const p = pMap.get(String(it.productId));
-      const qty = Number(it.qty);
-      const sellPrice = Number(it.sell_price);
+      const qty = safeNumber(it.qty);
+      const sellPrice = safeNumber(it.sell_price);
 
-      if (!Number.isFinite(sellPrice) || sellPrice < 0) {
+      if (sellPrice <= 0) {
         throw new Error("sell_price noto‘g‘ri");
       }
 
@@ -162,9 +177,9 @@ exports.createSale = async (req, res) => {
         productId: p._id,
         productSnapshot: {
           name: p.name,
-          model: p.model || null,
-          color: p.color || null,
-          category: p.category || null,
+          model: p.model || "",
+          color: p.color || "",
+          category: p.category || "",
           unit: p.unit,
           images: p.images || [],
         },
@@ -172,13 +187,13 @@ exports.createSale = async (req, res) => {
         currency,
         qty,
         sell_price: sellPrice,
-        buy_price: Number(p.buy_price),
+        buy_price: safeNumber(p.buy_price),
         subtotal: +(qty * sellPrice).toFixed(2),
       };
     });
 
     /* =====================
-       7️⃣ CURRENCY TOTALS
+       9️⃣ TOTALS
     ===================== */
     const currencyTotals = {
       UZS: {
@@ -201,10 +216,10 @@ exports.createSale = async (req, res) => {
       currencyTotals[it.currency].subtotal += it.subtotal;
     }
 
-    const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
     const disc = Math.max(0, safeNumber(discount));
+    const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
 
-    if (totalAll > 0 && disc > 0) {
+    if (disc > 0 && totalAll > 0) {
       currencyTotals.UZS.discount = +(
         disc *
         (currencyTotals.UZS.subtotal / totalAll)
@@ -222,31 +237,12 @@ exports.createSale = async (req, res) => {
           2
         )
       );
-    }
 
-    for (const p of payments) {
-      if (!["UZS", "USD"].includes(p.currency)) {
-        throw new Error("Payment currency noto‘g‘ri");
-      }
-      currencyTotals[p.currency].paidAmount += Math.max(
-        0,
-        safeNumber(p.amount)
-      );
-    }
-
-    for (const cur of ["UZS", "USD"]) {
-      currencyTotals[cur].paidAmount =
-        +currencyTotals[cur].paidAmount.toFixed(2);
-      currencyTotals[cur].debtAmount = Math.max(
-        0,
-        +(
-          currencyTotals[cur].grandTotal - currencyTotals[cur].paidAmount
-        ).toFixed(2)
-      );
+      currencyTotals[cur].debtAmount = currencyTotals[cur].grandTotal;
     }
 
     /* =====================
-       8️⃣ SALE CREATE
+       🔟 SALE CREATE
     ===================== */
     const invoiceNo = `S-${Date.now()}`;
 
@@ -254,9 +250,10 @@ exports.createSale = async (req, res) => {
       [
         {
           invoiceNo,
-          saleDate: finalSaleDate, // 🔥 ASOSIY QO‘SHILGAN QISM
+          saleDate: finalSaleDate,
           soldBy,
-          customerId: finalCustomerId || undefined,
+          customerId: finalCustomerId,
+          customerSnapshot,
           items: saleItems,
           totals: {
             subtotal: currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
@@ -265,7 +262,6 @@ exports.createSale = async (req, res) => {
               currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
           },
           currencyTotals,
-          payments,
           note,
           status: "COMPLETED",
         },
@@ -274,7 +270,8 @@ exports.createSale = async (req, res) => {
     );
 
     /* =====================
-       9️⃣ CUSTOMER BALANCE
+       1️⃣1️⃣ CUSTOMER BALANCE
+       🔥 FAQAT BALANCE
     ===================== */
     if (finalCustomerId) {
       const customerDoc = await Customer.findById(finalCustomerId).session(
@@ -282,21 +279,8 @@ exports.createSale = async (req, res) => {
       );
 
       if (customerDoc) {
-        for (const cur of ["UZS", "USD"]) {
-          const debt = sale.currencyTotals[cur]?.debtAmount || 0;
-          if (debt > 0) {
-            customerDoc.balance[cur] =
-              Number(customerDoc.balance?.[cur] || 0) + debt;
-
-            customerDoc.payment_history.push({
-              currency: cur,
-              amount: debt,
-              direction: "DEBT",
-              note: `Sale ${sale.invoiceNo}`,
-              date: finalSaleDate, // 🔥 MUHIM
-            });
-          }
-        }
+        customerDoc.balance.UZS += currencyTotals.UZS.debtAmount;
+        customerDoc.balance.USD += currencyTotals.USD.debtAmount;
         await customerDoc.save({ session });
       }
     }
@@ -319,55 +303,57 @@ exports.createSale = async (req, res) => {
   }
 };
 
+// controllers/sale.controller.js
 
 exports.getSales = async (req, res) => {
   try {
-    /* =====================
-       FILTER
-    ===================== */
+    const {
+      from,
+      to,
+      customerId,
+      soldBy,
+      status,
+    } = req.query;
+
     const filter = {};
 
-    // STATUS
-    if (req.query.status) {
-      filter.status = String(req.query.status).toUpperCase();
+    /* =====================
+       STATUS
+    ===================== */
+    if (status) {
+      filter.status = String(status).toUpperCase();
     }
 
-    // CUSTOMER
-    if (
-      req.query.customerId &&
-      mongoose.isValidObjectId(req.query.customerId)
-    ) {
-      filter.customerId = req.query.customerId;
+    /* =====================
+       CUSTOMER
+    ===================== */
+    if (customerId && mongoose.isValidObjectId(customerId)) {
+      filter.customerId = customerId;
     }
 
-    // WAREHOUSE
-    if (
-      req.query.warehouseId &&
-      mongoose.isValidObjectId(req.query.warehouseId)
-    ) {
-      filter["items.warehouseId"] = req.query.warehouseId;
+    /* =====================
+       SOLD BY (AGENT / CASHIER)
+    ===================== */
+    if (soldBy && mongoose.isValidObjectId(soldBy)) {
+      filter.soldBy = soldBy;
     }
 
-    // 📅 DATE FILTER (createdAt)
-    if (req.query.from || req.query.to) {
-      filter.createdAt = {};
-
-      if (req.query.from) {
-        filter.createdAt.$gte = new Date(req.query.from);
-      }
-
-      if (req.query.to) {
-        filter.createdAt.$lte = new Date(req.query.to);
-      }
+    /* =====================
+       DATE FILTER (SALE DATE)
+    ===================== */
+    if (from || to) {
+      filter.saleDate = {};
+      if (from) filter.saleDate.$gte = new Date(from);
+      if (to) filter.saleDate.$lte = new Date(to);
     }
 
     /* =====================
        QUERY
     ===================== */
     const rows = await Sale.find(filter)
-      .sort({ createdAt: -1 })
-      .populate("customerId", "name phone address note")
+      .sort({ saleDate: -1, createdAt: -1 })
       .populate("soldBy", "name phone login")
+      .populate("customerId", "name phone address note")
       .populate({
         path: "items.warehouseId",
         select: "name currency",
@@ -381,6 +367,7 @@ exports.getSales = async (req, res) => {
       _id: sale._id,
       invoiceNo: sale.invoiceNo,
       status: sale.status,
+      saleDate: sale.saleDate,
       createdAt: sale.createdAt,
       canceledAt: sale.canceledAt || null,
 
@@ -403,7 +390,7 @@ exports.getSales = async (req, res) => {
           }
         : sale.customerSnapshot || null,
 
-      items: (sale.items || []).map((it) => ({
+      items: sale.items.map((it) => ({
         product_id: it.productId,
 
         warehouse: it.warehouseId
@@ -414,24 +401,17 @@ exports.getSales = async (req, res) => {
             }
           : null,
 
-        product_snapshot: {
-          name: it.productSnapshot?.name,
-          model: it.productSnapshot?.model,
-          color: it.productSnapshot?.color,
-          category: it.productSnapshot?.category,
-          unit: it.productSnapshot?.unit,
-          images: it.productSnapshot?.images || [],
-        },
+        product_snapshot: it.productSnapshot,
 
-        qty: Number(it.qty),
-        sell_price_snapshot: Number(it.sell_price),
-        buy_price_snapshot: Number(it.buy_price),
-        subtotal: Number(it.subtotal),
+        qty: it.qty,
+        sell_price_snapshot: it.sell_price,
+        buy_price_snapshot: it.buy_price,
+        subtotal: it.subtotal,
         currency_snapshot: it.currency,
       })),
 
-      totals: sale.totals || null,
-      currencyTotals: sale.currencyTotals || null,
+      totals: sale.totals,
+      currencyTotals: sale.currencyTotals,
       payments: sale.payments || [],
       note: sale.note || "",
     }));
@@ -445,11 +425,11 @@ exports.getSales = async (req, res) => {
     console.error("getSales error:", err);
     return res.status(500).json({
       ok: false,
-      message: "Sales olishda xato",
-      error: err.message,
+      message: "Sotuvlar ro‘yxatini olishda xato",
     });
   }
 };
+
 
 exports.getSaleById = async (req, res) => {
   try {

@@ -3,7 +3,6 @@ const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
 const Order = require("../modules/orders/Order");
 
-
 /* =======================
    HELPERS
 ======================= */
@@ -16,8 +15,6 @@ function safeNum(n, def = 0) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
 }
-
-
 
 exports.createCustomer = async (req, res) => {
   try {
@@ -47,9 +44,7 @@ exports.createCustomer = async (req, res) => {
         amount: Math.abs(balUZS),
         direction: balUZS > 0 ? "DEBT" : "PREPAYMENT",
         note:
-          balUZS > 0
-            ? "Boshlang‘ich qarz (UZS)"
-            : "Boshlang‘ich avans (UZS)",
+          balUZS > 0 ? "Boshlang‘ich qarz (UZS)" : "Boshlang‘ich avans (UZS)",
         date: new Date(),
       });
     }
@@ -60,9 +55,7 @@ exports.createCustomer = async (req, res) => {
         amount: Math.abs(balUSD),
         direction: balUSD > 0 ? "DEBT" : "PREPAYMENT",
         note:
-          balUSD > 0
-            ? "Boshlang‘ich qarz (USD)"
-            : "Boshlang‘ich avans (USD)",
+          balUSD > 0 ? "Boshlang‘ich qarz (USD)" : "Boshlang‘ich avans (USD)",
         date: new Date(),
       });
     }
@@ -94,8 +87,6 @@ exports.createCustomer = async (req, res) => {
   }
 };
 
-
-
 /* =======================
    GET CUSTOMERS (LIST)
 ======================= */
@@ -114,7 +105,7 @@ exports.getCustomers = async (req, res) => {
     const items = await Customer.aggregate([
       { $match: match },
 
-      /* 🔗 SALES */
+      /* 🔗 SALES → FAQAT QARZ */
       {
         $lookup: {
           from: "sales",
@@ -141,7 +132,7 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 DEBT */
+      /* 🔥 CUSTOMER DEBT (REAL) */
       {
         $addFields: {
           debt: {
@@ -151,39 +142,15 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 STATUS */
+      /* 🔥 STATUS (FAQAT SALE ASOSIDA) */
       {
         $addFields: {
           status: {
             UZS: {
-              $cond: [
-                { $gt: ["$debt.UZS", 0] },
-                "DEBT",
-                {
-                  $cond: [{ $lt: ["$balance.UZS", 0] }, "PREPAID", "CLEAR"],
-                },
-              ],
+              $cond: [{ $gt: ["$debt.UZS", 0] }, "DEBT", "CLEAR"],
             },
             USD: {
-              $cond: [
-                { $gt: ["$debt.USD", 0] },
-                "DEBT",
-                {
-                  $cond: [{ $lt: ["$balance.USD", 0] }, "PREPAID", "CLEAR"],
-                },
-              ],
-            },
-          },
-        },
-      },
-
-      /* ⭐ PAYMENT HISTORY SORT */
-      {
-        $addFields: {
-          payment_history: {
-            $sortArray: {
-              input: "$payment_history",
-              sortBy: { date: -1 },
+              $cond: [{ $gt: ["$debt.USD", 0] }, "DEBT", "CLEAR"],
             },
           },
         },
@@ -201,19 +168,15 @@ exports.getCustomers = async (req, res) => {
     ]);
 
     /* =====================
-       TOTALS
+       TOTALS (REAL DEBT)
     ===================== */
     const totals = {
       debt: { UZS: 0, USD: 0 },
-      prepaid: { UZS: 0, USD: 0 },
     };
 
     for (const c of items) {
       totals.debt.UZS += Number(c.debt?.UZS || 0);
       totals.debt.USD += Number(c.debt?.USD || 0);
-
-      if (c.balance?.UZS < 0) totals.prepaid.UZS += Math.abs(c.balance.UZS);
-      if (c.balance?.USD < 0) totals.prepaid.USD += Math.abs(c.balance.USD);
     }
 
     return res.json({
@@ -230,8 +193,6 @@ exports.getCustomers = async (req, res) => {
     });
   }
 };
-
-
 
 
 
@@ -317,13 +278,17 @@ exports.updateCustomerBalance = async (req, res) => {
     if (!customer)
       return res.status(404).json({ message: "Customer topilmadi" });
 
-    customer.balance[currency] += delta;
+    // 🔥 BALANCE
+    customer.balance[currency] -= delta;
+    // delta > 0 → qarz kamayadi
+    // delta < 0 → avans oshadi
 
+    // 🔥 FAQAT PAYMENT
     customer.payment_history.push({
       currency,
       amount: Math.abs(delta),
-      direction: delta > 0 ? "DEBT" : "PAYMENT",
-      note: note || "Balance o‘zgartirildi",
+      direction: "PAYMENT",
+      note: note || "Mijoz to‘lovi",
       date: new Date(),
     });
 
@@ -331,7 +296,7 @@ exports.updateCustomerBalance = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Balance yangilandi",
+      message: "To‘lov qabul qilindi",
       balance: customer.balance,
     });
   } catch (err) {
@@ -342,6 +307,7 @@ exports.updateCustomerBalance = async (req, res) => {
     });
   }
 };
+
 
 /**
  * DELETE /customers/:id  (soft delete)
@@ -390,9 +356,6 @@ exports.deleteCustomer = async (req, res) => {
     });
   }
 };
-
-
-
 
 exports.getCustomerSales = async (req, res) => {
   try {
@@ -505,7 +468,6 @@ exports.getCustomerSales = async (req, res) => {
     });
   }
 };
-
 
 /**
  * GET /customers/:id/statement?dateFrom=&dateTo=
@@ -786,9 +748,6 @@ exports.getCustomerSummary = async (req, res) => {
   }
 };
 
-
-
-
 exports.payCustomerDebt = async (req, res) => {
   const session = await mongoose.startSession();
 
@@ -929,7 +888,6 @@ exports.payCustomerDebt = async (req, res) => {
   }
 };
 
-
 // controllers/customer.controller.js
 
 exports.getCustomerDebtSales = async (req, res) => {
@@ -976,8 +934,7 @@ exports.getCustomerDebtSales = async (req, res) => {
         status:
           uzsDebt === 0 && usdDebt === 0
             ? "PAID"
-            : uzsDebt > 0 &&
-              (s.currencyTotals.UZS.paidAmount || 0) > 0
+            : uzsDebt > 0 && (s.currencyTotals.UZS.paidAmount || 0) > 0
             ? "PARTIAL"
             : "DEBT",
 
@@ -1017,7 +974,9 @@ exports.getCustomerTimeline = async (req, res) => {
   try {
     const { id } = req.params;
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "customer id noto‘g‘ri" });
+      return res
+        .status(400)
+        .json({ ok: false, message: "customer id noto‘g‘ri" });
     }
 
     const customerId = new mongoose.Types.ObjectId(id);
@@ -1030,7 +989,7 @@ exports.getCustomerTimeline = async (req, res) => {
     if (req.query.to) dateFilter.$lte = new Date(req.query.to);
 
     /* =====================
-       1️⃣ SALES
+       1️⃣ SALES → QARZ MANBAI
     ===================== */
     const sales = await Sale.find({
       customerId,
@@ -1042,38 +1001,32 @@ exports.getCustomerTimeline = async (req, res) => {
 
     const saleEvents = sales.map((s) => ({
       type: "SALE",
-      date: s.saleDate || s.createdAt,
+      date: s.saleDate,
       ref: s.invoiceNo,
-      UZS: {
-        debit: Number(s.currencyTotals?.UZS?.debtAmount || 0),
-        credit: 0,
-      },
-      USD: {
-        debit: Number(s.currencyTotals?.USD?.debtAmount || 0),
-        credit: 0,
-      },
+      note: "Sotuv (qarz)",
+      UZS: Number(s.currencyTotals?.UZS?.grandTotal || 0),
+      USD: Number(s.currencyTotals?.USD?.grandTotal || 0),
+      kind: "DEBT", // 🔥 FAOLIYAT TURI
     }));
 
     /* =====================
-       2️⃣ PAYMENTS (history)
+       2️⃣ PAYMENTS → FAQAT PAYMENT
     ===================== */
     const customer = await Customer.findById(id)
       .select("payment_history")
       .lean();
 
-    const paymentEvents = (customer.payment_history || []).map((p) => ({
-      type: p.direction === "PAYMENT" ? "PAYMENT" : p.direction,
-      date: p.date,
-      note: p.note || "",
-      UZS: {
-        debit: p.currency === "UZS" && p.direction !== "PAYMENT" ? p.amount : 0,
-        credit: p.currency === "UZS" && p.direction === "PAYMENT" ? p.amount : 0,
-      },
-      USD: {
-        debit: p.currency === "USD" && p.direction !== "PAYMENT" ? p.amount : 0,
-        credit: p.currency === "USD" && p.direction === "PAYMENT" ? p.amount : 0,
-      },
-    }));
+    const paymentEvents = (customer.payment_history || [])
+      .filter((p) => p.direction === "PAYMENT") // 🔥 FAQAT PAYMENT
+      .map((p) => ({
+        type: "PAYMENT",
+        date: p.date,
+        ref: p.note || "",
+        note: "To‘lov",
+        UZS: p.currency === "UZS" ? p.amount : 0,
+        USD: p.currency === "USD" ? p.amount : 0,
+        kind: "PAYMENT",
+      }));
 
     /* =====================
        3️⃣ MERGE + SORT
@@ -1083,20 +1036,32 @@ exports.getCustomerTimeline = async (req, res) => {
     );
 
     /* =====================
-       4️⃣ RUNNING BALANCE
+       4️⃣ RUNNING DEBT
     ===================== */
-    let balUZS = 0;
-    let balUSD = 0;
+    let debtUZS = 0;
+    let debtUSD = 0;
 
     const timeline = timelineRaw.map((e) => {
-      balUZS += (e.UZS.debit || 0) - (e.UZS.credit || 0);
-      balUSD += (e.USD.debit || 0) - (e.USD.credit || 0);
+      if (e.kind === "DEBT") {
+        debtUZS += e.UZS;
+        debtUSD += e.USD;
+      } else if (e.kind === "PAYMENT") {
+        debtUZS -= e.UZS;
+        debtUSD -= e.USD;
+      }
 
       return {
-        ...e,
-        balanceAfter: {
-          UZS: balUZS,
-          USD: balUSD,
+        type: e.type,
+        date: e.date,
+        ref: e.ref,
+        note: e.note,
+        change: {
+          UZS: e.kind === "DEBT" ? e.UZS : -e.UZS,
+          USD: e.kind === "DEBT" ? e.USD : -e.USD,
+        },
+        debtAfter: {
+          UZS: debtUZS,
+          USD: debtUSD,
         },
       };
     });
@@ -1115,3 +1080,4 @@ exports.getCustomerTimeline = async (req, res) => {
     });
   }
 };
+

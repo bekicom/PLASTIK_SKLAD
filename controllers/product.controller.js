@@ -41,6 +41,7 @@ exports.createProduct = async (req, res) => {
       unit,
       warehouse_currency,
       qty,
+    
       buy_price,
       sell_price,
     } = req.body;

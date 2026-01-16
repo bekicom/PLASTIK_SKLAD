@@ -28,36 +28,63 @@ function buildDateMatch(from, to, field = "createdAt") {
 ===================== */
 async function getOverview({ from, to, tz, warehouseId }) {
   /* =====================
-     SALES
+     HELPERS
+  ===================== */
+  const wid =
+    warehouseId && mongoose.isValidObjectId(warehouseId)
+      ? new mongoose.Types.ObjectId(warehouseId)
+      : null;
+
+  /* =====================
+     SALES (UNIQUE SALE COUNT)
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
-    status: { $in: ["COMPLETED", "DEBT"] },
+    status: "COMPLETED", // ✅ oltin qoida
   };
 
-  let salesPipeline = [{ $match: saleMatch }];
+  // base pipeline: match + optional warehouse filter
+  const salesBasePipeline = [{ $match: saleMatch }];
 
-  if (warehouseId && mongoose.isValidObjectId(warehouseId)) {
-    salesPipeline.push(
+  if (wid) {
+    salesBasePipeline.push(
       { $unwind: "$items" },
-      {
-        $match: {
-          "items.warehouseId": new mongoose.Types.ObjectId(warehouseId),
-        },
-      }
+      { $match: { "items.warehouseId": wid } }
     );
   }
 
+  // ✅ Unikal sale bo'yicha hisob (warehouseId bo'lsa ham 2x bo'lmaydi)
   const salesAgg = await Sale.aggregate([
-    ...salesPipeline,
+    ...salesBasePipeline,
+
+    // 1) unikal sale ga qaytaramiz
+    {
+      $group: {
+        _id: "$_id",
+        uzs_total: {
+          $first: { $ifNull: ["$currencyTotals.UZS.grandTotal", 0] },
+        },
+        uzs_paid: {
+          $first: { $ifNull: ["$currencyTotals.UZS.paidAmount", 0] },
+        },
+        usd_total: {
+          $first: { $ifNull: ["$currencyTotals.USD.grandTotal", 0] },
+        },
+        usd_paid: {
+          $first: { $ifNull: ["$currencyTotals.USD.paidAmount", 0] },
+        },
+      },
+    },
+
+    // 2) endi umumiy sum
     {
       $group: {
         _id: null,
         count: { $sum: 1 },
-        uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
-        uzs_paid: { $sum: "$currencyTotals.UZS.paidAmount" },
-        usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
-        usd_paid: { $sum: "$currencyTotals.USD.paidAmount" },
+        uzs_total: { $sum: "$uzs_total" },
+        uzs_paid: { $sum: "$uzs_paid" },
+        usd_total: { $sum: "$usd_total" },
+        usd_paid: { $sum: "$usd_paid" },
       },
     },
     { $project: { _id: 0 } },
@@ -74,9 +101,14 @@ async function getOverview({ from, to, tz, warehouseId }) {
   /* =====================
      PROFIT
   ===================== */
+  const profitPipeline = [{ $match: saleMatch }, { $unwind: "$items" }];
+
+  if (wid) {
+    profitPipeline.push({ $match: { "items.warehouseId": wid } });
+  }
+
   const profitAgg = await Sale.aggregate([
-    ...salesPipeline,
-    { $unwind: "$items" },
+    ...profitPipeline,
     {
       $group: {
         _id: null,
@@ -86,8 +118,13 @@ async function getOverview({ from, to, tz, warehouseId }) {
               { $eq: ["$items.currency", "UZS"] },
               {
                 $multiply: [
-                  { $subtract: ["$items.sell_price", "$items.buy_price"] },
-                  "$items.qty",
+                  {
+                    $subtract: [
+                      { $ifNull: ["$items.sell_price", 0] },
+                      { $ifNull: ["$items.buy_price", 0] },
+                    ],
+                  },
+                  { $ifNull: ["$items.qty", 0] },
                 ],
               },
               0,
@@ -100,8 +137,13 @@ async function getOverview({ from, to, tz, warehouseId }) {
               { $eq: ["$items.currency", "USD"] },
               {
                 $multiply: [
-                  { $subtract: ["$items.sell_price", "$items.buy_price"] },
-                  "$items.qty",
+                  {
+                    $subtract: [
+                      { $ifNull: ["$items.sell_price", 0] },
+                      { $ifNull: ["$items.buy_price", 0] },
+                    ],
+                  },
+                  { $ifNull: ["$items.qty", 0] },
                 ],
               },
               0,
@@ -138,10 +180,21 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   for (const e of expensesAgg) {
-    const { currency, method } = e._id;
-    expenses[currency].total += e.total || 0;
-    expenses[currency].count += e.count || 0;
-    expenses[currency][method] += e.total || 0;
+    const { currency, method } = e._id || {};
+    if (!currency || !expenses[currency]) continue;
+
+    const t = Number(e.total || 0);
+    const c = Number(e.count || 0);
+
+    expenses[currency].total += t;
+    expenses[currency].count += c;
+
+    if (method === "CARD" || method === "CASH") {
+      expenses[currency][method] += t;
+    } else {
+      // unknown method -> CASH ga qo‘shamiz (xohlasang alohida qilamiz)
+      expenses[currency].CASH += t;
+    }
   }
 
   /* =====================
@@ -158,28 +211,25 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 
-  // CUSTOMER BALANCE
+  // CUSTOMER BALANCE (hozircha shu source)
   const customers = await Customer.find({}, { balance: 1 }).lean();
   for (const c of customers) {
-    if (c.balance?.UZS > 0) balances.customers.debt.UZS += c.balance.UZS;
-    else if (c.balance?.UZS < 0)
-      balances.customers.prepaid.UZS += Math.abs(c.balance.UZS);
+    const bu = Number(c.balance?.UZS || 0);
+    const bd = Number(c.balance?.USD || 0);
 
-    if (c.balance?.USD > 0) balances.customers.debt.USD += c.balance.USD;
-    else if (c.balance?.USD < 0)
-      balances.customers.prepaid.USD += Math.abs(c.balance.USD);
+    if (bu > 0) balances.customers.debt.UZS += bu;
+    else if (bu < 0) balances.customers.prepaid.UZS += Math.abs(bu);
+
+    if (bd > 0) balances.customers.debt.USD += bd;
+    else if (bd < 0) balances.customers.prepaid.USD += Math.abs(bd);
   }
 
   // ✅ SUPPLIER BALANCE (SOURCE OF TRUTH)
   const supplierBalanceAgg = await Supplier.aggregate([
     {
       $project: {
-        debtUZS: {
-          $cond: [{ $gt: ["$balance.UZS", 0] }, "$balance.UZS", 0],
-        },
-        debtUSD: {
-          $cond: [{ $gt: ["$balance.USD", 0] }, "$balance.USD", 0],
-        },
+        debtUZS: { $cond: [{ $gt: ["$balance.UZS", 0] }, "$balance.UZS", 0] },
+        debtUSD: { $cond: [{ $gt: ["$balance.USD", 0] }, "$balance.USD", 0] },
         prepaidUZS: {
           $cond: [{ $lt: ["$balance.UZS", 0] }, { $abs: "$balance.UZS" }, 0],
         },
@@ -199,34 +249,14 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   ]);
 
-  balances.suppliers.debt.UZS = supplierBalanceAgg[0]?.debtUZS || 0;
-  balances.suppliers.debt.USD = supplierBalanceAgg[0]?.debtUSD || 0;
-  balances.suppliers.prepaid.UZS = supplierBalanceAgg[0]?.prepaidUZS || 0;
-  balances.suppliers.prepaid.USD = supplierBalanceAgg[0]?.prepaidUSD || 0;
-
-  // SUPPLIER PREPAID (BALANCE < 0)
-  const supplierPrepaidAgg = await Supplier.aggregate([
-    {
-      $project: {
-        UZS: {
-          $cond: [{ $lt: ["$balance.UZS", 0] }, { $abs: "$balance.UZS" }, 0],
-        },
-        USD: {
-          $cond: [{ $lt: ["$balance.USD", 0] }, { $abs: "$balance.USD" }, 0],
-        },
-      },
-    },
-    {
-      $group: {
-        _id: null,
-        UZS: { $sum: "$UZS" },
-        USD: { $sum: "$USD" },
-      },
-    },
-  ]);
-
-  balances.suppliers.prepaid.UZS = supplierPrepaidAgg[0]?.UZS || 0;
-  balances.suppliers.prepaid.USD = supplierPrepaidAgg[0]?.USD || 0;
+  balances.suppliers.debt.UZS = Number(supplierBalanceAgg[0]?.debtUZS || 0);
+  balances.suppliers.debt.USD = Number(supplierBalanceAgg[0]?.debtUSD || 0);
+  balances.suppliers.prepaid.UZS = Number(
+    supplierBalanceAgg[0]?.prepaidUZS || 0
+  );
+  balances.suppliers.prepaid.USD = Number(
+    supplierBalanceAgg[0]?.prepaidUSD || 0
+  );
 
   /* =====================
      CASH-IN SUMMARY
@@ -262,11 +292,19 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   for (const r of cashInAgg) {
-    const { target, currency, method } = r._id;
-    if (target === "CUSTOMER")
-      cash_in_summary.customers[currency][method] += r.total;
-    if (target === "SUPPLIER")
-      cash_in_summary.suppliers[currency][method] += r.total;
+    const { target, currency, method } = r._id || {};
+    const total = Number(r.total || 0);
+    if (!target || !currency || !method) continue;
+
+    if (target === "CUSTOMER" && cash_in_summary.customers[currency]) {
+      if (method === "CASH" || method === "CARD")
+        cash_in_summary.customers[currency][method] += total;
+    }
+
+    if (target === "SUPPLIER" && cash_in_summary.suppliers[currency]) {
+      if (method === "CASH" || method === "CARD")
+        cash_in_summary.suppliers[currency][method] += total;
+    }
   }
 
   /* =====================
@@ -296,14 +334,19 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   for (const w of withdrawalAgg) {
-    const { currency, method } = w._id;
-    investor_withdrawals[currency][method] += w.total;
-    investor_withdrawals[currency].total += w.total;
+    const { currency, method } = w._id || {};
+    const total = Number(w.total || 0);
+    if (!currency || !investor_withdrawals[currency]) continue;
+
+    if (method === "CASH" || method === "CARD") {
+      investor_withdrawals[currency][method] += total;
+      investor_withdrawals[currency].total += total;
+    } else {
+      investor_withdrawals[currency].CASH += total;
+      investor_withdrawals[currency].total += total;
+    }
   }
 
-  /* =====================
-     CASHFLOW (OLD FORMAT)
-  ===================== */
   /* =====================
      CASHFLOW (FIXED)
      ❗ Supplier payments EXCLUDED
@@ -365,6 +408,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 }
+
 
 /* =====================
    TIME SERIES

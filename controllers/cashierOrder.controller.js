@@ -73,7 +73,6 @@ exports.confirmOrder = async (req, res) => {
         { $inc: { qty: -it.qty } },
         { session }
       );
-
       if (ok.modifiedCount === 0) {
         throw new Error("Omborda yetarli mahsulot yo‘q");
       }
@@ -81,7 +80,6 @@ exports.confirmOrder = async (req, res) => {
 
     /* =========================
        3️⃣ SALE ITEMS + TOTALS
-       🔥 BUY_PRICE PRODUCTDAN
     ========================= */
     const saleItems = [];
     const currencyTotals = {
@@ -110,14 +108,10 @@ exports.confirmOrder = async (req, res) => {
       );
       if (!warehouse) throw new Error(`Warehouse topilmadi (${cur})`);
 
-      // 🔥 MUHIM: real buy_price
       const product = await Product.findById(it.product_id)
         .select("buy_price")
         .session(session);
-
       if (!product) throw new Error("Product topilmadi");
-
-      const buyPrice = Number(product.buy_price || 0);
 
       saleItems.push({
         productId: it.product_id,
@@ -126,7 +120,7 @@ exports.confirmOrder = async (req, res) => {
         currency: cur,
         qty: it.qty,
         sell_price: it.price_snapshot,
-        buy_price: buyPrice,
+        buy_price: product.buy_price,
         subtotal: it.subtotal,
       });
 
@@ -142,62 +136,15 @@ exports.confirmOrder = async (req, res) => {
     };
 
     /* =========================
-       4️⃣ BALANSDAN AVTO YECHISH
+       4️⃣ CUSTOMER BALANCE
+       (FAQAT QARZ YOZILADI)
     ========================= */
-    for (const cur of ["UZS", "USD"]) {
-      const balance = Number(customer.balance?.[cur] || 0);
-      const debt = currencyTotals[cur].debtAmount;
-
-      if (balance > 0 && debt > 0) {
-        const used = Math.min(balance, debt);
-
-        currencyTotals[cur].paidAmount += used;
-        currencyTotals[cur].debtAmount -= used;
-
-        customer.balance[cur] -= used;
-
-        customer.payment_history.push({
-          currency: cur,
-          amount: used,
-          direction: "PAYMENT",
-          note: "Balansdan avtomatik yechildi",
-          date: new Date(),
-        });
-      }
-    }
+    customer.balance.UZS += currencyTotals.UZS.debtAmount;
+    customer.balance.USD += currencyTotals.USD.debtAmount;
 
     /* =========================
-       5️⃣ QOLGAN QARZ
-    ========================= */
-    for (const cur of ["UZS", "USD"]) {
-      const remain = currencyTotals[cur].debtAmount;
-      if (remain > 0) {
-        customer.balance[cur] += remain;
-
-        customer.payment_history.push({
-          currency: cur,
-          amount: remain,
-          direction: "DEBT",
-          note: `Sale ${order._id}`,
-          date: new Date(),
-        });
-      }
-    }
-
-    /* =========================
-       6️⃣ SALE STATUS
-    ========================= */
-    let saleStatus = "COMPLETED";
-    for (const cur of ["UZS", "USD"]) {
-      if (currencyTotals[cur].debtAmount > 0) {
-        saleStatus = currencyTotals[cur].paidAmount > 0 ? "PARTIAL" : "DEBT";
-        break;
-      }
-    }
-
-    /* =========================
-       7️⃣ SALE CREATE
-       🔥 saleDate MUHIM
+       5️⃣ SALE CREATE
+       ❗ status DOIM COMPLETED
     ========================= */
     const saleDate = order.createdAt || new Date();
 
@@ -217,7 +164,7 @@ exports.confirmOrder = async (req, res) => {
           items: saleItems,
           totals,
           currencyTotals,
-          status: saleStatus,
+          status: "COMPLETED",
           note: order.note || "Agent zakas",
         },
       ],
@@ -227,7 +174,7 @@ exports.confirmOrder = async (req, res) => {
     await customer.save({ session });
 
     /* =========================
-       8️⃣ ORDER CONFIRM
+       6️⃣ ORDER CONFIRM
     ========================= */
     order.status = "CONFIRMED";
     order.confirmedAt = new Date();
@@ -252,6 +199,8 @@ exports.confirmOrder = async (req, res) => {
     session.endSession();
   }
 };
+
+
 
 /* =======================
    GET ORDER FULL (SOCKET)
