@@ -40,10 +40,9 @@ async function getOverview({ from, to, tz, warehouseId }) {
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
-    status: "COMPLETED", // ✅ oltin qoida
+    status: "COMPLETED",
   };
 
-  // base pipeline: match + optional warehouse filter
   const salesBasePipeline = [{ $match: saleMatch }];
 
   if (wid) {
@@ -53,11 +52,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
     );
   }
 
-  // ✅ Unikal sale bo'yicha hisob (warehouseId bo'lsa ham 2x bo'lmaydi)
   const salesAgg = await Sale.aggregate([
     ...salesBasePipeline,
-
-    // 1) unikal sale ga qaytaramiz
     {
       $group: {
         _id: "$_id",
@@ -75,8 +71,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
         },
       },
     },
-
-    // 2) endi umumiy sum
     {
       $group: {
         _id: null,
@@ -103,9 +97,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   ===================== */
   const profitPipeline = [{ $match: saleMatch }, { $unwind: "$items" }];
 
-  if (wid) {
-    profitPipeline.push({ $match: { "items.warehouseId": wid } });
-  }
+  if (wid) profitPipeline.push({ $match: { "items.warehouseId": wid } });
 
   const profitAgg = await Sale.aggregate([
     ...profitPipeline,
@@ -192,7 +184,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     if (method === "CARD" || method === "CASH") {
       expenses[currency][method] += t;
     } else {
-      // unknown method -> CASH ga qo‘shamiz (xohlasang alohida qilamiz)
       expenses[currency].CASH += t;
     }
   }
@@ -211,7 +202,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 
-  // CUSTOMER BALANCE (hozircha shu source)
   const customers = await Customer.find({}, { balance: 1 }).lean();
   for (const c of customers) {
     const bu = Number(c.balance?.UZS || 0);
@@ -224,7 +214,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     else if (bd < 0) balances.customers.prepaid.USD += Math.abs(bd);
   }
 
-  // ✅ SUPPLIER BALANCE (SOURCE OF TRUTH)
   const supplierBalanceAgg = await Supplier.aggregate([
     {
       $project: {
@@ -348,19 +337,33 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASHFLOW (FIXED)
-     ❗ Supplier payments EXCLUDED
+     CASHFLOW (ESKI FORMAT + FIX)
+     ✅ supplier cash-out endi minus bo'ladi
   ===================== */
+  const supplierOut = {
+    UZS:
+      cash_in_summary.suppliers.UZS.CASH + cash_in_summary.suppliers.UZS.CARD,
+    USD:
+      cash_in_summary.suppliers.USD.CASH + cash_in_summary.suppliers.USD.CARD,
+  };
+
+  const customerIn = {
+    UZS:
+      cash_in_summary.customers.UZS.CASH + cash_in_summary.customers.UZS.CARD,
+    USD:
+      cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
+  };
+
   const cashflowTotal = {
     UZS:
-      cash_in_summary.customers.UZS.CASH +
-      cash_in_summary.customers.UZS.CARD -
+      customerIn.UZS -
+      supplierOut.UZS -
       expenses.UZS.total -
       investor_withdrawals.UZS.total,
 
     USD:
-      cash_in_summary.customers.USD.CASH +
-      cash_in_summary.customers.USD.CARD -
+      customerIn.USD -
+      supplierOut.USD -
       expenses.USD.total -
       investor_withdrawals.USD.total,
   };
@@ -384,30 +387,48 @@ async function getOverview({ from, to, tz, warehouseId }) {
         UZS: {
           CASH:
             cash_in_summary.customers.UZS.CASH -
+            cash_in_summary.suppliers.UZS.CASH -
             expenses.UZS.CASH -
             investor_withdrawals.UZS.CASH,
           CARD:
             cash_in_summary.customers.UZS.CARD -
+            cash_in_summary.suppliers.UZS.CARD -
             expenses.UZS.CARD -
             investor_withdrawals.UZS.CARD,
         },
         USD: {
           CASH:
             cash_in_summary.customers.USD.CASH -
+            cash_in_summary.suppliers.USD.CASH -
             expenses.USD.CASH -
             investor_withdrawals.USD.CASH,
           CARD:
             cash_in_summary.customers.USD.CARD -
+            cash_in_summary.suppliers.USD.CARD -
             expenses.USD.CARD -
             investor_withdrawals.USD.CARD,
         },
       },
       breakdown: {
+        // ✅ eski breakdown joyida qoldi
         expenses,
+
+        // ✅ qo'shimcha: cashflow tushunarli bo'lsin
+        customer_in: {
+          UZS: { ...cash_in_summary.customers.UZS, total: customerIn.UZS },
+          USD: { ...cash_in_summary.customers.USD, total: customerIn.USD },
+        },
+        supplier_out: {
+          UZS: { ...cash_in_summary.suppliers.UZS, total: supplierOut.UZS },
+          USD: { ...cash_in_summary.suppliers.USD, total: supplierOut.USD },
+        },
+        investor_withdrawals,
       },
     },
   };
 }
+
+
 
 
 /* =====================
