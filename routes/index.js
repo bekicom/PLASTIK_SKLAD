@@ -382,6 +382,12 @@ router.post(
   rRole("ADMIN"),
   salesController.cancelSale
 );
+router.delete(
+  "/sales/:id",
+  rAuth,
+  rRole("AGENT", "ADMIN", "CASHIER"),
+  salesController.deleteSale
+);
 
 /**
  * AGENT ORDERS (ZAKAS)

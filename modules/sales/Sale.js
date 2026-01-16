@@ -134,7 +134,7 @@ const saleSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: ["COMPLETED", "CANCELED"],
+      enum: ["COMPLETED", "CANCELED", "DELETED"],
       default: "COMPLETED",
       index: true,
     },

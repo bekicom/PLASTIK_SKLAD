@@ -378,9 +378,7 @@ exports.deleteCashIn = async (req, res) => {
       cashIn.paymentDate || cashIn.createdAt
     ).toISOString();
 
-    /* =========================
-       🟠 SUPPLIER
-    ========================= */
+    
     if (target_type === "SUPPLIER") {
       const supplier = await Supplier.findById(cashIn.supplier_id).session(
         session
@@ -389,25 +387,28 @@ exports.deleteCashIn = async (req, res) => {
 
       // 1️⃣ BALANCE QAYTARISH
       supplier.balance[currency] =
-        Number(supplier.balance[currency] || 0) + Number(amount);
+        Number(supplier.balance?.[currency] || 0) + Number(amount);
 
-      // 2️⃣ PAYMENT HISTORY DAN O‘CHIRISH (ref_id + fallback)
-      supplier.payment_history = supplier.payment_history.filter((h) => {
-        if (h.ref_id) {
-          return String(h.ref_id) !== String(cashIn._id);
+      // 2️⃣ PAYMENT HISTORY DAN O‘CHIRISH (eng ishonchli)
+      supplier.payment_history = (supplier.payment_history || []).filter(
+        (h) => {
+          // ref_id bo‘lsa: direction nima bo‘lishidan qat’i nazar o‘chiramiz
+          if (h.ref_id) return String(h.ref_id) !== String(cashIn._id);
+
+          // fallback: eski recordlar uchun (date/currency/amount)
+          const sameCurrency = h.currency === currency;
+          const sameAmount = Number(h.amount) === Number(amount);
+          const sameDate = new Date(h.date).toISOString() === cashDate;
+
+          // PAYMENT yoki ROLLBACK bo‘lsa ham olib tashlaymiz (cashIn bilan bog‘liq bo‘lsa)
+          const isRelated =
+            h.direction === "PAYMENT" || h.direction === "ROLLBACK";
+
+          if (sameCurrency && sameAmount && sameDate && isRelated) return false;
+
+          return true;
         }
-
-        const sameCurrency = h.currency === currency;
-        const sameAmount = Number(h.amount) === Number(amount);
-        const sameDate = new Date(h.date).toISOString() === cashDate;
-        const isPayment = h.direction === "PAYMENT";
-
-        if (sameCurrency && sameAmount && sameDate && isPayment) {
-          return false;
-        }
-
-        return true;
-      });
+      );
 
       await supplier.save({ session });
     }

@@ -307,21 +307,26 @@ exports.createSale = async (req, res) => {
 
 exports.getSales = async (req, res) => {
   try {
-    const {
-      from,
-      to,
-      customerId,
-      soldBy,
-      status,
-    } = req.query;
+    const { from, to, customerId, soldBy, status } = req.query;
 
     const filter = {};
 
     /* =====================
        STATUS
+       default: DELETED kelmaydi
     ===================== */
     if (status) {
-      filter.status = String(status).toUpperCase();
+      const st = String(status).toUpperCase();
+
+      if (st === "DELETED") {
+        // faqat ataylab so‘ralsa
+        filter.status = "DELETED";
+      } else {
+        filter.status = st;
+      }
+    } else {
+      // default holatda DELETED ni yashiramiz
+      filter.status = { $ne: "DELETED" };
     }
 
     /* =====================
@@ -429,6 +434,7 @@ exports.getSales = async (req, res) => {
     });
   }
 };
+
 
 
 exports.getSaleById = async (req, res) => {
@@ -787,6 +793,101 @@ exports.adjustSaleItemQty = async (req, res) => {
           : "Sale item qty muvaffaqiyatli o‘zgartirildi",
       newQty: qty,
       delta,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      ok: false,
+      message: err.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+// DELETE SALE (FULL ROLLBACK)
+exports.deleteSale = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      throw new Error("Sale ID noto‘g‘ri");
+    }
+
+    const sale = await Sale.findById(id).session(session);
+    if (!sale) throw new Error("Sale topilmadi");
+
+    if (sale.status === "DELETED") {
+      throw new Error("Sale allaqachon o‘chirilgan");
+    }
+
+    /* =====================
+       1️⃣ PRODUCT STOCK QAYTARISH
+    ===================== */
+    for (const it of sale.items) {
+      const product = await Product.findById(it.productId).session(session);
+      if (!product) {
+        throw new Error("Product topilmadi");
+      }
+
+      product.qty += it.qty;
+      await product.save({ session });
+    }
+
+    /* =====================
+       2️⃣ CUSTOMER BALANCE ROLLBACK
+    ===================== */
+    if (sale.customerId && sale.currencyTotals) {
+      const customer = await Customer.findById(sale.customerId).session(
+        session
+      );
+
+      if (customer) {
+        for (const cur of ["UZS", "USD"]) {
+          const debt = sale.currencyTotals[cur]?.debtAmount || 0;
+          const paid = sale.currencyTotals[cur]?.paidAmount || 0;
+
+          // qarzni qaytarish
+          if (debt > 0) {
+            customer.balance[cur] -= debt;
+            if (customer.balance[cur] < 0) {
+              customer.balance[cur] = 0;
+            }
+          }
+
+          // payment bo‘lgan bo‘lsa rollback yozamiz
+          if (paid > 0) {
+            customer.payment_history.push({
+              currency: cur,
+              amount: paid,
+              direction: "ROLLBACK",
+              note: `Sale ${sale.invoiceNo} delete rollback`,
+              date: new Date(),
+            });
+          }
+        }
+
+        await customer.save({ session });
+      }
+    }
+
+    /* =====================
+       3️⃣ SALE MARK AS DELETED
+    ===================== */
+    sale.status = "DELETED";
+    sale.deletedAt = new Date();
+    sale.deleteReason =
+      req.body?.reason || "Xato kiritilgan sale o‘chirildi";
+
+    await sale.save({ session });
+
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message: "Sale to‘liq rollback qilinib o‘chirildi",
     });
   } catch (err) {
     await session.abortTransaction();

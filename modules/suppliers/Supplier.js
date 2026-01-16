@@ -16,7 +16,7 @@ const supplierSchema = new mongoose.Schema(
         amount: { type: Number, required: true },
         direction: {
           type: String,
-          enum: ["DEBT", "PAYMENT", "PREPAYMENT"],
+          enum: ["DEBT", "PAYMENT", "PREPAYMENT", "ROLLBACK"],
           required: true,
         },
         note: String,
