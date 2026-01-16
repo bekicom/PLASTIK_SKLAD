@@ -10,7 +10,7 @@ exports.createCashIn = async (req, res) => {
 
   try {
     const {
-      target_type, // CUSTOMER | SUPPLIER
+      target_type,
       customer_id,
       supplier_id,
       amount,
@@ -18,41 +18,30 @@ exports.createCashIn = async (req, res) => {
       payment_method = "CASH",
       note,
       paymentDate,
-    } = req.body || {};
+    } = req.body;
 
-    /* ================= VALIDATION ================= */
     if (!["CUSTOMER", "SUPPLIER"].includes(target_type)) {
-      throw new Error("target_type CUSTOMER yoki SUPPLIER bo‘lishi kerak");
+      throw new Error("target_type noto‘g‘ri");
     }
 
     if (!["UZS", "USD"].includes(currency)) {
       throw new Error("currency noto‘g‘ri");
     }
 
-    if (!["CASH", "CARD"].includes(payment_method)) {
-      throw new Error("payment_method noto‘g‘ri");
-    }
-
     const payAmount = Number(amount);
     if (!Number.isFinite(payAmount) || payAmount <= 0) {
-      throw new Error("amount musbat bo‘lishi kerak");
+      throw new Error("amount noto‘g‘ri");
     }
 
     const payDate = paymentDate ? new Date(paymentDate) : new Date();
 
-    /* =================================================
-       🔵 CUSTOMER CASH-IN
-    ================================================= */
+    /* =========================
+       CUSTOMER
+    ========================= */
     if (target_type === "CUSTOMER") {
-      if (!mongoose.isValidObjectId(customer_id))
-        throw new Error("customer_id noto‘g‘ri");
-
       const customer = await Customer.findById(customer_id).session(session);
       if (!customer) throw new Error("Customer topilmadi");
 
-      const beforeBalance = Number(customer.balance?.[currency] || 0);
-
-      /* 🔥 FIFO SALE QARZ YOPISH */
       let remaining = payAmount;
 
       const sales = await Sale.find({
@@ -65,7 +54,7 @@ exports.createCashIn = async (req, res) => {
       for (const sale of sales) {
         if (remaining <= 0) break;
 
-        const debt = Number(sale.currencyTotals[currency].debtAmount || 0);
+        const debt = sale.currencyTotals[currency].debtAmount;
         const used = Math.min(debt, remaining);
 
         sale.currencyTotals[currency].paidAmount += used;
@@ -75,20 +64,10 @@ exports.createCashIn = async (req, res) => {
         await sale.save({ session });
       }
 
-      /* 🔥 BALANCE */
-      customer.balance[currency] = beforeBalance - payAmount;
+      customer.balance[currency] =
+        Number(customer.balance[currency] || 0) - payAmount;
 
-      customer.payment_history.push({
-        currency,
-        amount: payAmount,
-        direction: "PAYMENT",
-        note: note || "Mijoz to‘lovi",
-        date: payDate,
-      });
-
-      await customer.save({ session });
-
-      await CashIn.create(
+      const cashDocs = await CashIn.create(
         [
           {
             target_type: "CUSTOMER",
@@ -103,42 +82,32 @@ exports.createCashIn = async (req, res) => {
         { session }
       );
 
-      await session.commitTransaction();
-
-      return res.json({
-        ok: true,
-        message: "Mijozdan to‘lov qabul qilindi",
-        before_balance: beforeBalance,
-        after_balance: customer.balance[currency],
-      });
-    }
-
-    /* =================================================
-       🟠 SUPPLIER CASH-IN
-    ================================================= */
-    if (target_type === "SUPPLIER") {
-      if (!mongoose.isValidObjectId(supplier_id))
-        throw new Error("supplier_id noto‘g‘ri");
-
-      const supplier = await Supplier.findById(supplier_id).session(session);
-      if (!supplier) throw new Error("Supplier topilmadi");
-
-      const beforeBalance = Number(supplier.balance?.[currency] || 0);
-
-      /* 🔥 SUPPLIER BALANCE */
-      supplier.balance[currency] = beforeBalance - payAmount;
-
-      supplier.payment_history.push({
+      customer.payment_history.push({
         currency,
         amount: payAmount,
         direction: "PAYMENT",
-        note: note || "Supplierga to‘lov",
+        note: note || "Mijoz to‘lovi",
+        ref_id: cashDocs[0]._id, // 🔥 MUHIM
         date: payDate,
       });
 
-      await supplier.save({ session });
+      await customer.save({ session });
+      await session.commitTransaction();
 
-      await CashIn.create(
+      return res.json({ ok: true, message: "Customer cash-in OK" });
+    }
+
+    /* =========================
+       SUPPLIER
+    ========================= */
+    if (target_type === "SUPPLIER") {
+      const supplier = await Supplier.findById(supplier_id).session(session);
+      if (!supplier) throw new Error("Supplier topilmadi");
+
+      supplier.balance[currency] =
+        Number(supplier.balance[currency] || 0) - payAmount;
+
+      const cashDocs = await CashIn.create(
         [
           {
             target_type: "SUPPLIER",
@@ -153,25 +122,28 @@ exports.createCashIn = async (req, res) => {
         { session }
       );
 
+      supplier.payment_history.push({
+        currency,
+        amount: payAmount,
+        direction: "PAYMENT",
+        note: note || "Supplierga to‘lov",
+        ref_id: cashDocs[0]._id,
+        date: payDate,
+      });
+
+      await supplier.save({ session });
       await session.commitTransaction();
 
-      return res.json({
-        ok: true,
-        message: "Supplierga to‘lov amalga oshirildi",
-        before_balance: beforeBalance,
-        after_balance: supplier.balance[currency],
-      });
+      return res.json({ ok: true, message: "Supplier cash-in OK" });
     }
   } catch (err) {
     await session.abortTransaction();
-    return res.status(400).json({
-      ok: false,
-      message: err.message,
-    });
+    res.status(400).json({ ok: false, message: err.message });
   } finally {
     session.endSession();
   }
 };
+
 
 /* =========================
    GET CASH-IN REPORT (DAY)
@@ -253,7 +225,6 @@ exports.getCashInReportAll = async (req, res) => {
               { $arrayElemAt: ["$supplier.name", 0] },
             ],
           },
-         
         },
       },
 
@@ -264,7 +235,6 @@ exports.getCashInReportAll = async (req, res) => {
           __v: 0,
         },
       },
-
     ]);
 
     /* =========================
@@ -299,7 +269,6 @@ exports.getCashInReportAll = async (req, res) => {
     });
   }
 };
-
 
 /* =========================
    EDIT CASH-IN
@@ -356,6 +325,7 @@ exports.editCashIn = async (req, res) => {
       amount: newAmount,
       direction: "PAYMENT",
       note: note || "Cash-in tahrirlandi",
+      ref_id: cash[0]._id, // 🔥 SHART
       date: paymentDate ? new Date(paymentDate) : new Date(),
     });
 
@@ -389,9 +359,6 @@ exports.editCashIn = async (req, res) => {
 };
 
 
-/* =========================
-   DELETE CASH-IN (CUSTOMER)
-========================= */
 exports.deleteCashIn = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -404,42 +371,108 @@ exports.deleteCashIn = async (req, res) => {
     }
 
     const cashIn = await CashIn.findById(id).session(session);
-    if (!cashIn) {
-      throw new Error("Cash-in topilmadi");
-    }
+    if (!cashIn) throw new Error("Cash-in topilmadi");
 
-    if (cashIn.target_type !== "CUSTOMER") {
-      throw new Error("Faqat CUSTOMER cash-in o‘chiriladi");
-    }
-
-    const customer = await Customer.findById(cashIn.customer_id).session(
-      session
-    );
-    if (!customer) {
-      throw new Error("Customer topilmadi");
-    }
+    const { target_type, currency, amount } = cashIn;
+    const cashDate = new Date(
+      cashIn.paymentDate || cashIn.createdAt
+    ).toISOString();
 
     /* =========================
-       1️⃣ BALANCE ORQAGA QAYTARISH
+       🟠 SUPPLIER
     ========================= */
-    customer.balance[cashIn.currency] =
-      Number(customer.balance?.[cashIn.currency] || 0) + cashIn.amount;
+    if (target_type === "SUPPLIER") {
+      const supplier = await Supplier.findById(cashIn.supplier_id).session(
+        session
+      );
+      if (!supplier) throw new Error("Supplier topilmadi");
+
+      // 1️⃣ BALANCE QAYTARISH
+      supplier.balance[currency] =
+        Number(supplier.balance[currency] || 0) + Number(amount);
+
+      // 2️⃣ PAYMENT HISTORY DAN O‘CHIRISH (ref_id + fallback)
+      supplier.payment_history = supplier.payment_history.filter((h) => {
+        if (h.ref_id) {
+          return String(h.ref_id) !== String(cashIn._id);
+        }
+
+        const sameCurrency = h.currency === currency;
+        const sameAmount = Number(h.amount) === Number(amount);
+        const sameDate = new Date(h.date).toISOString() === cashDate;
+        const isPayment = h.direction === "PAYMENT";
+
+        if (sameCurrency && sameAmount && sameDate && isPayment) {
+          return false;
+        }
+
+        return true;
+      });
+
+      await supplier.save({ session });
+    }
 
     /* =========================
-       2️⃣ PAYMENT HISTORY LOG
+       🔵 CUSTOMER (TO‘LIQ ROLLBACK)
     ========================= */
-    customer.payment_history.push({
-      currency: cashIn.currency,
-      amount: cashIn.amount,
-      direction: "ROLLBACK",
-      note: `Cash-in o‘chirildi (${cashIn._id})`,
-      date: new Date(),
-    });
+    if (target_type === "CUSTOMER") {
+      const customer = await Customer.findById(cashIn.customer_id).session(
+        session
+      );
+      if (!customer) throw new Error("Customer topilmadi");
 
-    await customer.save({ session });
+      // 1️⃣ BALANCE QAYTARISH
+      customer.balance[currency] =
+        Number(customer.balance[currency] || 0) + Number(amount);
+
+      // 2️⃣ SALE LARDAN QARZNI QAYTA OCHISH (LIFO)
+      let remaining = Number(amount);
+
+      const sales = await Sale.find({
+        customerId: customer._id,
+        [`currencyTotals.${currency}.paidAmount`]: { $gt: 0 },
+      })
+        .sort({ saleDate: -1 }) // 🔥 LIFO
+        .session(session);
+
+      for (const sale of sales) {
+        if (remaining <= 0) break;
+
+        const paid = Number(sale.currencyTotals[currency].paidAmount || 0);
+        if (paid <= 0) continue;
+
+        const rollback = Math.min(paid, remaining);
+
+        sale.currencyTotals[currency].paidAmount -= rollback;
+        sale.currencyTotals[currency].debtAmount += rollback;
+
+        remaining -= rollback;
+        await sale.save({ session });
+      }
+
+      // 3️⃣ PAYMENT HISTORY DAN O‘CHIRISH (ref_id + fallback)
+      customer.payment_history = customer.payment_history.filter((h) => {
+        if (h.ref_id) {
+          return String(h.ref_id) !== String(cashIn._id);
+        }
+
+        const sameCurrency = h.currency === currency;
+        const sameAmount = Number(h.amount) === Number(amount);
+        const sameDate = new Date(h.date).toISOString() === cashDate;
+        const isPayment = h.direction === "PAYMENT";
+
+        if (sameCurrency && sameAmount && sameDate && isPayment) {
+          return false;
+        }
+
+        return true;
+      });
+
+      await customer.save({ session });
+    }
 
     /* =========================
-       3️⃣ CASH-IN O‘CHIRISH
+       🗑 CASH-IN O‘CHIRISH
     ========================= */
     await CashIn.deleteOne({ _id: cashIn._id }).session(session);
 
@@ -447,8 +480,8 @@ exports.deleteCashIn = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Cash-in muvaffaqiyatli o‘chirildi",
-      balance: customer.balance,
+      message:
+        "Cash-in o‘chirildi: balance, sale va payment_history to‘liq qaytarildi",
     });
   } catch (error) {
     await session.abortTransaction();
@@ -460,3 +493,4 @@ exports.deleteCashIn = async (req, res) => {
     session.endSession();
   }
 };
+

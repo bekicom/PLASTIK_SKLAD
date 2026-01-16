@@ -2,12 +2,26 @@ const mongoose = require("mongoose");
 const Order = require("../modules/orders/Order");
 const Product = require("../modules/products/Product");
 const Customer = require("../modules/Customer/Customer");
+const User = require("../modules/Users/User");
+
 
 /* =======================
    HELPERS
 ======================= */
 function getUserId(req) {
   return req.user?.id || req.user?._id;
+}
+function parseDate(d, endOfDay = false) {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+
+  if (endOfDay) {
+    dt.setHours(23, 59, 59, 999);
+  } else {
+    dt.setHours(0, 0, 0, 0);
+  }
+  return dt;
 }
 
 exports.createAgentOrder = async (req, res) => {
@@ -208,6 +222,9 @@ exports.getAgentsSummary = async (req, res) => {
     const fromDate = parseDate(from, false);
     const toDate = parseDate(to, true);
 
+    /* =====================
+       DATE FILTER
+    ===================== */
     const match = {};
     if (fromDate || toDate) {
       match.createdAt = {};
@@ -215,27 +232,46 @@ exports.getAgentsSummary = async (req, res) => {
       if (toDate) match.createdAt.$lte = toDate;
     }
 
-    // faqat AGENT userlar
+    /* =====================
+       AGENTS
+    ===================== */
     const agents = await User.find({ role: "AGENT" })
-      .select("name phone login role createdAt")
+      .select("_id name phone login createdAt")
       .lean();
 
     const agentIds = agents.map((a) => a._id);
 
+    /* =====================
+       ORDERS AGGREGATION
+    ===================== */
     const agg = await Order.aggregate([
-      { $match: { ...match, agent_id: { $in: agentIds } } },
+      {
+        $match: {
+          ...match,
+          agent_id: { $in: agentIds },
+        },
+      },
       {
         $group: {
           _id: "$agent_id",
+
           ordersCount: { $sum: 1 },
+
           confirmedCount: {
-            $sum: { $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0] },
+            $sum: {
+              $cond: [{ $eq: ["$status", "CONFIRMED"] }, 1, 0],
+            },
           },
+
           canceledCount: {
-            $sum: { $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0] },
+            $sum: {
+              $cond: [{ $eq: ["$status", "CANCELED"] }, 1, 0],
+            },
           },
+
           totalUZS: { $sum: { $ifNull: ["$total_uzs", 0] } },
           totalUSD: { $sum: { $ifNull: ["$total_usd", 0] } },
+
           confirmedUZS: {
             $sum: {
               $cond: [
@@ -245,6 +281,7 @@ exports.getAgentsSummary = async (req, res) => {
               ],
             },
           },
+
           confirmedUSD: {
             $sum: {
               $cond: [
@@ -254,43 +291,61 @@ exports.getAgentsSummary = async (req, res) => {
               ],
             },
           },
+
           lastOrderAt: { $max: "$createdAt" },
         },
       },
     ]);
 
-    const map = new Map(agg.map((x) => [String(x._id), x]));
+    const statMap = new Map(agg.map((x) => [String(x._id), x]));
 
-    const items = agents.map((a) => {
-      const s = map.get(String(a._id)) || {};
+    /* =====================
+       RESPONSE MAP
+    ===================== */
+    const items = agents.map((agent) => {
+      const s = statMap.get(String(agent._id)) || {};
+
       return {
-        agent: a,
+        agent: {
+          _id: agent._id,
+          name: agent.name,
+          phone: agent.phone,
+          login: agent.login,
+        },
         stats: {
           ordersCount: s.ordersCount || 0,
           confirmedCount: s.confirmedCount || 0,
           canceledCount: s.canceledCount || 0,
+
           totals: {
             UZS: s.totalUZS || 0,
             USD: s.totalUSD || 0,
           },
+
           confirmedTotals: {
             UZS: s.confirmedUZS || 0,
             USD: s.confirmedUSD || 0,
           },
+
           lastOrderAt: s.lastOrderAt || null,
         },
       };
     });
 
-    return res.json({ ok: true, total: items.length, items });
+    return res.json({
+      ok: true,
+      total: items.length,
+      items,
+    });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: "Server xatoligi",
+      message: "Agentlar bo‘yicha hisobotda xato",
       error: error.message,
     });
   }
 };
+
 
 exports.getAgentOrders = async (req, res) => {
   try {
@@ -298,16 +353,32 @@ exports.getAgentOrders = async (req, res) => {
     const { from, to, status, customer_id } = req.query;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res.status(400).json({ ok: false, message: "agent id noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "Agent ID noto‘g‘ri",
+      });
     }
 
+    /* =====================
+       DATE RANGE
+    ===================== */
     const fromDate = parseDate(from, false);
     const toDate = parseDate(to, true);
 
-    const filter = { agent_id: id };
-    if (status) filter.status = String(status).toUpperCase();
-    if (customer_id && mongoose.isValidObjectId(customer_id))
-      filter.customer_id = customer_id;
+    /* =====================
+       FILTER
+    ===================== */
+    const filter = {
+      agent_id: new mongoose.Types.ObjectId(id),
+    };
+
+    if (status) {
+      filter.status = String(status).toUpperCase(); // NEW | CONFIRMED | CANCELED
+    }
+
+    if (customer_id && mongoose.isValidObjectId(customer_id)) {
+      filter.customer_id = new mongoose.Types.ObjectId(customer_id);
+    }
 
     if (fromDate || toDate) {
       filter.createdAt = {};
@@ -315,15 +386,72 @@ exports.getAgentOrders = async (req, res) => {
       if (toDate) filter.createdAt.$lte = toDate;
     }
 
-    const items = await Order.find(filter)
-      .populate("customer_id", "name phone")
-      .sort({ createdAt: -1 });
+    /* =====================
+       QUERY
+    ===================== */
+    const rows = await Order.find(filter)
+      .populate("customer_id", "name phone address note")
+      .populate("agent_id", "name phone login")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    return res.json({ ok: true, total: items.length, items });
+    /* =====================
+       MAP RESPONSE
+    ===================== */
+    const items = rows.map((o) => ({
+      _id: o._id,
+      status: o.status,
+      createdAt: o.createdAt,
+      confirmedAt: o.confirmedAt || null,
+      canceledAt: o.canceledAt || null,
+
+      agent: o.agent_id
+        ? {
+            _id: o.agent_id._id,
+            name: o.agent_id.name,
+            phone: o.agent_id.phone,
+            login: o.agent_id.login,
+          }
+        : null,
+
+      customer: o.customer_id
+        ? {
+            _id: o.customer_id._id,
+            name: o.customer_id.name,
+            phone: o.customer_id.phone,
+            address: o.customer_id.address,
+            note: o.customer_id.note,
+          }
+        : null,
+
+      totals: {
+        UZS: o.total_uzs || 0,
+        USD: o.total_usd || 0,
+      },
+
+      items: (o.items || []).map((it) => ({
+        product_id: it.product_id,
+        name: it.product_snapshot?.name,
+        qty: it.qty,
+        price: it.price_snapshot,
+        subtotal: it.subtotal,
+        currency: it.currency_snapshot,
+      })),
+
+      note: o.note || "",
+    }));
+
+    return res.json({
+      ok: true,
+      total: items.length,
+      items,
+    });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Agent zakaslarini olishda xato",
+      error: error.message,
+    });
   }
 };
 
