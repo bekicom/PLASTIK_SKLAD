@@ -2,21 +2,13 @@ const mongoose = require("mongoose");
 const Order = require("../modules/orders/Order");
 const Product = require("../modules/products/Product");
 const Customer = require("../modules/Customer/Customer");
-const User = require("../modules/Users/User"); // path to‘g‘riligini tekshir
 
-function parseDate(d, endOfDay = false) {
-  if (!d) return null;
-  const dt = new Date(d);
-  if (Number.isNaN(dt.getTime())) return null;
-  if (endOfDay) dt.setHours(23, 59, 59, 999);
-  else dt.setHours(0, 0, 0, 0);
-  return dt;
-}
-
+/* =======================
+   HELPERS
+======================= */
 function getUserId(req) {
   return req.user?.id || req.user?._id;
 }
-
 
 exports.createAgentOrder = async (req, res) => {
   try {
@@ -24,11 +16,16 @@ exports.createAgentOrder = async (req, res) => {
     if (!agentId) {
       return res.status(401).json({
         ok: false,
-        message: "Token kerak (Authorization: Bearer ...)",
+        message: "Auth required",
       });
     }
 
-    const { customer_id, customer: customerRaw, items, note } = req.body || {};
+    const {
+      customer_id,
+      customer: customerRaw,
+      items = [],
+      note,
+    } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
@@ -37,15 +34,12 @@ exports.createAgentOrder = async (req, res) => {
       });
     }
 
-    /* =========================
-       👤 CUSTOMER ANIQLASH
-       priority:
-       1) customer_id
-       2) customer object (yangi)
-    ========================= */
+    /* =======================
+       1️⃣ CUSTOMER ANIQLASH
+    ======================= */
     let customer;
 
-    // 1️⃣ Mavjud customer_id
+    // 🔹 1. Mavjud customer_id
     if (customer_id && mongoose.isValidObjectId(customer_id)) {
       customer = await Customer.findById(customer_id);
       if (!customer) {
@@ -56,7 +50,7 @@ exports.createAgentOrder = async (req, res) => {
       }
     }
 
-    // 2️⃣ Yangi customer object
+    // 🔹 2. Yangi customer (agent yaratadi)
     else if (customerRaw && typeof customerRaw === "object") {
       const name = String(customerRaw.name || "").trim();
       const phone = String(customerRaw.phone || "").trim();
@@ -70,10 +64,9 @@ exports.createAgentOrder = async (req, res) => {
         });
       }
 
-      // 🔍 Avval phone bo‘yicha tekshiramiz
+      // phone bo‘yicha tekshiramiz
       customer = await Customer.findOne({ phone });
 
-      // ➕ Yo‘q bo‘lsa – yaratamiz
       if (!customer) {
         customer = await Customer.create({
           name,
@@ -83,19 +76,16 @@ exports.createAgentOrder = async (req, res) => {
           balance: { UZS: 0, USD: 0 },
         });
       }
-    }
-
-    // 3️⃣ Hech narsa yuborilmagan
-    else {
+    } else {
       return res.status(400).json({
         ok: false,
         message: "customer_id yoki customer object yuborilishi kerak",
       });
     }
 
-    /* =========================
-       📦 PRODUCTLARNI TEKSHIRISH
-    ========================= */
+    /* =======================
+       2️⃣ PRODUCTLARNI YUKLASH
+    ======================= */
     const productIds = items.map((it) => it.product_id);
 
     if (productIds.some((id) => !mongoose.isValidObjectId(id))) {
@@ -123,9 +113,9 @@ exports.createAgentOrder = async (req, res) => {
 
     const productMap = new Map(products.map((p) => [String(p._id), p]));
 
-    /* =========================
-       🧮 ITEMS + TOTALS
-    ========================= */
+    /* =======================
+       3️⃣ ITEMS + TOTALS
+    ======================= */
     const orderItems = [];
     let total_uzs = 0;
     let total_usd = 0;
@@ -140,12 +130,18 @@ exports.createAgentOrder = async (req, res) => {
       }
 
       const p = productMap.get(String(it.product_id));
-      const currency = p.warehouse_currency;
+      if (!p) {
+        return res.status(400).json({
+          ok: false,
+          message: "Product topilmadi",
+        });
+      }
 
+      const currency = p.warehouse_currency;
       const basePrice = Number(p.sell_price || 0);
       const price = it.price !== undefined ? Number(it.price) : basePrice;
 
-      if (!price || price <= 0 || price > basePrice) {
+      if (!Number.isFinite(price) || price <= 0 || price > basePrice) {
         return res.status(400).json({
           ok: false,
           message: `Narx noto‘g‘ri: ${p.name}`,
@@ -161,9 +157,9 @@ exports.createAgentOrder = async (req, res) => {
         product_id: p._id,
         product_snapshot: {
           name: p.name,
-          model: p.model || null,
-          color: p.color || null,
-          category: p.category || null,
+          model: p.model || "",
+          color: p.color || "",
+          category: p.category || "",
           unit: p.unit,
           images: p.images || [],
         },
@@ -174,56 +170,36 @@ exports.createAgentOrder = async (req, res) => {
       });
     }
 
-    /* =========================
-       🧾 ORDER CREATE
-    ========================= */
-    const orderDoc = await Order.create({
+    /* =======================
+       4️⃣ ORDER CREATE
+    ======================= */
+    const order = await Order.create({
       agent_id: agentId,
       customer_id: customer._id,
       items: orderItems,
       total_uzs,
       total_usd,
-      note: note?.trim(),
-      status: "NEW",
+      note: note?.trim() || "",
+      status: "NEW", // 🔥 MUHIM
     });
-
-    /* =========================
-       🔔 SOCKET
-    ========================= */
-    const io = req.app?.get("io");
-    if (io) {
-      const fullOrder = await Order.findById(orderDoc._id)
-        .populate("agent_id", "name phone login")
-        .populate("customer_id", "name phone address note")
-        .lean();
-
-      io.to("cashiers").emit("order:new", { order: fullOrder });
-    }
 
     return res.status(201).json({
       ok: true,
-      message: "Zakas yuborildi",
-      data: {
-        order: orderDoc,
-        customer: {
-          _id: customer._id,
-          name: customer.name,
-          phone: customer.phone,
-        },
+      message: "Agent zakasi yaratildi",
+      order: {
+        _id: order._id,
+        status: order.status,
         totals: { UZS: total_uzs, USD: total_usd },
       },
     });
   } catch (error) {
     return res.status(500).json({
       ok: false,
-      message: "Server xatoligi",
+      message: "Agent zakas yaratishda xato",
       error: error.message,
     });
   }
 };
-
-
-
 
 exports.getAgentsSummary = async (req, res) => {
   try {
@@ -316,10 +292,6 @@ exports.getAgentsSummary = async (req, res) => {
   }
 };
 
-/**
- * GET /agents/:id/orders?from=&to=&status=&customer_id=
- * ADMIN/CASHIER
- */
 exports.getAgentOrders = async (req, res) => {
   try {
     const { id } = req.params;
@@ -355,12 +327,6 @@ exports.getAgentOrders = async (req, res) => {
   }
 };
 
-/**
- * GET /agents/:id/customers?from=&to=
- * ADMIN/CASHIER
- *
- * ✅ eski total ishlatmasdan, total_uzs + total_usd bilan
- */
 exports.getAgentCustomersStats = async (req, res) => {
   try {
     const { id } = req.params;
