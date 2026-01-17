@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 const express = require("express");
 const mongoose = require("mongoose");
@@ -7,12 +6,15 @@ const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
 
-
-const routes = require("./routes");
+// 🔹 ROUTERS
+const skladRoutes = require("./routes"); // routes/index.js → sklad.routes.js
+const appRoutes = require("./routes/appRouter.Route"); // faqat MOBILE APP
 
 const app = express();
 
-// ✅ Agar front domenlaring bo'lsa shu yerga yozib qo'y (tavsiya)
+/**
+ * CORS
+ */
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim())
   : true;
@@ -26,15 +28,19 @@ app.use(
     credentials: true,
   })
 );
+
 app.use(express.json());
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 /**
- * Routes
+ * ROUTES
+ * 🔥 IKKITA ALOHIDA API OQIMI
  */
-app.use("/api", routes);
+app.use("/api", skladRoutes); // 🏢 ZKLAD / ADMIN
+app.use("/api", appRoutes); // 📱 MOBILE APP
 
 /**
- * ✅ SOCKET.IO (HTTP serverga ulaymiz)
+ * HTTP + SOCKET.IO
  */
 const server = http.createServer(app);
 
@@ -45,15 +51,15 @@ const io = new Server(server, {
   },
 });
 
-// ✅ Controllerlarda ishlatish uchun
+// controllerlardan foydalanish uchun
 app.set("io", io);
-app.use("/uploads", express.static(path.join(__dirname, "uploads")));
-io.on("connection", (socket) => {
-  // ✅ TEST: ulangan hammani cashiers roomga qo‘shamiz
-  socket.join("cashiers");
-  console.log("SOCKET CONNECTED:", socket.id, "-> joined cashiers");
 
-  socket.emit("socket:ready", { ok: true, room: "cashiers" });
+io.on("connection", (socket) => {
+  // hozircha test uchun
+  socket.join("cashiers");
+  console.log("SOCKET CONNECTED:", socket.id);
+
+  socket.emit("socket:ready", { ok: true });
 
   socket.on("disconnect", (reason) => {
     console.log("SOCKET DISCONNECT:", socket.id, reason);
@@ -69,18 +75,11 @@ mongoose
     console.log("MongoDB connected");
 
     const PORT = process.env.PORT || 4000;
-
-    // ✅ app.listen emas, server.listen
     server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
+      console.log(`🚀 Server running on port ${PORT}`);
+     
     });
   })
   .catch((err) => {
     console.error("MongoDB error:", err);
   });
-
-
-
-
-
-
