@@ -120,22 +120,57 @@ exports.createProduct = async (req, res) => {
 ======================= */
 exports.getProducts = async (req, res) => {
   try {
-    const { q, currency, category, supplier_id } = req.query;
+    const {
+      q,
+      currency,
+      category,
+      supplier_id,
+      page = 1,
+      limit = 20,
+    } = req.query;
 
     const filter = {};
-    if (supplier_id) filter.supplier_id = supplier_id;
-    if (currency) filter.warehouse_currency = currency;
-    if (category) filter.category = category;
 
-    if (q && q.trim()) {
-      const r = new RegExp(q.trim(), "i");
+    /* =====================
+       FILTERS
+    ===================== */
+    if (supplier_id && mongoose.isValidObjectId(supplier_id)) {
+      filter.supplier_id = supplier_id;
+    }
+
+    if (currency && ["UZS", "USD"].includes(currency)) {
+      filter.warehouse_currency = currency;
+    }
+
+    if (category && String(category).trim()) {
+      filter.category = String(category).trim();
+    }
+
+    if (q && String(q).trim()) {
+      const r = new RegExp(escapeRegex(q.trim()), "i");
       filter.$or = [{ name: r }, { model: r }, { color: r }, { category: r }];
     }
 
-    const items = await Product.find(filter)
-      .populate("supplier_id", "name phone")
-      .sort({ createdAt: -1 })
-      .lean();
+    /* =====================
+       PAGINATION
+    ===================== */
+    const pageNum = Math.max(Number(page), 1);
+    const limitNum = Math.min(Math.max(Number(limit), 1), 100);
+    const skip = (pageNum - 1) * limitNum;
+
+    /* =====================
+       QUERY
+    ===================== */
+    const [items, total] = await Promise.all([
+      Product.find(filter)
+        .populate("supplier_id", "name phone")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+
+      Product.countDocuments(filter),
+    ]);
 
     const mapped = items.map((p) => ({
       ...p,
@@ -144,18 +179,22 @@ exports.getProducts = async (req, res) => {
 
     return res.json({
       ok: true,
-      total: mapped.length,
+      meta: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        pages: Math.ceil(total / limitNum),
+      },
       items: mapped,
     });
   } catch (error) {
+    console.error("getProducts error:", error);
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
-      error: error.message,
     });
   }
 };
-
 /* =======================
    GET PRODUCT BY ID
 ======================= */

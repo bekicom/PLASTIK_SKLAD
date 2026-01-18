@@ -8,7 +8,12 @@ exports.createPurchase = async (req, res) => {
   session.startTransaction();
 
   try {
-    const { supplier_id, batch_no, items: itemsRaw } = req.body || {};
+    const {
+      supplier_id,
+      batch_no,
+      items: itemsRaw,
+      purchase_date, // 🔥 NEW
+    } = req.body || {};
 
     /* =====================
        VALIDATION
@@ -23,6 +28,12 @@ exports.createPurchase = async (req, res) => {
     if (!Array.isArray(itemsRaw) || itemsRaw.length === 0) {
       throw new Error("items majburiy (kamida 1 ta)");
     }
+
+    // 🔥 SANA PARSE (ASOSIY JOY)
+    const parsedDate =
+      purchase_date && !isNaN(new Date(purchase_date))
+        ? new Date(purchase_date)
+        : new Date();
 
     /* =====================
        ITEMS + TOTALS
@@ -58,9 +69,6 @@ exports.createPurchase = async (req, res) => {
       const rowTotal = qty * buy_price;
       totals[currency] += rowTotal;
 
-      /* =====================
-         PRODUCT UPSERT
-      ===================== */
       const product = await Product.findOneAndUpdate(
         {
           supplier_id,
@@ -100,12 +108,7 @@ exports.createPurchase = async (req, res) => {
        TOTALS / STATUS
     ===================== */
     const paid = { UZS: 0, USD: 0 };
-
-    const remaining = {
-      UZS: totals.UZS,
-      USD: totals.USD,
-    };
-
+    const remaining = { UZS: totals.UZS, USD: totals.USD };
     const status = remaining.UZS > 0 || remaining.USD > 0 ? "DEBT" : "PAID";
 
     /* =====================
@@ -116,6 +119,7 @@ exports.createPurchase = async (req, res) => {
         {
           supplier_id,
           batch_no: String(batch_no).trim(),
+          purchase_date: parsedDate, // 🔥 NEW
           totals,
           paid,
           remaining,
@@ -127,16 +131,10 @@ exports.createPurchase = async (req, res) => {
     );
 
     /* =====================
-       🔥 SUPPLIER BALANCE UPDATE
-       (FAqat qarz oshadi)
+       SUPPLIER BALANCE UPDATE
     ===================== */
     supplier.balance.UZS += remaining.UZS || 0;
     supplier.balance.USD += remaining.USD || 0;
-
-    // ❗ MUHIM:
-    // BU YERDA payment_history YO‘Q
-    // To‘lovlar faqat payment controller orqali yoziladi
-
     await supplier.save({ session });
 
     await session.commitTransaction();
@@ -145,6 +143,7 @@ exports.createPurchase = async (req, res) => {
       ok: true,
       message: "Kirim (batch) muvaffaqiyatli saqlandi",
       purchase,
+      purchase_date: parsedDate,
       totals,
       remaining,
       products: affectedProducts,
@@ -158,6 +157,45 @@ exports.createPurchase = async (req, res) => {
     });
   } finally {
     session.endSession();
+  }
+};
+;
+exports.getPurchases = async (req, res) => {
+  try {
+    const { from, to, supplier_id, status } = req.query;
+
+    const filter = {};
+
+    if (supplier_id && mongoose.isValidObjectId(supplier_id)) {
+      filter.supplier_id = supplier_id;
+    }
+
+    if (status) {
+      filter.status = status;
+    }
+
+    // 🔥 SANA FILTER (purchase_date BO‘YICHA)
+    if (from || to) {
+      filter.purchase_date = {};
+      if (from) filter.purchase_date.$gte = new Date(from);
+      if (to) filter.purchase_date.$lte = new Date(to);
+    }
+
+    const purchases = await Purchase.find(filter)
+      .populate("supplier_id", "name phone")
+      .sort({ purchase_date: -1 })
+      .lean();
+
+    return res.json({
+      ok: true,
+      count: purchases.length,
+      data: purchases,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+    });
   }
 };
 

@@ -3,13 +3,18 @@ const mongoose = require("mongoose");
 const Purchase = require("../modules/purchases/Purchase");
 const CashIn = require("../modules/cashIn/CashIn");
 const CUR = ["UZS", "USD"];
-function parseDate(d, endOfDay = false) {
-  if (!d) return null;
-  const dt = new Date(d);
-  if (Number.isNaN(dt.getTime())) return null;
-  if (endOfDay) dt.setHours(23, 59, 59, 999);
-  else dt.setHours(0, 0, 0, 0);
-  return dt;
+function parseDate(val, endOfDay = false) {
+  if (!val) return null;
+
+  const d = new Date(val);
+  if (Number.isNaN(d.getTime())) return null;
+
+  if (endOfDay) {
+    d.setHours(23, 59, 59, 999);
+  } else {
+    d.setHours(0, 0, 0, 0);
+  }
+  return d;
 }
 function calcPurchaseTotals(p) {
   const items = Array.isArray(p.items) ? p.items : [];
@@ -395,9 +400,10 @@ exports.getSupplierDetail = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "supplier id noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "supplier id noto‘g‘ri",
+      });
     }
 
     /* =========================
@@ -408,11 +414,14 @@ exports.getSupplierDetail = async (req, res) => {
       .lean();
 
     if (!supplier) {
-      return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
+      return res.status(404).json({
+        ok: false,
+        message: "Zavod topilmadi",
+      });
     }
 
     /* =========================
-       DATE FILTER
+       DATE FILTER (purchase_date)
     ========================= */
     const fromDate = parseDate(req.query.from, false);
     const toDate = parseDate(req.query.to, true);
@@ -422,21 +431,21 @@ exports.getSupplierDetail = async (req, res) => {
     };
 
     if (fromDate || toDate) {
-      purchaseFilter.createdAt = {};
-      if (fromDate) purchaseFilter.createdAt.$gte = fromDate;
-      if (toDate) purchaseFilter.createdAt.$lte = toDate;
+      purchaseFilter.purchase_date = {};
+      if (fromDate) purchaseFilter.purchase_date.$gte = fromDate;
+      if (toDate) purchaseFilter.purchase_date.$lte = toDate;
     }
 
     /* =========================
        PURCHASES (PARTIYALAR)
     ========================= */
     const purchases = await Purchase.find(purchaseFilter)
-      .sort({ createdAt: -1 })
-      .select("batch_no totals paid remaining status items createdAt")
+      .sort({ purchase_date: -1 }) // 🔥 ASOSIY SANA
+      .select("batch_no purchase_date totals paid remaining status items")
       .lean();
 
     /* =========================
-       🔥 JAMI QARZ (BACKEND HISOBLAYDI)
+       🔥 JAMI QARZ (HISOBLAB CHIQAMIZ)
     ========================= */
     const debt = purchases.reduce(
       (acc, p) => {
@@ -454,19 +463,19 @@ exports.getSupplierDetail = async (req, res) => {
         id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
-        balance: supplier.balance, // ✅ FAqat advance
+        balance: supplier.balance, // ⚠️ faqat advance / prepayment
         createdAt: supplier.createdAt,
       },
 
-      debt, // 🔥 HAQIQIY JAMI QARZ
+      debt, // 🔥 HAQIQIY QARZ (purchase_date bo‘yicha)
 
-      purchases, // 🔹 partiyalar ro‘yxati
+      purchases, // 🔹 partiyalar (purchase_date bilan)
     });
   } catch (error) {
+    console.error("getSupplierDetail error:", error);
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
-      error: error.message,
     });
   }
 };

@@ -1,15 +1,28 @@
+const mongoose = require("mongoose");
 const Withdrawal = require("../modules/withdrawals/Withdrawal");
 
-/* =====================
-   HELPERS
-===================== */
-function safeNum(n, def = 0) {
+/* =========================
+   UTILS
+========================= */
+function safeNum(n, def = null) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
 }
 
+function parseDate(d, endOfDay = false) {
+  if (!d) return null;
+  const dt = new Date(d);
+  if (Number.isNaN(dt.getTime())) return null;
+
+  if (endOfDay) dt.setHours(23, 59, 59, 999);
+  else dt.setHours(0, 0, 0, 0);
+
+  return dt;
+}
+
 /* =========================
    CREATE WITHDRAWAL
+   POST /api/withdrawals
 ========================= */
 exports.createWithdrawal = async (req, res) => {
   try {
@@ -22,31 +35,48 @@ exports.createWithdrawal = async (req, res) => {
       takenAt,
     } = req.body || {};
 
-    if (!investor_name || !String(investor_name).trim()) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "investor_name majburiy" });
+    if (!investor_name || !investor_name.trim()) {
+      return res.status(400).json({
+        ok: false,
+        message: "investor_name majburiy",
+      });
     }
 
     const amt = safeNum(amount);
-    if (amt <= 0) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "amount 0 dan katta bo‘lishi kerak" });
+    if (!amt || amt <= 0) {
+      return res.status(400).json({
+        ok: false,
+        message: "amount 0 dan katta bo‘lishi kerak",
+      });
     }
 
     if (!["UZS", "USD"].includes(currency)) {
-      return res.status(400).json({ ok: false, message: "currency noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "currency noto‘g‘ri (UZS / USD)",
+      });
     }
 
     if (!["CASH", "CARD"].includes(payment_method)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "payment_method noto‘g‘ri (CASH | CARD)" });
+      return res.status(400).json({
+        ok: false,
+        message: "payment_method noto‘g‘ri (CASH / CARD)",
+      });
     }
 
-    if (!purpose || !String(purpose).trim()) {
-      return res.status(400).json({ ok: false, message: "purpose majburiy" });
+    if (!purpose || !purpose.trim()) {
+      return res.status(400).json({
+        ok: false,
+        message: "purpose majburiy",
+      });
+    }
+
+    const parsedDate = takenAt ? new Date(takenAt) : new Date();
+    if (Number.isNaN(parsedDate.getTime())) {
+      return res.status(400).json({
+        ok: false,
+        message: "takenAt noto‘g‘ri formatda",
+      });
     }
 
     const doc = await Withdrawal.create({
@@ -56,12 +86,12 @@ exports.createWithdrawal = async (req, res) => {
       payment_method,
       purpose: purpose.trim(),
       type: "INVESTOR_WITHDRAWAL",
-      takenAt: takenAt ? new Date(takenAt) : new Date(),
+      takenAt: parsedDate,
     });
 
     return res.status(201).json({
       ok: true,
-      message: "Investor pul oldi",
+      message: "Investor puli yechildi",
       data: doc,
     });
   } catch (err) {
@@ -74,11 +104,116 @@ exports.createWithdrawal = async (req, res) => {
 };
 
 /* =========================
-   EDIT WITHDRAWAL
+   GET WITHDRAWALS
+   GET /api/withdrawals
 ========================= */
-exports.editWithdrawal = async (req, res) => {
+exports.getWithdrawals = async (req, res) => {
   try {
-    const { id } = req.params;
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 200);
+    const skip = (page - 1) * limit;
+
+    const { investor_name, currency, payment_method, from, to } = req.query;
+
+    const filter = { type: "INVESTOR_WITHDRAWAL" };
+
+    // 👤 Investor name (case-insensitive)
+    if (investor_name) {
+      filter.investor_name = new RegExp(investor_name.trim(), "i");
+    }
+
+    // 💱 Currency
+    if (currency && ["UZS", "USD"].includes(currency)) {
+      filter.currency = currency;
+    }
+
+    // 💳 Payment method
+    if (payment_method && ["CASH", "CARD"].includes(payment_method)) {
+      filter.payment_method = payment_method;
+    }
+
+    // 📆 Date filter (takenAt)
+    const fromDate = parseDate(from);
+    const toDate = parseDate(to, true);
+
+    if (fromDate || toDate) {
+      filter.takenAt = {};
+      if (fromDate) filter.takenAt.$gte = fromDate;
+      if (toDate) filter.takenAt.$lte = toDate;
+    }
+
+    const [items, total, totals] = await Promise.all([
+      Withdrawal.find(filter)
+        .sort({ takenAt: -1, createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .lean(),
+
+      Withdrawal.countDocuments(filter),
+
+      Withdrawal.aggregate([
+        { $match: filter },
+        {
+          $group: {
+            _id: "$currency",
+            total: { $sum: "$amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    const summary = {
+      UZS: { total: 0, count: 0 },
+      USD: { total: 0, count: 0 },
+    };
+
+    for (const t of totals) {
+      if (summary[t._id]) {
+        summary[t._id] = {
+          total: t.total,
+          count: t.count,
+        };
+      }
+    }
+
+    return res.json({
+      ok: true,
+      page,
+      limit,
+      total,
+      summary,
+      items,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Withdrawal olishda xato",
+      error: err.message,
+    });
+  }
+};
+
+/* =========================
+   UPDATE WITHDRAWAL
+   PUT /api/withdrawals/:id
+========================= */
+exports.updateWithdrawal = async (req, res) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "id noto‘g‘ri",
+      });
+    }
+
+    const doc = await Withdrawal.findById(req.params.id);
+    if (!doc) {
+      return res.status(404).json({
+        ok: false,
+        message: "Withdrawal topilmadi",
+      });
+    }
 
     const {
       investor_name,
@@ -89,21 +224,46 @@ exports.editWithdrawal = async (req, res) => {
       takenAt,
     } = req.body || {};
 
-    const doc = await Withdrawal.findById(id);
-    if (!doc) {
-      return res
-        .status(404)
-        .json({ ok: false, message: "Withdrawal topilmadi" });
+    if (investor_name !== undefined && investor_name.trim()) {
+      doc.investor_name = investor_name.trim();
     }
 
-    if (investor_name) doc.investor_name = investor_name.trim();
-    if (amount !== undefined) doc.amount = safeNum(amount);
-    if (currency && ["UZS", "USD"].includes(currency)) doc.currency = currency;
-    if (payment_method && ["CASH", "CARD"].includes(payment_method)) {
+    if (amount !== undefined) {
+      const amt = safeNum(amount);
+      if (!amt || amt <= 0) {
+        return res.status(400).json({
+          ok: false,
+          message: "amount noto‘g‘ri",
+        });
+      }
+      doc.amount = amt;
+    }
+
+    if (currency !== undefined && ["UZS", "USD"].includes(currency)) {
+      doc.currency = currency;
+    }
+
+    if (
+      payment_method !== undefined &&
+      ["CASH", "CARD"].includes(payment_method)
+    ) {
       doc.payment_method = payment_method;
     }
-    if (purpose) doc.purpose = purpose.trim();
-    if (takenAt) doc.takenAt = new Date(takenAt);
+
+    if (purpose !== undefined && purpose.trim()) {
+      doc.purpose = purpose.trim();
+    }
+
+    if (takenAt !== undefined) {
+      const d = new Date(takenAt);
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({
+          ok: false,
+          message: "takenAt noto‘g‘ri",
+        });
+      }
+      doc.takenAt = d;
+    }
 
     await doc.save();
 
@@ -122,43 +282,33 @@ exports.editWithdrawal = async (req, res) => {
 };
 
 /* =========================
-   GET WITHDRAWALS
+   DELETE WITHDRAWAL
 ========================= */
-exports.getWithdrawals = async (req, res) => {
+exports.deleteWithdrawal = async (req, res) => {
   try {
-    const { investor_name, currency, payment_method, from, to } = req.query;
-
-    const filter = { type: "INVESTOR_WITHDRAWAL" };
-
-    if (investor_name) {
-      filter.investor_name = new RegExp(`^${investor_name}$`, "i");
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "id noto‘g‘ri",
+      });
     }
 
-    if (currency && ["UZS", "USD"].includes(currency)) {
-      filter.currency = currency;
+    const doc = await Withdrawal.findByIdAndDelete(req.params.id);
+    if (!doc) {
+      return res.status(404).json({
+        ok: false,
+        message: "Withdrawal topilmadi",
+      });
     }
-
-    if (payment_method && ["CASH", "CARD"].includes(payment_method)) {
-      filter.payment_method = payment_method;
-    }
-
-    if (from || to) {
-      filter.takenAt = {};
-      if (from) filter.takenAt.$gte = new Date(from);
-      if (to) filter.takenAt.$lte = new Date(to);
-    }
-
-    const items = await Withdrawal.find(filter).sort({ takenAt: -1 }).lean();
 
     return res.json({
       ok: true,
-      total: items.length,
-      items,
+      message: "Withdrawal o‘chirildi",
     });
   } catch (err) {
     return res.status(500).json({
       ok: false,
-      message: "Withdrawal olishda xato",
+      message: "Withdrawal delete xato",
       error: err.message,
     });
   }

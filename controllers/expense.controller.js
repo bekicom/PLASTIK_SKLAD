@@ -4,7 +4,7 @@ const Expense = require("../modules/expenses/Expense");
 /* =========================
    UTILS
 ========================= */
-function safeNum(n, def = 0) {
+function safeNum(n, def = null) {
   const x = Number(n);
   return Number.isFinite(x) ? x : def;
 }
@@ -13,9 +13,15 @@ function parseDate(d, endOfDay = false) {
   if (!d) return null;
   const dt = new Date(d);
   if (Number.isNaN(dt.getTime())) return null;
+
   if (endOfDay) dt.setHours(23, 59, 59, 999);
   else dt.setHours(0, 0, 0, 0);
+
   return dt;
+}
+
+function getUserId(req) {
+  return req.user?._id || req.user?.id || req.userId || null;
 }
 
 /* =========================
@@ -24,7 +30,7 @@ function parseDate(d, endOfDay = false) {
 ========================= */
 exports.createExpense = async (req, res) => {
   try {
-    const userId = req.user?._id || req.user?.id || req.userId;
+    const userId = getUserId(req);
     if (!userId) {
       return res.status(401).json({ ok: false, message: "Unauthorized" });
     }
@@ -46,7 +52,7 @@ exports.createExpense = async (req, res) => {
     }
 
     const amt = safeNum(amount);
-    if (amt <= 0) {
+    if (!amt || amt <= 0) {
       return res.status(400).json({
         ok: false,
         message: "amount 0 dan katta bo‘lishi kerak",
@@ -67,13 +73,21 @@ exports.createExpense = async (req, res) => {
       });
     }
 
+    const parsedDate = expense_date ? new Date(expense_date) : new Date();
+    if (Number.isNaN(parsedDate.getTime())) {
+      return res.status(400).json({
+        ok: false,
+        message: "expense_date noto‘g‘ri formatda",
+      });
+    }
+
     const doc = await Expense.create({
       category: category.trim(),
       amount: amt,
       currency,
       payment_method,
       note: note?.trim() || "",
-      expense_date: expense_date ? new Date(expense_date) : new Date(),
+      expense_date: parsedDate,
       createdBy: userId,
     });
 
@@ -92,7 +106,7 @@ exports.createExpense = async (req, res) => {
 };
 
 /* =========================
-   GET EXPENSES (DATE FILTER 🔥)
+   GET EXPENSES
    GET /api/expenses
 ========================= */
 exports.getExpenses = async (req, res) => {
@@ -106,7 +120,7 @@ exports.getExpenses = async (req, res) => {
     ========================= */
     const filter = {};
 
-    // 🔍 Search (category + note)
+    // 🔍 Search
     if (req.query.q) {
       const r = new RegExp(req.query.q.trim(), "i");
       filter.$or = [{ category: r }, { note: r }];
@@ -135,15 +149,12 @@ exports.getExpenses = async (req, res) => {
           message: "createdBy noto‘g‘ri",
         });
       }
-      filter.createdBy = req.query.createdBy;
+      filter.createdBy = new mongoose.Types.ObjectId(req.query.createdBy);
     }
 
-    /* =========================
-       📆 DATE FILTER (ASOSIY QISM)
-       expense_date BO‘YICHA
-    ========================= */
-    const from = parseDate(req.query.from); // 00:00:00
-    const to = parseDate(req.query.to, true); // 23:59:59
+    // 📆 DATE FILTER (expense_date)
+    const from = parseDate(req.query.from);
+    const to = parseDate(req.query.to, true);
 
     if (from || to) {
       filter.expense_date = {};
@@ -164,7 +175,6 @@ exports.getExpenses = async (req, res) => {
 
       Expense.countDocuments(filter),
 
-      // 💰 TOTAL SUMMA (UZS / USD)
       Expense.aggregate([
         { $match: filter },
         {
@@ -186,15 +196,14 @@ exports.getExpenses = async (req, res) => {
     };
 
     for (const t of totals) {
-      summary[t._id] = {
-        total: t.total,
-        count: t.count,
-      };
+      if (summary[t._id]) {
+        summary[t._id] = {
+          total: t.total,
+          count: t.count,
+        };
+      }
     }
 
-    /* =========================
-       RESPONSE
-    ========================= */
     return res.json({
       ok: true,
       page,
@@ -268,18 +277,46 @@ exports.updateExpense = async (req, res) => {
     const { category, amount, currency, payment_method, note, expense_date } =
       req.body || {};
 
-    if (category !== undefined) doc.category = category.trim();
-    if (currency !== undefined && Expense.CUR.includes(currency))
+    if (category !== undefined && category.trim()) {
+      doc.category = category.trim();
+    }
+
+    if (currency !== undefined && Expense.CUR.includes(currency)) {
       doc.currency = currency;
-    if (amount !== undefined && safeNum(amount) > 0)
-      doc.amount = safeNum(amount);
+    }
+
+    if (amount !== undefined) {
+      const amt = safeNum(amount);
+      if (!amt || amt <= 0) {
+        return res.status(400).json({
+          ok: false,
+          message: "amount noto‘g‘ri",
+        });
+      }
+      doc.amount = amt;
+    }
+
     if (
       payment_method !== undefined &&
       ["CASH", "CARD"].includes(payment_method)
-    )
+    ) {
       doc.payment_method = payment_method;
-    if (note !== undefined) doc.note = note?.trim() || "";
-    if (expense_date !== undefined) doc.expense_date = new Date(expense_date);
+    }
+
+    if (note !== undefined) {
+      doc.note = note?.trim() || "";
+    }
+
+    if (expense_date !== undefined) {
+      const d = new Date(expense_date);
+      if (Number.isNaN(d.getTime())) {
+        return res.status(400).json({
+          ok: false,
+          message: "expense_date noto‘g‘ri",
+        });
+      }
+      doc.expense_date = d;
+    }
 
     await doc.save();
 

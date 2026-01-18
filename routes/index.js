@@ -248,6 +248,12 @@ router.post(
   uploadProductImages.any(), // 🔥 HAMMA FILE FIELD QABUL QILINADI
   purchaseController.createPurchase
 );
+router.get(
+  "/purchases",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  purchaseController.getPurchases
+);
 router.post(
   "/products/:id/image",
   rAuth,
@@ -508,7 +514,7 @@ router.put(
   "/withdrawals/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  withdrawalController.editWithdrawal
+  withdrawalController.updateWithdrawal,
 );
 
 /* =========================

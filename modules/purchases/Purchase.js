@@ -33,6 +33,13 @@ const purchaseSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // 🔥 REAL OLGAN SANA (ASOSIY)
+    purchase_date: {
+      type: Date,
+      required: true,
+      default: Date.now,
+      index: true,
+    },
 
     batch_no: {
       type: String,
