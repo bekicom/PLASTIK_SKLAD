@@ -527,7 +527,12 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   withdrawalController.getWithdrawals
 );
-
+router.delete(
+  "/withdrawals/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.deleteWithdrawal,
+);
 // 🔥 PUL KIRIM
 router.post(
   "/cash-in",

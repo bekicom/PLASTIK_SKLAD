@@ -6,44 +6,36 @@ const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
 
-// 🔹 ROUTERS
-const skladRoutes = require("./routes"); // routes/index.js → sklad.routes.js
-const appRoutes = require("./routes/appRouter.Route"); // faqat MOBILE APP
+const skladRoutes = require("./routes");
+const appRoutes = require("./routes/appRouter.Route");
 
 const app = express();
 
-/**
- * CORS
- */
+/* ======================
+   CORS
+====================== */
 const allowedOrigins = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(",").map((s) => s.trim())
   : true;
 
-/**
- * Middlewares
- */
 app.use(
   cors({
     origin: allowedOrigins,
     credentials: true,
-  })
+  }),
 );
 
 app.use(express.json());
 app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
-/**
- * ROUTES
- * 🔥 IKKITA ALOHIDA API OQIMI
- */
-app.use("/api", skladRoutes); // 🏢 ZKLAD / ADMIN
-app.use("/api", appRoutes); // 📱 MOBILE APP
-
-/**
- * HTTP + SOCKET.IO
- */
+/* ======================
+   HTTP SERVER
+====================== */
 const server = http.createServer(app);
 
+/* ======================
+   SOCKET.IO
+====================== */
 const io = new Server(server, {
   cors: {
     origin: allowedOrigins,
@@ -51,33 +43,43 @@ const io = new Server(server, {
   },
 });
 
-// controllerlardan foydalanish uchun
-app.set("io", io);
+// 🔥 ENG MUHIM QATOR
+app.use((req, res, next) => {
+  req.io = io;
+  next();
+});
 
+/* ======================
+   ROUTES
+====================== */
+app.use("/api", skladRoutes);
+app.use("/api", appRoutes);
+
+/* ======================
+   SOCKET EVENTS
+====================== */
 io.on("connection", (socket) => {
-  // hozircha test uchun
   socket.join("cashiers");
-  console.log("SOCKET CONNECTED:", socket.id);
+  console.log("🟢 SOCKET CONNECTED:", socket.id);
 
   socket.emit("socket:ready", { ok: true });
 
   socket.on("disconnect", (reason) => {
-    console.log("SOCKET DISCONNECT:", socket.id, reason);
+    console.log("🔴 SOCKET DISCONNECT:", socket.id, reason);
   });
 });
 
-/**
- * MongoDB
- */
+/* ======================
+   MONGODB + START
+====================== */
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("MongoDB connected");
 
-    const PORT = process.env.PORT || 4000;
-    server.listen(PORT, () => {
+    const PORT = process.env.PORT || 8071;
+    server.listen(PORT, "0.0.0.0", () => {
       console.log(`🚀 Server running on port ${PORT}`);
-     
     });
   })
   .catch((err) => {

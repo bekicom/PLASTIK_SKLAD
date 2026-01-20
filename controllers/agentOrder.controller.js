@@ -28,10 +28,7 @@ exports.createAgentOrder = async (req, res) => {
   try {
     const agentId = getUserId(req);
     if (!agentId) {
-      return res.status(401).json({
-        ok: false,
-        message: "Auth required",
-      });
+      return res.status(401).json({ ok: false, message: "Auth required" });
     }
 
     const {
@@ -49,23 +46,18 @@ exports.createAgentOrder = async (req, res) => {
     }
 
     /* =======================
-       1️⃣ CUSTOMER ANIQLASH
+       CUSTOMER ANIQLASH
     ======================= */
     let customer;
 
-    // 🔹 1. Mavjud customer_id
     if (customer_id && mongoose.isValidObjectId(customer_id)) {
       customer = await Customer.findById(customer_id);
       if (!customer) {
-        return res.status(404).json({
-          ok: false,
-          message: "Customer topilmadi",
-        });
+        return res
+          .status(404)
+          .json({ ok: false, message: "Customer topilmadi" });
       }
-    }
-
-    // 🔹 2. Yangi customer (agent yaratadi)
-    else if (customerRaw && typeof customerRaw === "object") {
+    } else if (customerRaw && typeof customerRaw === "object") {
       const name = String(customerRaw.name || "").trim();
       const phone = String(customerRaw.phone || "").trim();
       const address = String(customerRaw.address || "").trim();
@@ -78,9 +70,7 @@ exports.createAgentOrder = async (req, res) => {
         });
       }
 
-      // phone bo‘yicha tekshiramiz
       customer = await Customer.findOne({ phone });
-
       if (!customer) {
         customer = await Customer.create({
           name,
@@ -98,73 +88,33 @@ exports.createAgentOrder = async (req, res) => {
     }
 
     /* =======================
-       2️⃣ PRODUCTLARNI YUKLASH
+       PRODUCTLAR
     ======================= */
-    const productIds = items.map((it) => it.product_id);
-
-    if (productIds.some((id) => !mongoose.isValidObjectId(id))) {
-      return res.status(400).json({
-        ok: false,
-        message: "items ichida product_id noto‘g‘ri",
-      });
-    }
-
+    const productIds = items.map((i) => i.product_id);
     const products = await Product.find({
       _id: { $in: productIds },
       is_active: { $ne: false },
-    })
-      .select(
-        "name model color category unit sell_price warehouse_currency images"
-      )
-      .lean();
-
-    if (products.length !== productIds.length) {
-      return res.status(400).json({
-        ok: false,
-        message: "Ba’zi productlar topilmadi yoki aktiv emas",
-      });
-    }
+    }).lean();
 
     const productMap = new Map(products.map((p) => [String(p._id), p]));
 
-    /* =======================
-       3️⃣ ITEMS + TOTALS
-    ======================= */
-    const orderItems = [];
     let total_uzs = 0;
     let total_usd = 0;
+    const orderItems = [];
 
     for (const it of items) {
-      const qty = Number(it.qty);
-      if (!Number.isFinite(qty) || qty <= 0) {
-        return res.status(400).json({
-          ok: false,
-          message: "qty noto‘g‘ri",
-        });
-      }
-
       const p = productMap.get(String(it.product_id));
       if (!p) {
-        return res.status(400).json({
-          ok: false,
-          message: "Product topilmadi",
-        });
+        return res
+          .status(400)
+          .json({ ok: false, message: "Product topilmadi" });
       }
 
-      const currency = p.warehouse_currency;
-      const basePrice = Number(p.sell_price || 0);
-      const price = it.price !== undefined ? Number(it.price) : basePrice;
-
-      if (!Number.isFinite(price) || price <= 0 || price > basePrice) {
-        return res.status(400).json({
-          ok: false,
-          message: `Narx noto‘g‘ri: ${p.name}`,
-        });
-      }
-
+      const qty = Number(it.qty);
+      const price = Number(it.price ?? p.sell_price);
       const subtotal = qty * price;
 
-      if (currency === "UZS") total_uzs += subtotal;
+      if (p.warehouse_currency === "UZS") total_uzs += subtotal;
       else total_usd += subtotal;
 
       orderItems.push({
@@ -180,12 +130,12 @@ exports.createAgentOrder = async (req, res) => {
         qty,
         price_snapshot: price,
         subtotal,
-        currency_snapshot: currency,
+        currency_snapshot: p.warehouse_currency,
       });
     }
 
     /* =======================
-       4️⃣ ORDER CREATE
+       ORDER CREATE
     ======================= */
     const order = await Order.create({
       agent_id: agentId,
@@ -194,8 +144,26 @@ exports.createAgentOrder = async (req, res) => {
       total_uzs,
       total_usd,
       note: note?.trim() || "",
-      status: "NEW", // 🔥 MUHIM
+      status: "NEW",
     });
+
+    /* =======================
+       🔔 SOCKET EMIT (MUHIM!)
+    ======================= */
+    // =======================
+    // 🔔 SOCKET UCHUN TO‘LIQ ORDER
+    // =======================
+    if (req.io) {
+      const fullOrder = await Order.findById(order._id)
+        .populate("agent_id", "name phone login")
+        .populate("customer_id", "name phone address note")
+        .lean();
+
+      req.io.to("cashiers").emit("agent:new-order", {
+        ...fullOrder,
+        total: (fullOrder.total_uzs || 0) + (fullOrder.total_usd || 0),
+      });
+    }
 
     return res.status(201).json({
       ok: true,
@@ -214,6 +182,7 @@ exports.createAgentOrder = async (req, res) => {
     });
   }
 };
+
 
 exports.getAgentsSummary = async (req, res) => {
   try {
