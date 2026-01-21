@@ -120,14 +120,7 @@ exports.createProduct = async (req, res) => {
 ======================= */
 exports.getProducts = async (req, res) => {
   try {
-    const {
-      q,
-      currency,
-      category,
-      supplier_id,
-      page = 1,
-      limit = 20,
-    } = req.query;
+    const { q, currency, category, supplier_id } = req.query;
 
     const filter = {};
 
@@ -152,25 +145,12 @@ exports.getProducts = async (req, res) => {
     }
 
     /* =====================
-       PAGINATION
+       QUERY (NO PAGINATION)
     ===================== */
-    const pageNum = Math.max(Number(page), 1);
-    const limitNum = Math.min(Math.max(Number(limit), 1), 100);
-    const skip = (pageNum - 1) * limitNum;
-
-    /* =====================
-       QUERY
-    ===================== */
-    const [items, total] = await Promise.all([
-      Product.find(filter)
-        .populate("supplier_id", "name phone")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(limitNum)
-        .lean(),
-
-      Product.countDocuments(filter),
-    ]);
+    const items = await Product.find(filter)
+      .populate("supplier_id", "name phone")
+      .sort({ createdAt: -1 })
+      .lean();
 
     const mapped = items.map((p) => ({
       ...p,
@@ -179,12 +159,7 @@ exports.getProducts = async (req, res) => {
 
     return res.json({
       ok: true,
-      meta: {
-        total,
-        page: pageNum,
-        limit: limitNum,
-        pages: Math.ceil(total / limitNum),
-      },
+      total: mapped.length,
       items: mapped,
     });
   } catch (error) {
@@ -195,6 +170,7 @@ exports.getProducts = async (req, res) => {
     });
   }
 };
+
 /* =======================
    GET PRODUCT BY ID
 ======================= */
