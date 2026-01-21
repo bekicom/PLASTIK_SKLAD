@@ -20,6 +20,17 @@ const customerSchema = new mongoose.Schema(
       USD: { type: Number, default: 0 },
     },
 
+    opening_balance: {
+      UZS: {
+        type: Number,
+        default: 0,
+      },
+      USD: {
+        type: Number,
+        default: 0,
+      },
+    },
+
     // 🔥 TO‘LOV / O‘ZGARISH TARIXI
     payment_history: [
       {
@@ -52,7 +63,7 @@ const customerSchema = new mongoose.Schema(
     // Soft delete
     isActive: { type: Boolean, default: true, index: true },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 customerSchema.index({ name: 1, phone: 1 });

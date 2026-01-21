@@ -18,13 +18,7 @@ function safeNum(n, def = 0) {
 
 exports.createCustomer = async (req, res) => {
   try {
-    const {
-      name,
-      phone,
-      address,
-      note,
-      balance = {}, // 🔥 ASOSIY
-    } = req.body || {};
+    const { name, phone, address, note, balance = {} } = req.body || {};
 
     if (!name) {
       return res.status(400).json({
@@ -36,40 +30,25 @@ exports.createCustomer = async (req, res) => {
     const balUZS = Number(balance.UZS || 0);
     const balUSD = Number(balance.USD || 0);
 
-    const payment_history = [];
-
-    if (balUZS !== 0) {
-      payment_history.push({
-        currency: "UZS",
-        amount: Math.abs(balUZS),
-        direction: balUZS > 0 ? "DEBT" : "PREPAYMENT",
-        note:
-          balUZS > 0 ? "Boshlang‘ich qarz (UZS)" : "Boshlang‘ich avans (UZS)",
-        date: new Date(),
-      });
-    }
-
-    if (balUSD !== 0) {
-      payment_history.push({
-        currency: "USD",
-        amount: Math.abs(balUSD),
-        direction: balUSD > 0 ? "DEBT" : "PREPAYMENT",
-        note:
-          balUSD > 0 ? "Boshlang‘ich qarz (USD)" : "Boshlang‘ich avans (USD)",
-        date: new Date(),
-      });
-    }
-
     const customer = await Customer.create({
       name: String(name).trim(),
       phone: normalizePhone(phone),
       address: address?.trim() || "",
       note: note?.trim() || "",
+
+      // 🔥 ASOSIY YECHIM
+      opening_balance: {
+        UZS: balUZS,
+        USD: balUSD,
+      },
+
+      // 🔁 ISHCHI BALANS (hozircha opening bilan teng)
       balance: {
         UZS: balUZS,
         USD: balUSD,
       },
-      payment_history,
+
+      payment_history: [], // ❌ bu yerga yozilmaydi
       isActive: true,
     });
 
@@ -87,6 +66,7 @@ exports.createCustomer = async (req, res) => {
   }
 };
 
+
 /* =======================
    GET CUSTOMERS (LIST)
 ======================= */
@@ -102,7 +82,7 @@ exports.getCustomers = async (req, res) => {
       match.$or = [{ name: r }, { phone: r }];
     }
 
-    const items = await Customer.aggregate([
+    let items = await Customer.aggregate([
       { $match: match },
 
       /* 🔗 SALES → FAQAT QARZ */
@@ -132,7 +112,7 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 CUSTOMER DEBT (REAL) */
+      /* 🔥 CUSTOMER DEBT (FAQAT SALE ASOSIDA) */
       {
         $addFields: {
           debt: {
@@ -142,7 +122,7 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 STATUS (FAQAT SALE ASOSIDA) */
+      /* 🔥 STATUS */
       {
         $addFields: {
           status: {
@@ -166,6 +146,28 @@ exports.getCustomers = async (req, res) => {
 
       { $sort: { createdAt: -1 } },
     ]);
+
+    /* ===========================
+       🔥 OPENING BALANCE AJRATISH
+    =========================== */
+    items = items.map((c) => {
+      const opening_balance = { UZS: 0, USD: 0 };
+      const clean_history = [];
+
+      for (const p of c.payment_history || []) {
+        if (String(p.note || "").includes("Boshlang‘ich")) {
+          opening_balance[p.currency] += Number(p.amount || 0);
+        } else {
+          clean_history.push(p);
+        }
+      }
+
+      return {
+        ...c,
+        opening_balance,
+        payment_history: clean_history,
+      };
+    });
 
     /* =====================
        TOTALS (REAL DEBT)
@@ -193,6 +195,7 @@ exports.getCustomers = async (req, res) => {
     });
   }
 };
+
 
 
 
