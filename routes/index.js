@@ -29,7 +29,7 @@ const { rAuth, rRole } = require("../middlewares/auth.middleware");
 /**
  * AUTH
  */
-
+router.use("/api/customers", require("./customers.routes"));
 // register
 router.post("/auth/register", authController.register);
 

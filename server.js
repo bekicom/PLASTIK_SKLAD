@@ -7,7 +7,6 @@ const { Server } = require("socket.io");
 const path = require("path");
 
 const skladRoutes = require("./routes");
-const appRoutes = require("./routes/appRouter.Route");
 
 const app = express();
 
@@ -53,7 +52,6 @@ app.use((req, res, next) => {
    ROUTES
 ====================== */
 app.use("/api", skladRoutes);
-app.use("/api", appRoutes);
 
 /* ======================
    SOCKET EVENTS

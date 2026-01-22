@@ -2,6 +2,9 @@ const mongoose = require("mongoose");
 
 const customerSchema = new mongoose.Schema(
   {
+    /* =====================
+       BASIC INFO
+    ===================== */
     name: {
       type: String,
       required: true,
@@ -14,24 +17,46 @@ const customerSchema = new mongoose.Schema(
     address: { type: String, trim: true, maxlength: 250 },
     note: { type: String, trim: true, maxlength: 300 },
 
-    // 🔥 UNIVERSAL BALANCE (supplier bilan BIR XIL)
+    /* =====================
+       ROLE & ACCESS (NEW)
+    ===================== */
+    role: {
+      type: String,
+      enum: ["ADMIN", "CASHIER", "AGENT", "MOBILE"],
+      default: "ADMIN", // 🔥 eski customerlar uchun
+      index: true,
+    },
+
+    status: {
+      type: String,
+      enum: ["PENDING", "ACTIVE", "BLOCKED", "REJECTED"],
+      default: "ACTIVE", // 🔥 web orqali kiritilganlar darhol aktiv
+      index: true,
+    },
+
+    registered_from: {
+      type: String,
+      enum: ["ADMIN", "MOBILE"],
+      default: "WEB",
+      index: true,
+    },
+
+    /* =====================
+       BALANCE
+    ===================== */
     balance: {
       UZS: { type: Number, default: 0 }, // + qarz, - avans
       USD: { type: Number, default: 0 },
     },
 
     opening_balance: {
-      UZS: {
-        type: Number,
-        default: 0,
-      },
-      USD: {
-        type: Number,
-        default: 0,
-      },
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
     },
 
-    // 🔥 TO‘LOV / O‘ZGARISH TARIXI
+    /* =====================
+       PAYMENT HISTORY
+    ===================== */
     payment_history: [
       {
         currency: {
@@ -42,13 +67,10 @@ const customerSchema = new mongoose.Schema(
 
         amount: {
           type: Number,
-          required: true, // har doim musbat
+          required: true,
           min: 0,
         },
 
-        // DEBT  → qarz oshdi
-        // PAYMENT → qarz kamaydi
-        // PREPAYMENT → avans
         direction: {
           type: String,
           enum: ["DEBT", "PAYMENT", "PREPAYMENT", "PAYMENT_CANCEL", "ROLLBACK"],
@@ -60,7 +82,9 @@ const customerSchema = new mongoose.Schema(
       },
     ],
 
-    // Soft delete
+    /* =====================
+       SOFT DELETE
+    ===================== */
     isActive: { type: Boolean, default: true, index: true },
   },
   { timestamps: true },
