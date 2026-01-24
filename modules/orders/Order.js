@@ -8,7 +8,7 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
     },
 
-    // 🔒 TO‘LIQ PRODUCT SNAPSHOT (TARIX UCHUN)
+    // 🔒 PRODUCT SNAPSHOT (TARIX UCHUN)
     product_snapshot: {
       name: { type: String, required: true, trim: true },
       model: { type: String, default: null, trim: true },
@@ -42,11 +42,31 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
     },
   },
-  { _id: false }
+  { _id: false },
 );
 
 const OrderSchema = new mongoose.Schema(
   {
+    /* =========================
+       ORDER TYPE & SOURCE
+    ========================= */
+    type: {
+      type: String,
+      enum: ["CUSTOMER_ORDER"],
+      default: "CUSTOMER_ORDER",
+      index: true,
+    },
+
+    source: {
+      type: String,
+      enum: ["MOBILE", "ADMIN", "WEB"],
+      default: "MOBILE",
+      index: true,
+    },
+
+    /* =========================
+       WHO
+    ========================= */
     agent_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -61,11 +81,17 @@ const OrderSchema = new mongoose.Schema(
       index: true,
     },
 
+    /* =========================
+       ITEMS
+    ========================= */
     items: {
       type: [OrderItemSchema],
       default: [],
     },
 
+    /* =========================
+       TOTALS
+    ========================= */
     total: {
       type: Number,
       default: 0,
@@ -75,6 +101,9 @@ const OrderSchema = new mongoose.Schema(
     total_uzs: { type: Number, default: 0, min: 0 },
     total_usd: { type: Number, default: 0, min: 0 },
 
+    /* =========================
+       STATUS FLOW
+    ========================= */
     status: {
       type: String,
       enum: ["NEW", "CONFIRMED", "CANCELED"],
@@ -82,12 +111,28 @@ const OrderSchema = new mongoose.Schema(
       index: true,
     },
 
+    /* =========================
+       SALE LINK (ADMIN CONFIRM)
+    ========================= */
+    sale_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Sale",
+      default: null,
+      index: true,
+    },
+
+    /* =========================
+       NOTE
+    ========================= */
     note: {
       type: String,
       trim: true,
       maxlength: 500,
     },
 
+    /* =========================
+       CONFIRM / CANCEL META
+    ========================= */
     confirmedAt: Date,
     confirmedBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -106,12 +151,15 @@ const OrderSchema = new mongoose.Schema(
       maxlength: 300,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
-// indexlar
+/* =========================
+   INDEXES
+========================= */
 OrderSchema.index({ createdAt: -1 });
 OrderSchema.index({ agent_id: 1, createdAt: -1 });
 OrderSchema.index({ customer_id: 1, createdAt: -1 });
+OrderSchema.index({ status: 1, source: 1 });
 
 module.exports = mongoose.model("Order", OrderSchema);

@@ -399,6 +399,9 @@ exports.getSupplierDetail = async (req, res) => {
   try {
     const { id } = req.params;
 
+    /* =========================
+       VALIDATION
+    ========================= */
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
         ok: false,
@@ -422,30 +425,32 @@ exports.getSupplierDetail = async (req, res) => {
 
     /* =========================
        DATE FILTER (purchase_date)
+       DEFAULT = FAQAT 2026
     ========================= */
-    const fromDate = parseDate(req.query.from, false);
-    const toDate = parseDate(req.query.to, true);
+    const defaultFrom = new Date("2026-01-01T00:00:00.000Z");
+    const defaultTo = new Date("2026-12-31T23:59:59.999Z");
+
+    const fromDate = parseDate(req.query.from, false) || defaultFrom;
+    const toDate = parseDate(req.query.to, true) || defaultTo;
 
     const purchaseFilter = {
       supplier_id: new mongoose.Types.ObjectId(id),
+      purchase_date: {
+        $gte: fromDate,
+        $lte: toDate,
+      },
     };
-
-    if (fromDate || toDate) {
-      purchaseFilter.purchase_date = {};
-      if (fromDate) purchaseFilter.purchase_date.$gte = fromDate;
-      if (toDate) purchaseFilter.purchase_date.$lte = toDate;
-    }
 
     /* =========================
        PURCHASES (PARTIYALAR)
     ========================= */
     const purchases = await Purchase.find(purchaseFilter)
-      .sort({ purchase_date: -1 }) // 🔥 ASOSIY SANA
-      .select("batch_no purchase_date totals paid remaining status items")
+      .sort({ purchase_date: -1 }) // 🔥 asosiy sana
+      .select("_id batch_no purchase_date totals paid remaining status items")
       .lean();
 
     /* =========================
-       🔥 JAMI QARZ (HISOBLAB CHIQAMIZ)
+       REAL DEBT (HISOBLAB)
     ========================= */
     const debt = purchases.reduce(
       (acc, p) => {
@@ -453,9 +458,12 @@ exports.getSupplierDetail = async (req, res) => {
         acc.USD += Number(p.remaining?.USD || 0);
         return acc;
       },
-      { UZS: 0, USD: 0 }
+      { UZS: 0, USD: 0 },
     );
 
+    /* =========================
+       RESPONSE
+    ========================= */
     return res.json({
       ok: true,
 
@@ -467,9 +475,14 @@ exports.getSupplierDetail = async (req, res) => {
         createdAt: supplier.createdAt,
       },
 
-      debt, // 🔥 HAQIQIY QARZ (purchase_date bo‘yicha)
+      period: {
+        from: fromDate,
+        to: toDate,
+      },
 
-      purchases, // 🔹 partiyalar (purchase_date bilan)
+      debt, // 🔥 faqat 2026 (yoki berilgan oraliq)
+
+      purchases, // 🔹 partiyalar (purchase_date bo‘yicha)
     });
   } catch (error) {
     console.error("getSupplierDetail error:", error);

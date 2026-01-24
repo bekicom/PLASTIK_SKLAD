@@ -2,6 +2,7 @@ const Customer = require("../../modules/Customer/Customer");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 
+const Product = require("../../modules/products/Product");
 
 
 /* =========================
@@ -386,6 +387,88 @@ exports.deleteCustomerById = async (req, res) => {
   }
 };
 
+
+/* =========================
+   📱 MOBILE → GET PRODUCTS
+========================= */
+exports.getMobileProducts = async (req, res) => {
+  try {
+    // rMobileAuth middleware qo‘yilgan bo‘lishi kerak
+    const mobileCustomer = req.mobileCustomer;
+
+    if (!mobileCustomer) {
+      return res.status(401).json({
+        ok: false,
+        message: "Mobile auth yo‘q",
+      });
+    }
+
+    const {
+      q,
+      category,
+      page = 1,
+      limit = 20,
+    } = req.query;
+
+    /* =========================
+       FILTER
+    ========================= */
+    const filter = {
+      isActive: true,
+      qty: { $gt: 0 }, // faqat omborda bor productlar
+    };
+
+    if (category) {
+      filter.category = String(category).trim();
+    }
+
+    if (q) {
+      const r = new RegExp(q.trim(), "i");
+      filter.$or = [
+        { name: r },
+        { model: r },
+        { category: r },
+      ];
+    }
+
+    /* =========================
+       PAGINATION
+    ========================= */
+    const pageNum = Math.max(Number(page), 1);
+    const limitNum = Math.min(Math.max(Number(limit), 1), 50);
+    const skip = (pageNum - 1) * limitNum;
+
+    /* =========================
+       QUERY
+    ========================= */
+    const [items, total] = await Promise.all([
+      Product.find(filter)
+        .select(
+          "_id name model sell_price qty unit category images"
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limitNum)
+        .lean(),
+
+      Product.countDocuments(filter),
+    ]);
+
+    return res.json({
+      ok: true,
+      page: pageNum,
+      limit: limitNum,
+      total,
+      items,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Mobile productlarni olishda xatolik",
+      error: error.message,
+    });
+  }
+};
 
 // 🔥 ALIAS — router createCustomer deb chaqiryapti
 exports.createCustomer = exports.mobileRegister;

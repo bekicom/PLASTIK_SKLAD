@@ -74,8 +74,19 @@ exports.getCustomers = async (req, res) => {
   try {
     const match = {};
 
+    /* =====================
+       BASIC FILTERS
+    ===================== */
     if (req.query.isActive === "true") match.isActive = true;
     if (req.query.isActive === "false") match.isActive = false;
+
+    // 🔥 MODEL STATUS (PENDING, ACTIVE, BLOCKED, ...)
+    if (
+      req.query.status &&
+      ["PENDING", "ACTIVE", "BLOCKED", "REJECTED"].includes(req.query.status)
+    ) {
+      match.status = req.query.status;
+    }
 
     if (req.query.search) {
       const r = new RegExp(req.query.search.trim(), "i");
@@ -83,9 +94,14 @@ exports.getCustomers = async (req, res) => {
     }
 
     let items = await Customer.aggregate([
+      /* =====================
+         CUSTOMER FILTER
+      ===================== */
       { $match: match },
 
-      /* 🔗 SALES → FAQAT QARZ */
+      /* =====================
+         SALES → FAQAT COMPLETED
+      ===================== */
       {
         $lookup: {
           from: "sales",
@@ -112,7 +128,9 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 CUSTOMER DEBT (FAQAT SALE ASOSIDA) */
+      /* =====================
+         CUSTOMER DEBT
+      ===================== */
       {
         $addFields: {
           debt: {
@@ -122,21 +140,50 @@ exports.getCustomers = async (req, res) => {
         },
       },
 
-      /* 🔥 STATUS */
+      /* =====================
+         DEBT STATUS (CALCULATED)
+      ===================== */
       {
         $addFields: {
-          status: {
-            UZS: {
-              $cond: [{ $gt: ["$debt.UZS", 0] }, "DEBT", "CLEAR"],
-            },
-            USD: {
-              $cond: [{ $gt: ["$debt.USD", 0] }, "DEBT", "CLEAR"],
-            },
+          debt_status: {
+            $cond: [
+              {
+                $or: [{ $gt: ["$debt.UZS", 0] }, { $gt: ["$debt.USD", 0] }],
+              },
+              "DEBT",
+              "CLEAR",
+            ],
           },
         },
       },
 
-      /* 🧹 CLEAN */
+      /* =====================
+         DEBT STATUS FILTER
+      ===================== */
+      ...(req.query.debt_status === "DEBT"
+        ? [
+            {
+              $match: {
+                $or: [{ "debt.UZS": { $gt: 0 } }, { "debt.USD": { $gt: 0 } }],
+              },
+            },
+          ]
+        : []),
+
+      ...(req.query.debt_status === "CLEAR"
+        ? [
+            {
+              $match: {
+                "debt.UZS": 0,
+                "debt.USD": 0,
+              },
+            },
+          ]
+        : []),
+
+      /* =====================
+         CLEAN
+      ===================== */
       {
         $project: {
           sales: 0,
@@ -147,9 +194,9 @@ exports.getCustomers = async (req, res) => {
       { $sort: { createdAt: -1 } },
     ]);
 
-    /* ===========================
-       🔥 OPENING BALANCE AJRATISH
-    =========================== */
+    /* =====================
+       OPENING BALANCE AJRATISH
+    ===================== */
     items = items.map((c) => {
       const opening_balance = { UZS: 0, USD: 0 };
       const clean_history = [];
@@ -170,7 +217,7 @@ exports.getCustomers = async (req, res) => {
     });
 
     /* =====================
-       TOTALS (REAL DEBT)
+       TOTALS
     ===================== */
     const totals = {
       debt: { UZS: 0, USD: 0 },
@@ -195,6 +242,8 @@ exports.getCustomers = async (req, res) => {
     });
   }
 };
+
+
 
 
 

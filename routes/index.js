@@ -26,10 +26,12 @@ const {
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
 
+
 /**
  * AUTH
  */
-router.use("/api/customers", require("./customers.routes"));
+router.use("/customers", require("./customers.routes"));
+
 // register
 router.post("/auth/register", authController.register);
 
@@ -64,7 +66,7 @@ router.post(
   "/warehouses/create",
   rAuth,
   rRole("ADMIN"),
-  warehouseController.createWarehouse
+  warehouseController.createWarehouse,
 );
 
 // warehouselarni get qilish
@@ -72,7 +74,7 @@ router.get(
   "/warehouses",
   rAuth,
   rRole("ADMIN"),
-  warehouseController.getWarehouses
+  warehouseController.getWarehouses,
 );
 
 // bitta warehouseni get qilish
@@ -80,7 +82,7 @@ router.get(
   "/warehouses/:id",
   rAuth,
   rRole("ADMIN"),
-  warehouseController.getWarehouseById
+  warehouseController.getWarehouseById,
 );
 
 // warehouseni update qilish
@@ -88,7 +90,7 @@ router.put(
   "/warehouses/:id",
   rAuth,
   rRole("ADMIN"),
-  warehouseController.updateWarehouse
+  warehouseController.updateWarehouse,
 );
 
 // warehouseni delete qilish
@@ -96,7 +98,7 @@ router.delete(
   "/warehouses/:id",
   rAuth,
   rRole("ADMIN"),
-  warehouseController.deleteWarehouse
+  warehouseController.deleteWarehouse,
 );
 
 /**
@@ -109,7 +111,7 @@ router.get(
   "/suppliers/dashboard",
   rAuth,
   rRole("ADMIN"),
-  supplierController.getSuppliersDashboard
+  supplierController.getSuppliersDashboard,
 );
 
 // supplier detailni get qilish
@@ -117,7 +119,7 @@ router.get(
   "/suppliers/:id/detail",
   rAuth,
   rRole("ADMIN"),
-  supplierController.getSupplierDetail
+  supplierController.getSupplierDetail,
 );
 
 // supplier yaratish
@@ -125,7 +127,7 @@ router.post(
   "/suppliers/create",
   rAuth,
   rRole("ADMIN"),
-  supplierController.createSupplier
+  supplierController.createSupplier,
 );
 
 // supplierlarni get qilish
@@ -133,7 +135,7 @@ router.get(
   "/suppliers",
   rAuth,
   rRole("ADMIN"),
-  supplierController.getSuppliers
+  supplierController.getSuppliers,
 );
 
 // bitta supplierni get qilish
@@ -141,7 +143,7 @@ router.get(
   "/suppliers/:id",
   rAuth,
   rRole("ADMIN"),
-  supplierController.getSupplierById
+  supplierController.getSupplierById,
 );
 
 // supplierni update qilish
@@ -149,7 +151,7 @@ router.put(
   "/suppliers/:id",
   rAuth,
   rRole("ADMIN"),
-  supplierController.updateSupplier
+  supplierController.updateSupplier,
 );
 
 // supplierni delete qilish
@@ -157,7 +159,7 @@ router.delete(
   "/suppliers/:id",
   rAuth,
   rRole("ADMIN"),
-  supplierController.deleteSupplier
+  supplierController.deleteSupplier,
 );
 
 // supplier qarzidan to'lov qilish
@@ -165,33 +167,29 @@ router.post(
   "/suppliers/:id/pay",
   rAuth,
   rRole("ADMIN"),
-  supplierController.paySupplierDebt
+  supplierController.paySupplierDebt,
 );
 
 router.post(
   "/suppliers/:id/balance",
   rAuth,
   rRole("ADMIN"),
-  supplierController.updateSupplierBalance
+  supplierController.updateSupplierBalance,
 );
 
 router.get(
   "/suppliers/:id/purchases",
   rAuth,
   rRole("ADMIN"),
-  supplierController.getSupplierPurchases
+  supplierController.getSupplierPurchases,
 );
 
 router.get(
   "/suppliers/:id/timeline",
   rAuth,
   rRole("ADMIN"),
-  supplierController.getSupplierTimeline
+  supplierController.getSupplierTimeline,
 );
-
-
-
-
 
 /**
  * PRODUCTS (ADMIN only)
@@ -203,15 +201,15 @@ router.post(
   rAuth,
   rRole("ADMIN"),
   uploadProductImages.array("images", 5),
-  productController.createProduct
+  productController.createProduct,
 );
 
 // productlarni get qilish
 router.get(
   "/products",
-  rAuth,
-  rRole("ADMIN", "CASHIER", "AGENT"),
-  productController.getProducts
+  // rAuth,
+  // rRole("ADMIN", "CASHIER", "AGENT"),
+  productController.getProducts,
 );
 
 // bitta productni get qilish
@@ -219,7 +217,7 @@ router.get(
   "/products/:id",
   rAuth,
   rRole("ADMIN"),
-  productController.getProductById
+  productController.getProductById,
 );
 
 // productni update qilish
@@ -228,7 +226,7 @@ router.put(
   rAuth,
   rRole("ADMIN"),
   uploadProductImages.single("image"), // OK
-  productController.updateProduct
+  productController.updateProduct,
 );
 
 router.put(
@@ -236,7 +234,7 @@ router.put(
   rAuth,
   rRole("ADMIN"),
   uploadProductImages.single("image"),
-  productController.updateProduct
+  productController.updateProduct,
 );
 
 // purchase (kirim) yaratish
@@ -246,27 +244,27 @@ router.post(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   uploadProductImages.any(), // 🔥 HAMMA FILE FIELD QABUL QILINADI
-  purchaseController.createPurchase
+  purchaseController.createPurchase,
 );
 router.get(
   "/purchases",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  purchaseController.getPurchases
+  purchaseController.getPurchases,
 );
 router.post(
   "/products/:id/image",
   rAuth,
   rRole("ADMIN", "CASHIER"),
   uploadProductImages.single("image"),
-  purchaseController.addProductImage
+  purchaseController.addProductImage,
 );
 
 router.delete(
   "/purchases/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  purchaseController.deletePurchase
+  purchaseController.deletePurchase,
 );
 /**
  * CUSTOMERS (HOZMAKLAR)
@@ -277,7 +275,7 @@ router.post(
   "/customers/create",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  customerController.createCustomer
+  customerController.createCustomer,
 );
 
 // customerlarni get qilish
@@ -285,15 +283,14 @@ router.get(
   "/customers",
   rAuth,
   rRole("ADMIN", "AGENT", "CASHIER"),
-  customerController.getCustomers
+  customerController.getCustomers,
 );
 
 // bitta customer detail + summary
 router.get(
   "/customers/:id",
-  rAuth,
-  rRole("ADMIN", "CASHIER"),
-  customerController.getCustomerById
+ 
+  customerController.getCustomerById,
 );
 
 // customer update qilish
@@ -301,7 +298,7 @@ router.put(
   "/customers/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  customerController.updateCustomer
+  customerController.updateCustomer,
 );
 
 // customer delete qilish (soft delete) (ADMIN only)
@@ -309,7 +306,7 @@ router.delete(
   "/customers/:id",
   rAuth,
   rRole("ADMIN"),
-  customerController.deleteCustomer
+  customerController.deleteCustomer,
 );
 
 // customer sales history
@@ -317,7 +314,7 @@ router.get(
   "/customers/:id/sales",
   rAuth,
   rRole("ADMIN", "AGENT", "CASHIER"),
-  customerController.getCustomerSales
+  customerController.getCustomerSales,
 );
 
 // customer statement (kunma-kun hisobot)
@@ -325,34 +322,33 @@ router.get(
   "/customers/:id/statement",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  customerController.getCustomerStatement
+  customerController.getCustomerStatement,
 );
 // customer summary (to‘liq tarix)
 router.get(
   "/customers/:id/summary",
-  rAuth,
-  rRole("ADMIN", "CASHIER"),
-  customerController.getCustomerSummary
+  // rAuth,
+  // rRole("ADMIN", "CASHIER"),
+  customerController.getCustomerSummary,
 );
 router.post(
   "/customers/:id/pay",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  customerController.payCustomerDebt
+  customerController.payCustomerDebt,
 );
 router.get(
   "/customers/:id/debt-sales",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  customerController.getCustomerDebtSales
+  customerController.getCustomerDebtSales,
 );
-
 
 router.get(
   "/customers/:id/timeline",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  customerController.getCustomerTimeline
+  customerController.getCustomerTimeline,
 );
 /**
  * SALES (SOTUV)
@@ -363,7 +359,7 @@ router.post(
   "/sales/create",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  salesController.createSale
+  salesController.createSale,
 );
 
 // salelarni get qilish
@@ -371,7 +367,7 @@ router.get(
   "/sales",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  salesController.getSales
+  salesController.getSales,
 );
 
 // bitta saleni get qilish
@@ -387,13 +383,13 @@ router.post(
   "/sales/:id/cancel",
   rAuth,
   rRole("ADMIN"),
-  salesController.cancelSale
+  salesController.cancelSale,
 );
 router.delete(
   "/sales/:id",
   rAuth,
   rRole("AGENT", "ADMIN", "CASHIER"),
-  salesController.deleteSale
+  salesController.deleteSale,
 );
 
 /**
@@ -404,28 +400,28 @@ router.post(
   "/agent/orders",
   rAuth,
   rRole("AGENT", "ADMIN", "CASHIER"),
-  agentOrderController.createAgentOrder
+  agentOrderController.createAgentOrder,
 );
 
 router.get(
   "/agents/summary",
   rAuth,
   rRole("ADMIN", "AGENT", "CASHIER"),
-  agentOrderController.getAgentsSummary
+  agentOrderController.getAgentsSummary,
 );
 
 router.get(
   "/agents/:id/orders",
   rAuth,
   rRole("ADMIN", "AGENT", "CASHIER"),
-  agentOrderController.getAgentOrders
+  agentOrderController.getAgentOrders,
 );
 
 router.get(
   "/agents/:id/customers",
   rAuth,
   rRole("ADMIN", "AGENT", "CASHIER"),
-  agentOrderController.getAgentCustomersStats
+  agentOrderController.getAgentCustomersStats,
 );
 
 /**
@@ -437,7 +433,7 @@ router.get(
   "/orders/new",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashierOrderController.getNewOrders
+  cashierOrderController.getNewOrders,
 );
 
 // zakasni tasdiqlash (ombordan qty kamayadi)
@@ -445,7 +441,7 @@ router.post(
   "/orders/:id/confirm",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashierOrderController.confirmOrder
+  cashierOrderController.confirmOrder,
 );
 
 // zakasni bekor qilish
@@ -453,28 +449,28 @@ router.post(
   "/orders/:id/cancel",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashierOrderController.cancelOrder
+  cashierOrderController.cancelOrder,
 );
 
 router.get(
   "/sales/search-by-product",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  salesController.searchSalesByProduct
+  salesController.searchSalesByProduct,
 );
 
 router.get(
   "/sales/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  salesController.getSaleById
+  salesController.getSaleById,
 );
 
 router.post(
   "/returns/create",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  returnController.createReturn
+  returnController.createReturn,
 );
 router.get("/returns", returnController.getReturns);
 
@@ -503,7 +499,7 @@ router.post(
   "/withdrawals/create",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  withdrawalController.createWithdrawal
+  withdrawalController.createWithdrawal,
 );
 
 /* =========================
@@ -525,7 +521,7 @@ router.get(
   "/withdrawals",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  withdrawalController.getWithdrawals
+  withdrawalController.getWithdrawals,
 );
 router.delete(
   "/withdrawals/:id",
@@ -538,43 +534,42 @@ router.post(
   "/cash-in",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashInController.createCashIn
+  cashInController.createCashIn,
 );
 
 router.get(
   "/cash-in/report",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashInController.getCashInReportAll
+  cashInController.getCashInReportAll,
 );
 
 router.put(
   "/cash-edit/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashInController.editCashIn
+  cashInController.editCashIn,
 );
 router.delete(
   "/cash-in/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  cashInController.deleteCashIn
+  cashInController.deleteCashIn,
 );
-
 
 // faqat ADMIN yoki OMBORCHI
 router.post(
   "/products/write-off",
   rAuth,
   rRole("ADMIN", "WAREHOUSE"),
-  createProductWriteOff
+  createProductWriteOff,
 );
 
 router.patch(
   "/sales/:saleId/adjust-item",
   rAuth,
   rRole("ADMIN", "WAREHOUSE"),
-  salesController.adjustSaleItemQty
+  salesController.adjustSaleItemQty,
 );
 
 module.exports = router;

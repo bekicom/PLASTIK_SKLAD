@@ -1,33 +1,28 @@
 const router = require("express").Router();
 const mobileAuthController = require("../controllers/mobile/mobileAuth.controller");
+const mobileOrderController = require("../controllers/mobile/mobileOrder.controller");
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
 const { rMobileAuth } = require("../middlewares/mobileAuth.middleware");
-// 👆 agar alohida mobile token middleware bo‘lsa
 
 /* =========================
    📱 MOBILE (PUBLIC)
 ========================= */
 
-// REGISTER
-router.post("/app-customers/register", rMobileAuth, mobileAuthController.mobileRegister);
+// ✅ REGISTER
+router.post("/register", mobileAuthController.mobileRegister);
 
-// LOGIN
-router.post("/app-customers/login", mobileAuthController.login);
+// ✅ LOGIN
+router.post("/login", mobileAuthController.login);
 
 /* =========================
    📱 MOBILE (AUTH)
 ========================= */
 
-// PROFILE EDIT (name, phone, address)
-// 🔧 ADMIN / CASHIER → EDIT CUSTOMER BY ID
-router.put(
-  "/customers/:id",
-  rAuth,
-  rRole("ADMIN", "CASHIER"),
-  rMobileAuth,
-  mobileAuthController.updateCustomerById
-);
+// 📦 MOBILE → PRODUCTS
+router.post("/orders", rMobileAuth, mobileOrderController.createMobileOrder);
+router.get("/products", rMobileAuth, mobileAuthController.getMobileProducts);
 
+// 📦 MOBILE → CREATE ORDER (ZAKAS)
 
 /* =========================
    🔐 ADMIN
@@ -46,7 +41,7 @@ router.delete(
   "/customers/:id",
   rAuth,
   rRole("ADMIN"),
-  mobileAuthController.deleteCustomerById
+  mobileAuthController.deleteCustomerById,
 );
 
 module.exports = router;
