@@ -174,11 +174,29 @@ exports.getPurchases = async (req, res) => {
       filter.status = status;
     }
 
-    // 🔥 SANA FILTER (purchase_date BO‘YICHA)
+    // 🔥 SANA FILTER (purchase_date BO'YICHA)
+    // FAQAT 2026-01-27 DAN BOSHLAB
+    const minDate = new Date(Date.UTC(2026, 0, 27, 0, 0, 0));
+
     if (from || to) {
       filter.purchase_date = {};
-      if (from) filter.purchase_date.$gte = new Date(from);
-      if (to) filter.purchase_date.$lte = new Date(to);
+
+      // Agar 'from' berilgan bo'lsa, uni minDate bilan solishtiramiz
+      if (from) {
+        const fromDate = new Date(from);
+        // Kattaroq sanani olamiz (from va minDate orasidan)
+        filter.purchase_date.$gte = fromDate > minDate ? fromDate : minDate;
+      } else {
+        // Agar 'from' berilmagan bo'lsa, faqat minDate dan boshlaymiz
+        filter.purchase_date.$gte = minDate;
+      }
+
+      if (to) {
+        filter.purchase_date.$lte = new Date(to);
+      }
+    } else {
+      // Agar hech qanday sana berilmagan bo'lsa, faqat minDate dan keyingilarni olamiz
+      filter.purchase_date = { $gte: minDate };
     }
 
     const purchases = await Purchase.find(filter)
@@ -192,9 +210,11 @@ exports.getPurchases = async (req, res) => {
       data: purchases,
     });
   } catch (err) {
+    console.error("getPurchases error:", err);
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
+      error: err.message,
     });
   }
 };

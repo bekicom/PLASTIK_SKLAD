@@ -592,28 +592,37 @@ exports.getSupplierPurchases = async (req, res) => {
     const { id } = req.params;
 
     if (!mongoose.isValidObjectId(id)) {
-      return res
-        .status(400)
-        .json({ ok: false, message: "supplier id noto‘g‘ri" });
+      return res.status(400).json({
+        ok: false,
+        message: "supplier id noto‘g‘ri",
+      });
     }
 
-    const purchases = await Purchase.find({
-      supplier_id: new mongoose.Types.ObjectId(id),
+    const supplierId = new mongoose.Types.ObjectId(id);
 
-      // 🔥 FAQAT QARZLI PARTIYALAR
+    // 🔥 FAQAT 2026-01-27 DAN BOSHLAB
+    const fromDate = new Date(Date.UTC(2026, 0, 27, 0, 0, 0));
+
+    const purchases = await Purchase.find({
+      supplier_id: supplierId, // 🔒 NULL LAR O‘TMAYDI
+      purchase_date: { $gte: fromDate },
+
       status: { $ne: "PAID" },
       $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
     })
-      .sort({ createdAt: -1 })
-      .select("batch_no totals paid remaining status createdAt")
+      .sort({ purchase_date: -1 })
+      .select(
+        "supplier_id batch_no purchase_date totals paid remaining status items createdAt",
+      )
       .lean();
 
     return res.json({
       ok: true,
-      total: purchases.length,
-      purchases,
+      count: purchases.length,
+      data: purchases,
     });
   } catch (error) {
+    console.error("getSupplierPurchases error:", error);
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
@@ -621,6 +630,9 @@ exports.getSupplierPurchases = async (req, res) => {
     });
   }
 };
+
+
+
 
 
 exports.updateSupplierBalance = async (req, res) => {
