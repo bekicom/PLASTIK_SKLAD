@@ -1,5 +1,8 @@
 const mongoose = require("mongoose");
 
+/* =========================
+   ORDER ITEM
+========================= */
 const OrderItemSchema = new mongoose.Schema(
   {
     product_id: {
@@ -8,7 +11,6 @@ const OrderItemSchema = new mongoose.Schema(
       required: true,
     },
 
-    // 🔒 PRODUCT SNAPSHOT (TARIX UCHUN)
     product_snapshot: {
       name: { type: String, required: true, trim: true },
       model: { type: String, default: null, trim: true },
@@ -45,33 +47,32 @@ const OrderItemSchema = new mongoose.Schema(
   { _id: false },
 );
 
+/* =========================
+   ORDER
+========================= */
 const OrderSchema = new mongoose.Schema(
   {
     /* =========================
-       ORDER TYPE & SOURCE
+       SOURCE (QAYERDAN KELGAN)
     ========================= */
-    type: {
-      type: String,
-      enum: ["CUSTOMER_ORDER"],
-      default: "CUSTOMER_ORDER",
-      index: true,
-    },
-
     source: {
       type: String,
-      enum: ["MOBILE", "ADMIN", "WEB"],
-      default: "MOBILE",
+      enum: ["MOBILE", "AGENT", "ADMIN"],
+      required: true,
       index: true,
     },
 
     /* =========================
-       WHO
+       RELATIONS
     ========================= */
     agent_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      required: function () {
+        return this.source === "AGENT";
+      },
       index: true,
+      default: null,
     },
 
     customer_id: {
@@ -86,20 +87,18 @@ const OrderSchema = new mongoose.Schema(
     ========================= */
     items: {
       type: [OrderItemSchema],
-      default: [],
+      validate: {
+        validator: (v) => Array.isArray(v) && v.length > 0,
+        message: "Order items bo'sh bo'lishi mumkin emas",
+      },
     },
 
     /* =========================
-       TOTALS
+       TOTALS (AUTO CALCULATED)
+       ⚠️ UZS va USD ALOHIDA!
     ========================= */
-    total: {
-      type: Number,
-      default: 0,
-      min: 0,
-    },
-
-    total_uzs: { type: Number, default: 0, min: 0 },
-    total_usd: { type: Number, default: 0, min: 0 },
+    total_uzs: { type: Number, default: 0, min: 0, index: true },
+    total_usd: { type: Number, default: 0, min: 0, index: true },
 
     /* =========================
        STATUS FLOW
@@ -112,7 +111,7 @@ const OrderSchema = new mongoose.Schema(
     },
 
     /* =========================
-       SALE LINK (ADMIN CONFIRM)
+       SALE LINK (CONFIRM qilingandan keyin)
     ========================= */
     sale_id: {
       type: mongoose.Schema.Types.ObjectId,
@@ -128,38 +127,65 @@ const OrderSchema = new mongoose.Schema(
       type: String,
       trim: true,
       maxlength: 500,
+      default: "",
     },
 
     /* =========================
-       CONFIRM / CANCEL META
+       CONFIRM META
     ========================= */
-    confirmedAt: Date,
+    confirmedAt: { type: Date, default: null },
     confirmedBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+      default: null,
     },
 
-    canceledAt: Date,
+    /* =========================
+       CANCEL META
+    ========================= */
+    canceledAt: { type: Date, default: null },
     canceledBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+      default: null,
     },
 
     cancelReason: {
       type: String,
       trim: true,
       maxlength: 300,
+      default: "",
     },
   },
   { timestamps: true },
 );
 
 /* =========================
-   INDEXES
+   PRE SAVE → TOTALS AUTO
+   ✅ UZS va USD ALOHIDA HISOBLANADI
+========================= */
+OrderSchema.pre("save", function (next) {
+  let uzs = 0;
+  let usd = 0;
+
+  for (const it of this.items || []) {
+    if (it.currency_snapshot === "UZS") uzs += it.subtotal;
+    if (it.currency_snapshot === "USD") usd += it.subtotal;
+  }
+
+  this.total_uzs = uzs;
+  this.total_usd = usd;
+
+  
+});
+
+/* =========================
+   INDEXES (PERFORMANCE)
 ========================= */
 OrderSchema.index({ createdAt: -1 });
 OrderSchema.index({ agent_id: 1, createdAt: -1 });
 OrderSchema.index({ customer_id: 1, createdAt: -1 });
 OrderSchema.index({ status: 1, source: 1 });
+OrderSchema.index({ sale_id: 1 });
 
 module.exports = mongoose.model("Order", OrderSchema);

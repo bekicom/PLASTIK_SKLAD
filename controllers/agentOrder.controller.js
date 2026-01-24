@@ -4,13 +4,13 @@ const Product = require("../modules/products/Product");
 const Customer = require("../modules/Customer/Customer");
 const User = require("../modules/Users/User");
 
-
 /* =======================
    HELPERS
 ======================= */
 function getUserId(req) {
   return req.user?.id || req.user?._id;
 }
+
 function parseDate(d, endOfDay = false) {
   if (!d) return null;
   const dt = new Date(d);
@@ -41,7 +41,7 @@ exports.createAgentOrder = async (req, res) => {
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         ok: false,
-        message: "items bo‘sh bo‘lishi mumkin emas",
+        message: "items bo'sh bo'lishi mumkin emas",
       });
     }
 
@@ -136,8 +136,10 @@ exports.createAgentOrder = async (req, res) => {
 
     /* =======================
        ORDER CREATE
+       ✅ source: "AGENT" QO'SHILDI
     ======================= */
     const order = await Order.create({
+      source: "AGENT", // ✅ MUHIM!
       agent_id: agentId,
       customer_id: customer._id,
       items: orderItems,
@@ -148,11 +150,8 @@ exports.createAgentOrder = async (req, res) => {
     });
 
     /* =======================
-       🔔 SOCKET EMIT (MUHIM!)
+       🔔 SOCKET EMIT
     ======================= */
-    // =======================
-    // 🔔 SOCKET UCHUN TO‘LIQ ORDER
-    // =======================
     if (req.io) {
       const fullOrder = await Order.findById(order._id)
         .populate("agent_id", "name phone login")
@@ -160,8 +159,13 @@ exports.createAgentOrder = async (req, res) => {
         .lean();
 
       req.io.to("cashiers").emit("agent:new-order", {
-        ...fullOrder,
-        total: (fullOrder.total_uzs || 0) + (fullOrder.total_usd || 0),
+        order: {
+          ...fullOrder,
+          totals: {
+            UZS: fullOrder.total_uzs || 0,
+            USD: fullOrder.total_usd || 0,
+          },
+        },
       });
     }
 
@@ -182,7 +186,6 @@ exports.createAgentOrder = async (req, res) => {
     });
   }
 };
-
 
 exports.getAgentsSummary = async (req, res) => {
   try {
@@ -314,7 +317,6 @@ exports.getAgentsSummary = async (req, res) => {
     });
   }
 };
-
 
 exports.getAgentOrders = async (req, res) => {
   try {

@@ -2,70 +2,9 @@ const mongoose = require("mongoose");
 const Order = require("../../modules/orders/Order");
 const Product = require("../../modules/products/Product");
 
-/* =======================
-   GET ORDER FULL (SOCKET)
-======================= */
-async function getOrderFull(orderId) {
-  if (!mongoose.isValidObjectId(orderId)) return null;
-
-  const order = await Order.findById(orderId)
-    .populate("agent_id", "name phone login")
-    .populate("customer_id", "name phone address note")
-    .lean();
-
-  if (!order) return null;
-
-  return {
-    _id: order._id,
-    status: order.status,
-    createdAt: order.createdAt,
-    note: order.note || null,
-    source: order.source || null,
-
-    agent: order.agent_id
-      ? {
-          _id: order.agent_id._id,
-          name: order.agent_id.name,
-          phone: order.agent_id.phone,
-          login: order.agent_id.login,
-        }
-      : null,
-
-    customer: order.customer_id
-      ? {
-          _id: order.customer_id._id,
-          name: order.customer_id.name,
-          phone: order.customer_id.phone,
-          address: order.customer_id.address,
-          note: order.customer_id.note,
-        }
-      : null,
-
-    items: (order.items || []).map((it) => ({
-      productId: it.product_id,
-      product: {
-        name: it.product_snapshot?.name,
-        model: it.product_snapshot?.model,
-        color: it.product_snapshot?.color,
-        category: it.product_snapshot?.category,
-        unit: it.product_snapshot?.unit,
-        images: it.product_snapshot?.images || [],
-      },
-      currency: it.currency_snapshot,
-      qty: Number(it.qty),
-      price: Number(it.price_snapshot),
-      subtotal: Number(it.subtotal),
-    })),
-
-    totals: {
-      UZS: Number(order.total_uzs || 0),
-      USD: Number(order.total_usd || 0),
-    },
-  };
-}
-
 /* =========================
    📱 MOBILE → CREATE ORDER
+   ✅ SOCKET FORMAT TUZATILDI
 ========================= */
 exports.createMobileOrder = async (req, res) => {
   try {
@@ -78,34 +17,51 @@ exports.createMobileOrder = async (req, res) => {
       });
     }
 
-    const { items, note } = req.body || {};
+    const { items = [], note } = req.body || {};
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({
         ok: false,
-        message: "Zakas bo‘sh bo‘lishi mumkin emas",
+        message: "Zakas bo'sh bo'lishi mumkin emas",
       });
     }
 
+    /* =========================
+       PRODUCTS (1 QUERY)
+    ========================= */
+    const productIds = items.map((i) => i.product_id);
+
+    if (productIds.some((id) => !mongoose.isValidObjectId(id))) {
+      return res.status(400).json({
+        ok: false,
+        message: "Product id noto'g'ri",
+      });
+    }
+
+    const products = await Product.find({
+      _id: { $in: productIds },
+      is_active: { $ne: false },
+    }).lean();
+
+    const productMap = new Map(products.map((p) => [String(p._id), p]));
+
     const orderItems = [];
-    let total = 0;
     let total_uzs = 0;
     let total_usd = 0;
 
+    /* =========================
+       ITEMS BUILD
+    ========================= */
     for (const it of items) {
-      if (
-        !mongoose.isValidObjectId(it.product_id) ||
-        !it.qty ||
-        Number(it.qty) <= 0
-      ) {
+      const qty = Number(it.qty);
+      if (!qty || qty <= 0) {
         return res.status(400).json({
           ok: false,
-          message: "Product yoki qty noto‘g‘ri",
+          message: "Qty noto'g'ri",
         });
       }
 
-      const product = await Product.findById(it.product_id).lean();
-
+      const product = productMap.get(String(it.product_id));
       if (!product) {
         return res.status(404).json({
           ok: false,
@@ -113,46 +69,44 @@ exports.createMobileOrder = async (req, res) => {
         });
       }
 
-      if (Number(product.qty || 0) < Number(it.qty)) {
+      if (Number(product.qty || 0) < qty) {
         return res.status(400).json({
           ok: false,
-          message: `${product.name} dan yetarli miqdor yo‘q`,
+          message: `${product.name} dan yetarli miqdor yo'q`,
         });
       }
 
       const price = Number(product.sell_price || 0);
-      const qty = Number(it.qty);
       const subtotal = price * qty;
 
-      total += subtotal;
-
-      const cur = product.warehouse_currency; // UZS | USD
-      if (cur === "UZS") total_uzs += subtotal;
-      if (cur === "USD") total_usd += subtotal;
+      if (product.warehouse_currency === "UZS") total_uzs += subtotal;
+      if (product.warehouse_currency === "USD") total_usd += subtotal;
 
       orderItems.push({
         product_id: product._id,
         product_snapshot: {
           name: product.name,
-          model: product.model || null,
-          color: product.color || null,
-          category: product.category || null,
+          model: product.model || "",
+          color: product.color || "",
+          category: product.category || "",
           unit: product.unit,
           images: product.images || [],
         },
         qty,
         price_snapshot: price,
         subtotal,
-        currency_snapshot: cur,
+        currency_snapshot: product.warehouse_currency,
       });
     }
 
+    /* =========================
+       CREATE ORDER (MOBILE)
+    ========================= */
     const order = await Order.create({
-      agent_id: customer._id, // mobil customer
+      agent_id: null,
       customer_id: customer._id,
       source: "MOBILE",
       items: orderItems,
-      total,
       total_uzs,
       total_usd,
       note: note?.trim() || "",
@@ -160,26 +114,98 @@ exports.createMobileOrder = async (req, res) => {
     });
 
     /* =========================
-       🔔 SOCKET: NEW ORDER
-       admin/kassir zakaslar bo‘limiga tushadi
+       🔔 SOCKET EMIT
+       ✅ AGENT FORMAT BILAN
     ========================= */
-    const io = req.app?.get("io");
-    if (io) {
-      const fullOrder = await getOrderFull(order._id);
-      io.to("cashiers").emit("order:new", { order: fullOrder });
+    if (req.io) {
+      // To'liq order olish (populate bilan)
+      const fullOrder = await Order.findById(order._id)
+        .populate("agent_id", "name phone login")
+        .populate("customer_id", "name phone address note")
+        .lean();
+
+      // ✅ Agent format bilan emit qilish
+      req.io.to("cashiers").emit("mobile:new-order", {
+        order: {
+          _id: fullOrder._id,
+          source: fullOrder.source,
+
+          // Agent (mobile uchun null)
+          agent_id: fullOrder.agent_id || null,
+
+          // Customer
+          customer_id: {
+            _id: fullOrder.customer_id._id,
+            name: fullOrder.customer_id.name,
+            phone: fullOrder.customer_id.phone,
+            address: fullOrder.customer_id.address,
+            note: fullOrder.customer_id.note,
+          },
+
+          // Items (agent format)
+          items: fullOrder.items.map((it) => ({
+            product_id: it.product_id,
+            product_snapshot: {
+              name: it.product_snapshot?.name,
+              model: it.product_snapshot?.model,
+              color: it.product_snapshot?.color,
+              category: it.product_snapshot?.category,
+              unit: it.product_snapshot?.unit,
+              images: it.product_snapshot?.images || [],
+            },
+            qty: it.qty,
+            price_snapshot: it.price_snapshot,
+            subtotal: it.subtotal,
+            currency_snapshot: it.currency_snapshot,
+          })),
+
+          // Totals
+          total_uzs: fullOrder.total_uzs || 0,
+          total_usd: fullOrder.total_usd || 0,
+
+          // Status
+          status: fullOrder.status,
+          sale_id: fullOrder.sale_id || null,
+          note: fullOrder.note || "",
+
+          // Timestamps
+          confirmedAt: fullOrder.confirmedAt || null,
+          confirmedBy: fullOrder.confirmedBy || null,
+          canceledAt: fullOrder.canceledAt || null,
+          canceledBy: fullOrder.canceledBy || null,
+          cancelReason: fullOrder.cancelReason || "",
+          createdAt: fullOrder.createdAt,
+          updatedAt: fullOrder.updatedAt,
+
+          __v: fullOrder.__v,
+
+          // Qo'shimcha (agar kerak bo'lsa)
+          totals: {
+            UZS: fullOrder.total_uzs || 0,
+            USD: fullOrder.total_usd || 0,
+          },
+        },
+      });
+
+      console.log("✅ Mobile order socket emitted:", order._id);
+    } else {
+      console.warn("⚠️ req.io mavjud emas!");
     }
 
     return res.status(201).json({
       ok: true,
-      message: "Zakas qabul qilindi",
-      order_id: order._id,
-      status: order.status,
+      message: "Mobile zakas qabul qilindi",
+      order: {
+        _id: order._id,
+        status: order.status,
+        totals: { UZS: total_uzs, USD: total_usd },
+      },
     });
   } catch (error) {
-    console.error("createMobileOrder error:", error);
+    console.error("❌ createMobileOrder error:", error);
     return res.status(500).json({
       ok: false,
-      message: "Zakas yaratishda xatolik",
+      message: "Mobile zakas yaratishda xatolik",
       error: error.message,
     });
   }
