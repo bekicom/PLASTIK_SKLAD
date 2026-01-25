@@ -154,11 +154,13 @@ exports.getCashInReportAll = async (req, res) => {
 
     /* =========================
        📆 DATE RANGE
-       agar from/to YO‘Q bo‘lsa → HAMMASI
+       agar from/to YO'Q bo'lsa → 2025-yil Dekabr 1-dan
     ========================= */
+    const defaultStartDate = new Date("2025-12-01T00:00:00.000Z");
+
     const fromDate = from
       ? new Date(new Date(from).setHours(0, 0, 0, 0))
-      : null;
+      : defaultStartDate;
 
     const toDate = to ? new Date(new Date(to).setHours(23, 59, 59, 999)) : null;
 
@@ -166,24 +168,19 @@ exports.getCashInReportAll = async (req, res) => {
        🔥 ASOSIY MATCH
        doim paymentDate ustun
     ========================= */
-    const match = {};
-
-    if (fromDate || toDate) {
-      match.$expr = {
+    const match = {
+      $expr: {
         $and: [
-          ...(fromDate
-            ? [
-                {
-                  $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, fromDate],
-                },
-              ]
-            : []),
+          // 2025-Dekabr 1-dan katta yoki teng bo'lishi SHART
+          {
+            $gte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, fromDate],
+          },
           ...(toDate
             ? [{ $lte: [{ $ifNull: ["$paymentDate", "$createdAt"] }, toDate] }]
             : []),
         ],
-      };
-    }
+      },
+    };
 
     if (currency && ["UZS", "USD"].includes(currency)) {
       match.currency = currency;
@@ -252,7 +249,7 @@ exports.getCashInReportAll = async (req, res) => {
     return res.json({
       ok: true,
       range: {
-        from: from || "ALL",
+        from: from || "2025-12-01",
         to: to || "ALL",
       },
       summary: {

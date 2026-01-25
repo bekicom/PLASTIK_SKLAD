@@ -48,7 +48,7 @@ exports.mobileRegister = async (req, res) => {
 
       role: "MOBILE",
       status: "PENDING", // 🔒 admin tasdiqlaydi
-      registered_from: "MOBILE",
+      registered_from: "WEB",
 
       // balanslar
       balance: { UZS: 0, USD: 0 },

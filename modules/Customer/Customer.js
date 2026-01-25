@@ -22,7 +22,7 @@ const customerSchema = new mongoose.Schema(
     ===================== */
     role: {
       type: String,
-      enum: ["ADMIN", "CASHIER", "AGENT", "MOBILE"],
+      enum: ["ADMIN", "CASHIER", "AGENT", "MOBILE", "WEB"],
       default: "ADMIN", // 🔥 eski customerlar uchun
       index: true,
     },
@@ -36,7 +36,7 @@ const customerSchema = new mongoose.Schema(
 
     registered_from: {
       type: String,
-      enum: ["ADMIN", "MOBILE"],
+      enum: ["ADMIN", "MOBILE", "WEB"],
       default: "WEB",
       index: true,
     },
