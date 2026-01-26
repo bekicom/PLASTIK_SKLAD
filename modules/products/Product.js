@@ -7,6 +7,7 @@ const productSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: "Supplier",
       required: true,
+      index: true,
     },
 
     name: {
@@ -15,19 +16,22 @@ const productSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // Model (agar yo‘q bo‘lsa null bo‘ladi)
     model: {
       type: String,
-      default: "",
       trim: true,
+      default: null,
     },
+
     images: {
       type: [String],
       default: [],
     },
 
+    // 🔥 MUHIM: rang bilan ajratyapmiz
     color: {
       type: String,
-      default: "",
+      required: true,
       trim: true,
     },
 
@@ -43,11 +47,12 @@ const productSchema = new mongoose.Schema(
       required: true,
     },
 
-    // qaysi omborga kirim bo‘ladi (UZS / USD)
+    // Qaysi ombor (UZS / USD)
     warehouse_currency: {
       type: String,
       enum: ["UZS", "USD"],
       required: true,
+      index: true,
     },
 
     qty: {
@@ -68,12 +73,12 @@ const productSchema = new mongoose.Schema(
       min: 0,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 /**
- * Bir xil zavoddan kelgan bir xil product dubl bo‘lmasin
- * (supplier + name + model + color + currency)
+ * 🔒 DUBL BO‘LMASIN
+ * supplier + name + model + color + currency
  */
 productSchema.index(
   {
@@ -83,7 +88,7 @@ productSchema.index(
     color: 1,
     warehouse_currency: 1,
   },
-  { unique: true }
+  { unique: true },
 );
 
 module.exports = mongoose.model("Product", productSchema);
