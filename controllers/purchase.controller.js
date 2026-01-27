@@ -10,6 +10,9 @@ exports.createPurchase = async (req, res) => {
   try {
     const { supplier_id, batch_no, items = [], purchase_date } = req.body || {};
 
+    /* =====================
+       BASIC VALIDATION
+    ===================== */
     if (!mongoose.isValidObjectId(supplier_id) || !batch_no) {
       throw new Error("supplier_id yoki batch_no noto‘g‘ri");
     }
@@ -31,23 +34,28 @@ exports.createPurchase = async (req, res) => {
        ITEMS LOOP
     ===================== */
     for (const it of items) {
+      // autocomplete product_id yuborsa ham IGNORE
+      delete it.product_id;
+
       const name = String(it.name || "").trim();
       const model = String(it.model || "").trim() || null;
-      const color = String(it.color || "").trim();
+      const color = String(it.color || "").trim(); // 🔥 rang identity
       const category = String(it.category || "").trim();
       const unit = String(it.unit || "").trim();
       const currency = String(it.currency || "").trim();
 
       const qty = Number(it.qty);
       const buy_price = Number(it.buy_price);
-      const sell_price = Number(it.sell_price);
+      const sell_price = Number(it.sell_price || 0);
 
       if (
         !name ||
         !color ||
         !unit ||
         !["UZS", "USD"].includes(currency) ||
+        !Number.isFinite(qty) ||
         qty <= 0 ||
+        !Number.isFinite(buy_price) ||
         buy_price <= 0 ||
         sell_price < 0
       ) {
@@ -58,9 +66,8 @@ exports.createPurchase = async (req, res) => {
       totals[currency] += rowTotal;
 
       /* =====================
-         🔥 ASOSIY LOGIKA
-         AGAR HAMMASI BIR XIL → qty++
-         AKS HOLDA → YANGI PRODUCT
+         ✅ TO‘G‘RI UPSERT
+         Rang o‘zgarsa → YANGI PRODUCT
       ===================== */
       const product = await Product.findOneAndUpdate(
         {
@@ -69,13 +76,25 @@ exports.createPurchase = async (req, res) => {
           model,
           color,
           warehouse_currency: currency,
-          buy_price,
-          sell_price,
-          unit,
         },
         {
-          $set: { category },
-          $inc: { qty },
+          $setOnInsert: {
+            supplier_id,
+            name,
+            model,
+            color,
+            warehouse_currency: currency,
+            unit,
+            category,
+            images: [],
+          },
+          $set: {
+            buy_price,
+            sell_price,
+          },
+          $inc: {
+            qty,
+          },
         },
         {
           new: true,
@@ -104,11 +123,7 @@ exports.createPurchase = async (req, res) => {
        PURCHASE TOTALS
     ===================== */
     const paid = { UZS: 0, USD: 0 };
-    const remaining = {
-      UZS: totals.UZS,
-      USD: totals.USD,
-    };
-
+    const remaining = { UZS: totals.UZS, USD: totals.USD };
     const status = remaining.UZS > 0 || remaining.USD > 0 ? "DEBT" : "PAID";
 
     const [purchase] = await Purchase.create(
@@ -154,6 +169,8 @@ exports.createPurchase = async (req, res) => {
     session.endSession();
   }
 };
+
+
 
 ;
 exports.getPurchases = async (req, res) => {
