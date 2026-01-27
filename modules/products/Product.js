@@ -2,13 +2,14 @@ const mongoose = require("mongoose");
 
 const productSchema = new mongoose.Schema(
   {
-    // Qaysi zavoddan kelgan
     supplier_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Supplier",
       required: true,
       index: true,
     },
+
+    // 🔥 ARCHIVE FLAG
     isActive: {
       type: Boolean,
       default: true,
@@ -21,11 +22,10 @@ const productSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // Model (agar yo‘q bo‘lsa null bo‘ladi)
     model: {
       type: String,
-      trim: true,
       default: null,
+      trim: true,
     },
 
     images: {
@@ -33,7 +33,6 @@ const productSchema = new mongoose.Schema(
       default: [],
     },
 
-    // 🔥 MUHIM: rang bilan ajratyapmiz
     color: {
       type: String,
       required: true,
@@ -52,7 +51,6 @@ const productSchema = new mongoose.Schema(
       required: true,
     },
 
-    // Qaysi ombor (UZS / USD)
     warehouse_currency: {
       type: String,
       enum: ["UZS", "USD"],
@@ -82,8 +80,9 @@ const productSchema = new mongoose.Schema(
 );
 
 /**
- * 🔒 DUBL BO‘LMASIN
- * supplier + name + model + color + currency
+ * 🔒 UNIQUE ACTIVE PRODUCT
+ * isActive = true bo‘lganda
+ * agar shu maydonlardan bittasi o‘zgarsa → YANGI PRODUCT
  */
 productSchema.index(
   {
@@ -92,8 +91,14 @@ productSchema.index(
     model: 1,
     color: 1,
     warehouse_currency: 1,
+    buy_price: 1,
+    sell_price: 1,
+    unit: 1,
   },
-  { unique: true },
+  {
+    unique: true,
+    partialFilterExpression: { isActive: true },
+  },
 );
 
 module.exports = mongoose.model("Product", productSchema);

@@ -8,43 +8,31 @@ exports.createPurchase = async (req, res) => {
   session.startTransaction();
 
   try {
-    const {
-      supplier_id,
-      batch_no,
-      items: itemsRaw,
-      purchase_date, // 🔥 NEW
-    } = req.body || {};
+    const { supplier_id, batch_no, items = [], purchase_date } = req.body || {};
 
-    /* =====================
-       VALIDATION
-    ===================== */
     if (!mongoose.isValidObjectId(supplier_id) || !batch_no) {
       throw new Error("supplier_id yoki batch_no noto‘g‘ri");
+    }
+
+    if (!Array.isArray(items) || items.length === 0) {
+      throw new Error("Kamida 1 ta mahsulot bo‘lishi shart");
     }
 
     const supplier = await Supplier.findById(supplier_id).session(session);
     if (!supplier) throw new Error("Supplier topilmadi");
 
-    if (!Array.isArray(itemsRaw) || itemsRaw.length === 0) {
-      throw new Error("items majburiy (kamida 1 ta)");
-    }
+    const parsedDate = purchase_date ? new Date(purchase_date) : new Date();
 
-    // 🔥 SANA PARSE (ASOSIY JOY)
-    const parsedDate =
-      purchase_date && !isNaN(new Date(purchase_date))
-        ? new Date(purchase_date)
-        : new Date();
-
-    /* =====================
-       ITEMS + TOTALS
-    ===================== */
     const totals = { UZS: 0, USD: 0 };
     const purchaseItems = [];
     const affectedProducts = [];
 
-    for (const it of itemsRaw) {
+    /* =====================
+       ITEMS LOOP
+    ===================== */
+    for (const it of items) {
       const name = String(it.name || "").trim();
-      const model = String(it.model || "").trim();
+      const model = String(it.model || "").trim() || null;
       const color = String(it.color || "").trim();
       const category = String(it.category || "").trim();
       const unit = String(it.unit || "").trim();
@@ -52,23 +40,28 @@ exports.createPurchase = async (req, res) => {
 
       const qty = Number(it.qty);
       const buy_price = Number(it.buy_price);
-      const sell_price = Number(it.sell_price || 0);
+      const sell_price = Number(it.sell_price);
 
       if (
         !name ||
+        !color ||
         !unit ||
         !["UZS", "USD"].includes(currency) ||
-        !Number.isFinite(qty) ||
         qty <= 0 ||
-        !Number.isFinite(buy_price) ||
-        buy_price <= 0
+        buy_price <= 0 ||
+        sell_price < 0
       ) {
-        throw new Error("Item maydonlari noto‘g‘ri");
+        throw new Error("Item ma’lumotlari noto‘g‘ri");
       }
 
       const rowTotal = qty * buy_price;
       totals[currency] += rowTotal;
 
+      /* =====================
+         🔥 ASOSIY LOGIKA
+         AGAR HAMMASI BIR XIL → qty++
+         AKS HOLDA → YANGI PRODUCT
+      ===================== */
       const product = await Product.findOneAndUpdate(
         {
           supplier_id,
@@ -76,17 +69,19 @@ exports.createPurchase = async (req, res) => {
           model,
           color,
           warehouse_currency: currency,
+          buy_price,
+          sell_price,
+          unit,
         },
         {
-          $set: {
-            category,
-            unit,
-            buy_price,
-            sell_price,
-          },
+          $set: { category },
           $inc: { qty },
         },
-        { new: true, upsert: true, session }
+        {
+          new: true,
+          upsert: true,
+          session,
+        },
       );
 
       affectedProducts.push(product);
@@ -95,6 +90,7 @@ exports.createPurchase = async (req, res) => {
         product_id: product._id,
         name,
         model,
+        color,
         unit,
         qty,
         buy_price,
@@ -105,21 +101,22 @@ exports.createPurchase = async (req, res) => {
     }
 
     /* =====================
-       TOTALS / STATUS
+       PURCHASE TOTALS
     ===================== */
     const paid = { UZS: 0, USD: 0 };
-    const remaining = { UZS: totals.UZS, USD: totals.USD };
+    const remaining = {
+      UZS: totals.UZS,
+      USD: totals.USD,
+    };
+
     const status = remaining.UZS > 0 || remaining.USD > 0 ? "DEBT" : "PAID";
 
-    /* =====================
-       CREATE PURCHASE
-    ===================== */
     const [purchase] = await Purchase.create(
       [
         {
           supplier_id,
           batch_no: String(batch_no).trim(),
-          purchase_date: parsedDate, // 🔥 NEW
+          purchase_date: parsedDate,
           totals,
           paid,
           remaining,
@@ -127,27 +124,25 @@ exports.createPurchase = async (req, res) => {
           items: purchaseItems,
         },
       ],
-      { session }
+      { session },
     );
 
     /* =====================
-       SUPPLIER BALANCE UPDATE
+       SUPPLIER BALANCE
     ===================== */
-    supplier.balance.UZS += remaining.UZS || 0;
-    supplier.balance.USD += remaining.USD || 0;
+    supplier.balance.UZS += remaining.UZS;
+    supplier.balance.USD += remaining.USD;
     await supplier.save({ session });
 
     await session.commitTransaction();
 
     return res.status(201).json({
       ok: true,
-      message: "Kirim (batch) muvaffaqiyatli saqlandi",
+      message: "Kirim muvaffaqiyatli saqlandi",
       purchase,
-      purchase_date: parsedDate,
       totals,
-      remaining,
-      products: affectedProducts,
       supplier_balance: supplier.balance,
+      products: affectedProducts,
     });
   } catch (err) {
     await session.abortTransaction();
@@ -159,6 +154,7 @@ exports.createPurchase = async (req, res) => {
     session.endSession();
   }
 };
+
 ;
 exports.getPurchases = async (req, res) => {
   try {
