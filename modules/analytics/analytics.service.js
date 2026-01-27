@@ -23,27 +23,20 @@ function buildDateMatch(from, to, field = "createdAt") {
   return m;
 }
 
-function dateMatch(from, to, field) {
-  if (!from && !to) return {};
-  return {
-    [field]: {
-      ...(from && { $gte: from }),
-      ...(to && { $lte: to }),
-    },
-  };
-}
-
 /* =====================
    OVERVIEW (DASHBOARD) - ✅ FIXED CASHFLOW
 ===================== */
 async function getOverview({ from, to, tz, warehouseId }) {
+  /* =====================
+     HELPERS
+  ===================== */
   const wid =
     warehouseId && mongoose.isValidObjectId(warehouseId)
       ? new mongoose.Types.ObjectId(warehouseId)
       : null;
 
   /* =====================
-     SALES
+     SALES (UNIQUE SALE COUNT)
   ===================== */
   const saleMatch = {
     ...buildDateMatch(from, to, "createdAt"),
@@ -103,6 +96,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
      PROFIT
   ===================== */
   const profitPipeline = [{ $match: saleMatch }, { $unwind: "$items" }];
+
   if (wid) profitPipeline.push({ $match: { "items.warehouseId": wid } });
 
   const profitAgg = await Sale.aggregate([
@@ -116,8 +110,13 @@ async function getOverview({ from, to, tz, warehouseId }) {
               { $eq: ["$items.currency", "UZS"] },
               {
                 $multiply: [
-                  { $subtract: ["$items.sell_price", "$items.buy_price"] },
-                  "$items.qty",
+                  {
+                    $subtract: [
+                      { $ifNull: ["$items.sell_price", 0] },
+                      { $ifNull: ["$items.buy_price", 0] },
+                    ],
+                  },
+                  { $ifNull: ["$items.qty", 0] },
                 ],
               },
               0,
@@ -130,8 +129,13 @@ async function getOverview({ from, to, tz, warehouseId }) {
               { $eq: ["$items.currency", "USD"] },
               {
                 $multiply: [
-                  { $subtract: ["$items.sell_price", "$items.buy_price"] },
-                  "$items.qty",
+                  {
+                    $subtract: [
+                      { $ifNull: ["$items.sell_price", 0] },
+                      { $ifNull: ["$items.buy_price", 0] },
+                    ],
+                  },
+                  { $ifNull: ["$items.qty", 0] },
                 ],
               },
               0,
@@ -140,6 +144,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
         },
       },
     },
+    { $project: { _id: 0 } },
   ]);
 
   const profit = profitAgg[0] || { UZS: 0, USD: 0 };
@@ -167,57 +172,102 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   for (const e of expensesAgg) {
-    const { currency, method } = e._id;
-    expenses[currency].total += e.total;
-    expenses[currency].count += e.count;
-    expenses[currency][method] += e.total;
+    const { currency, method } = e._id || {};
+    if (!currency || !expenses[currency]) continue;
+
+    const t = Number(e.total || 0);
+    const c = Number(e.count || 0);
+
+    expenses[currency].total += t;
+    expenses[currency].count += c;
+
+    if (method === "CARD" || method === "CASH") {
+      expenses[currency][method] += t;
+    } else {
+      expenses[currency].CASH += t;
+    }
   }
 
   /* =====================
      BALANCES
+     ⚠️ IMPORTANT: Balances - bu JORIY HOLAT (current state)
+     Agar siz faqat ma'lum davrda yaratilgan yoki o'zgargan
+     mijozlarni ko'rmoqchi bo'lsangiz, sana filtri ishlatiladi.
+     
+     Aks holda, balances har doim barcha mijozlarning joriy
+     holatini ko'rsatadi, sana filterdan qat'iy nazar.
   ===================== */
   const balances = {
-    customers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
-    suppliers: { debt: { UZS: 0, USD: 0 }, prepaid: { UZS: 0, USD: 0 } },
+    customers: {
+      debt: { UZS: 0, USD: 0 },
+      prepaid: { UZS: 0, USD: 0 },
+    },
+    suppliers: {
+      debt: { UZS: 0, USD: 0 },
+      prepaid: { UZS: 0, USD: 0 },
+    },
   };
 
-  // customer debt
-  const customerDebtAgg = await Sale.aggregate([
+  // Customer filter - faqat ma'lum davrda yaratilgan mijozlar
+  const customerFilter = buildDateMatch(from, to, "createdAt");
+  const customers = await Customer.find(customerFilter, { balance: 1 }).lean();
+
+  for (const c of customers) {
+    const bu = Number(c.balance?.UZS || 0);
+    const bd = Number(c.balance?.USD || 0);
+
+    if (bu > 0) balances.customers.debt.UZS += bu;
+    else if (bu < 0) balances.customers.prepaid.UZS += Math.abs(bu);
+
+    if (bd > 0) balances.customers.debt.USD += bd;
+    else if (bd < 0) balances.customers.prepaid.USD += Math.abs(bd);
+  }
+
+  // Supplier filter - faqat ma'lum davrda yaratilgan yetkazib beruvchilar
+  const supplierPipeline = [];
+  const supplierDateMatch = buildDateMatch(from, to, "createdAt");
+
+  if (Object.keys(supplierDateMatch).length > 0) {
+    supplierPipeline.push({ $match: supplierDateMatch });
+  }
+
+  supplierPipeline.push(
     {
-      $match: {
-        ...dateMatch(from, to, "createdAt"),
-        status: "COMPLETED",
+      $project: {
+        debtUZS: { $cond: [{ $gt: ["$balance.UZS", 0] }, "$balance.UZS", 0] },
+        debtUSD: { $cond: [{ $gt: ["$balance.USD", 0] }, "$balance.USD", 0] },
+        prepaidUZS: {
+          $cond: [{ $lt: ["$balance.UZS", 0] }, { $abs: "$balance.UZS" }, 0],
+        },
+        prepaidUSD: {
+          $cond: [{ $lt: ["$balance.USD", 0] }, { $abs: "$balance.USD" }, 0],
+        },
       },
     },
     {
       $group: {
         _id: null,
-        UZS: { $sum: "$currencyTotals.UZS.remaining" },
-        USD: { $sum: "$currencyTotals.USD.remaining" },
+        debtUZS: { $sum: "$debtUZS" },
+        debtUSD: { $sum: "$debtUSD" },
+        prepaidUZS: { $sum: "$prepaidUZS" },
+        prepaidUSD: { $sum: "$prepaidUSD" },
       },
     },
-  ]);
+  );
 
-  balances.customers.debt.UZS = customerDebtAgg[0]?.UZS || 0;
-  balances.customers.debt.USD = customerDebtAgg[0]?.USD || 0;
+  const supplierBalanceAgg = await Supplier.aggregate(supplierPipeline);
 
-  // supplier debt
-  const supplierDebtAgg = await Purchase.aggregate([
-    { $match: dateMatch(from, to, "purchase_date") },
-    {
-      $group: {
-        _id: null,
-        UZS: { $sum: "$remaining.UZS" },
-        USD: { $sum: "$remaining.USD" },
-      },
-    },
-  ]);
-
-  balances.suppliers.debt.UZS = supplierDebtAgg[0]?.UZS || 0;
-  balances.suppliers.debt.USD = supplierDebtAgg[0]?.USD || 0;
+  balances.suppliers.debt.UZS = Number(supplierBalanceAgg[0]?.debtUZS || 0);
+  balances.suppliers.debt.USD = Number(supplierBalanceAgg[0]?.debtUSD || 0);
+  balances.suppliers.prepaid.UZS = Number(
+    supplierBalanceAgg[0]?.prepaidUZS || 0,
+  );
+  balances.suppliers.prepaid.USD = Number(
+    supplierBalanceAgg[0]?.prepaidUSD || 0,
+  );
 
   /* =====================
-     CASH-IN
+     CASH-IN SUMMARY
   ===================== */
   const cashInAgg = await CashIn.aggregate([
     {
@@ -239,17 +289,34 @@ async function getOverview({ from, to, tz, warehouseId }) {
   ]);
 
   const cash_in_summary = {
-    customers: { UZS: { CASH: 0, CARD: 0 }, USD: { CASH: 0, CARD: 0 } },
-    suppliers: { UZS: { CASH: 0, CARD: 0 }, USD: { CASH: 0, CARD: 0 } },
+    customers: {
+      UZS: { CASH: 0, CARD: 0 },
+      USD: { CASH: 0, CARD: 0 },
+    },
+    suppliers: {
+      UZS: { CASH: 0, CARD: 0 },
+      USD: { CASH: 0, CARD: 0 },
+    },
   };
 
   for (const r of cashInAgg) {
-    cash_in_summary[r._id.target.toLowerCase()][r._id.currency][r._id.method] +=
-      r.total;
+    const { target, currency, method } = r._id || {};
+    const total = Number(r.total || 0);
+    if (!target || !currency || !method) continue;
+
+    if (target === "CUSTOMER" && cash_in_summary.customers[currency]) {
+      if (method === "CASH" || method === "CARD")
+        cash_in_summary.customers[currency][method] += total;
+    }
+
+    if (target === "SUPPLIER" && cash_in_summary.suppliers[currency]) {
+      if (method === "CASH" || method === "CARD")
+        cash_in_summary.suppliers[currency][method] += total;
+    }
   }
 
   /* =====================
-     WITHDRAWALS
+     INVESTOR WITHDRAWALS
   ===================== */
   const withdrawalAgg = await Withdrawal.aggregate([
     {
@@ -275,12 +342,22 @@ async function getOverview({ from, to, tz, warehouseId }) {
   };
 
   for (const w of withdrawalAgg) {
-    investor_withdrawals[w._id.currency][w._id.method] += w.total;
-    investor_withdrawals[w._id.currency].total += w.total;
+    const { currency, method } = w._id || {};
+    const total = Number(w.total || 0);
+    if (!currency || !investor_withdrawals[currency]) continue;
+
+    if (method === "CASH" || method === "CARD") {
+      investor_withdrawals[currency][method] += total;
+      investor_withdrawals[currency].total += total;
+    } else {
+      investor_withdrawals[currency].CASH += total;
+      investor_withdrawals[currency].total += total;
+    }
   }
 
   /* =====================
-     CASHFLOW
+     CASHFLOW (ESKI FORMAT + FIX)
+     ✅ supplier cash-out endi minus bo'ladi
   ===================== */
   const supplierOut = {
     UZS:
@@ -296,38 +373,35 @@ async function getOverview({ from, to, tz, warehouseId }) {
       cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
   };
 
+  const cashflowTotal = {
+    UZS:
+      customerIn.UZS -
+      supplierOut.UZS -
+      expenses.UZS.total -
+      investor_withdrawals.UZS.total,
+
+    USD:
+      customerIn.USD -
+      supplierOut.USD -
+      expenses.USD.total -
+      investor_withdrawals.USD.total,
+  };
+
   return {
     sales,
     profit: {
-      gross: {
-        UZS: profit.UZS,
-        USD: profit.USD,
-      },
+      gross: profit,
       net: {
         UZS: profit.UZS - expenses.UZS.total,
         USD: profit.USD - expenses.USD.total,
       },
     },
-
     expenses,
     balances,
     cash_in_summary,
     investor_withdrawals,
     cashflow: {
-      total: {
-        UZS:
-          customerIn.UZS -
-          supplierOut.UZS -
-          expenses.UZS.total -
-          investor_withdrawals.UZS.total,
-
-        USD:
-          customerIn.USD -
-          supplierOut.USD -
-          expenses.USD.total -
-          investor_withdrawals.USD.total,
-      },
-
+      total: cashflowTotal,
       by_method: {
         UZS: {
           CASH:
@@ -335,21 +409,18 @@ async function getOverview({ from, to, tz, warehouseId }) {
             cash_in_summary.suppliers.UZS.CASH -
             expenses.UZS.CASH -
             investor_withdrawals.UZS.CASH,
-
           CARD:
             cash_in_summary.customers.UZS.CARD -
             cash_in_summary.suppliers.UZS.CARD -
             expenses.UZS.CARD -
             investor_withdrawals.UZS.CARD,
         },
-
         USD: {
           CASH:
             cash_in_summary.customers.USD.CASH -
             cash_in_summary.suppliers.USD.CASH -
             expenses.USD.CASH -
             investor_withdrawals.USD.CASH,
-
           CARD:
             cash_in_summary.customers.USD.CARD -
             cash_in_summary.suppliers.USD.CARD -
@@ -357,20 +428,27 @@ async function getOverview({ from, to, tz, warehouseId }) {
             investor_withdrawals.USD.CARD,
         },
       },
-
       breakdown: {
-        expenses, // 👈 aynan shu ko‘rinishda qoladi
+        // ✅ eski breakdown joyida qoldi
+        expenses,
+
+        // ✅ qo'shimcha: cashflow tushunarli bo'lsin
+        customer_in: {
+          UZS: { ...cash_in_summary.customers.UZS, total: customerIn.UZS },
+          USD: { ...cash_in_summary.customers.USD, total: customerIn.USD },
+        },
+        supplier_out: {
+          UZS: { ...cash_in_summary.suppliers.UZS, total: supplierOut.UZS },
+          USD: { ...cash_in_summary.suppliers.USD, total: supplierOut.USD },
+        },
+        investor_withdrawals,
       },
     },
   };
 }
 
-
-
-
-
 /* =====================
-   TIME SERIES
+   TIME SERIES - ✅ ALLAQACHON from/to BOR
 ===================== */
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
@@ -416,7 +494,7 @@ async function getTimeSeries({ from, to, tz, group }) {
   }
 
   const expenses = Array.from(map.values()).sort(
-    (a, b) => new Date(a.date) - new Date(b.date)
+    (a, b) => new Date(a.date) - new Date(b.date),
   );
 
   const orders = await Order.aggregate([
@@ -439,7 +517,7 @@ async function getTimeSeries({ from, to, tz, group }) {
 }
 
 /* =====================
-   TOP PRODUCTS
+   TOP PRODUCTS - ✅ ALLAQACHON from/to BOR
 ===================== */
 async function getTop({ from, to, limit = 10 }) {
   return Sale.aggregate([
@@ -454,8 +532,7 @@ async function getTop({ from, to, limit = 10 }) {
 
     {
       $group: {
-        _id: "$items.product_id",
-
+        _id: "$items.productId",
         qty: { $sum: "$items.qty" },
       },
     },
@@ -490,38 +567,88 @@ async function getTop({ from, to, limit = 10 }) {
 }
 
 /* =====================
-   STOCK
+   STOCK - ✅ PURCHASE_DATE BO'YICHA FILTER
+   
+   Ma'lum davrdagi Purchase'larga asoslanib stock hisoblanadi:
+   - Faqat shu davrdagi sotib olingan mahsulotlar
+   - Har bir mahsulot uchun jami qty
+   - Currency bo'yicha guruhlash
 ===================== */
-async function getStock() {
-  const byCurrency = await Product.aggregate([
+async function getStock({ from, to } = {}) {
+  const pipeline = [];
+
+  // Purchase_date bo'yicha filtrlash
+  if (from || to) {
+    const dateMatch = { purchase_date: {} };
+
+    if (from) {
+      dateMatch.purchase_date.$gte = from; // ✅ to'g'ridan-to'g'ri Date ob'ekti
+    }
+
+    if (to) {
+      dateMatch.purchase_date.$lte = to; // ✅ to'g'ridan-to'g'ri Date ob'ekti
+    }
+
+    pipeline.push({ $match: dateMatch });
+  }
+
+  pipeline.push(
+    // Items'larni ochish
+    { $unwind: "$items" },
+
+    // Product ma'lumotlarini olish
+    {
+      $lookup: {
+        from: "products",
+        localField: "items.product_id",
+        foreignField: "_id",
+        as: "product",
+      },
+    },
+    { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
+
+    // Currency bo'yicha guruhlash
     {
       $group: {
-        _id: "$warehouse_currency",
+        _id: "$items.currency",
 
-        sku: { $sum: 1 },
+        // Nechta turli mahsulot (unique product_id)
+        unique_products: { $addToSet: "$items.product_id" },
 
-        total_qty: { $sum: "$qty" },
+        // Jami miqdor
+        total_qty: { $sum: "$items.qty" },
 
+        // Valuatsiya (sotib olish narxi)
         valuation_buy: {
-          $sum: { $multiply: ["$qty", "$buy_price"] },
+          $sum: {
+            $multiply: ["$items.qty", "$items.buy_price"],
+          },
         },
 
+        // Valuatsiya (sotish narxi)
         valuation_sell: {
-          $sum: { $multiply: ["$qty", "$sell_price"] },
+          $sum: {
+            $multiply: ["$items.qty", "$items.sell_price"],
+          },
         },
       },
     },
+
     {
       $project: {
         _id: 0,
         currency: "$_id",
-        sku: 1,
+        sku: { $size: "$unique_products" },
         total_qty: 1,
         valuation_buy: 1,
         valuation_sell: 1,
       },
     },
-  ]);
+
+    { $sort: { currency: 1 } }
+  );
+
+  const byCurrency = await Purchase.aggregate(pipeline);
 
   return { byCurrency };
 }

@@ -106,7 +106,16 @@ exports.top = async (req, res) => {
  */
 exports.stock = async (req, res) => {
   try {
-    const data = await service.getStock();
+    const from = parseDate(req.query.from);
+    const to = parseDate(req.query.to, true);
+    const tz = req.query.tz || "Asia/Tashkent";
+
+    const data = await service.getStock({
+      from,
+      to,
+      tz,
+    });
+
     return res.json({ ok: true, data });
   } catch (e) {
     return res.status(500).json({

@@ -85,7 +85,7 @@ exports.createSale = async (req, res) => {
             balance: { UZS: 0, USD: 0 },
           },
         ],
-        { session }
+        { session },
       );
 
       finalCustomerId = created[0]._id;
@@ -106,7 +106,7 @@ exports.createSale = async (req, res) => {
       _id: { $in: productIds },
     })
       .select(
-        "_id name model color category unit images qty buy_price warehouse_currency"
+        "_id name model color category unit images qty buy_price warehouse_currency",
       )
       .session(session);
 
@@ -138,7 +138,7 @@ exports.createSale = async (req, res) => {
       await Product.updateOne(
         { _id: it.productId, qty: { $gte: it.qty } },
         { $inc: { qty: -it.qty } },
-        { session }
+        { session },
       );
     }
 
@@ -234,8 +234,8 @@ exports.createSale = async (req, res) => {
       currencyTotals[cur].grandTotal = Math.max(
         0,
         +(currencyTotals[cur].subtotal - currencyTotals[cur].discount).toFixed(
-          2
-        )
+          2,
+        ),
       );
 
       currencyTotals[cur].debtAmount = currencyTotals[cur].grandTotal;
@@ -266,29 +266,29 @@ exports.createSale = async (req, res) => {
           status: "COMPLETED",
         },
       ],
-      { session }
+      { session },
     );
 
     /* =====================
        1️⃣1️⃣ CUSTOMER BALANCE
        🔥 FAQAT BALANCE
     ===================== */
-if (finalCustomerId) {
-  const customerDoc = await Customer.findById(finalCustomerId).session(session);
+    if (finalCustomerId) {
+      const customerDoc =
+        await Customer.findById(finalCustomerId).session(session);
 
-  if (customerDoc) {
-    customerDoc.balance.UZS =
-      Number(customerDoc.balance.UZS || 0) +
-      Number(currencyTotals.UZS.debtAmount || 0);
+      if (customerDoc) {
+        customerDoc.balance.UZS =
+          Number(customerDoc.balance.UZS || 0) +
+          Number(currencyTotals.UZS.debtAmount || 0);
 
-    customerDoc.balance.USD =
-      Number(customerDoc.balance.USD || 0) +
-      Number(currencyTotals.USD.debtAmount || 0);
+        customerDoc.balance.USD =
+          Number(customerDoc.balance.USD || 0) +
+          Number(currencyTotals.USD.debtAmount || 0);
 
-    await customerDoc.save({ session });
-  }
-}
-
+        await customerDoc.save({ session });
+      }
+    }
 
     await session.commitTransaction();
 
@@ -440,8 +440,6 @@ exports.getSales = async (req, res) => {
   }
 };
 
-
-
 exports.getSaleById = async (req, res) => {
   try {
     const { id } = req.params;
@@ -493,7 +491,7 @@ exports.cancelSale = async (req, res) => {
       ===================== */
       if (sale.customerId) {
         const customer = await Customer.findById(sale.customerId).session(
-          session
+          session,
         );
 
         if (customer && sale.currencyTotals) {
@@ -574,7 +572,7 @@ exports.searchSalesByProduct = async (req, res) => {
       mongoose.isValidObjectId(req.query.warehouseId)
     ) {
       filter["items.warehouseId"] = new mongoose.Types.ObjectId(
-        req.query.warehouseId
+        req.query.warehouseId,
       );
     }
 
@@ -584,7 +582,7 @@ exports.searchSalesByProduct = async (req, res) => {
     const rows = await Sale.find(filter)
       .sort({ createdAt: -1 })
       .select(
-        "invoiceNo createdAt status customerSnapshot customerId items totals currencyTotals"
+        "invoiceNo createdAt status customerSnapshot customerId items totals currencyTotals",
       )
       .lean();
 
@@ -598,7 +596,7 @@ exports.searchSalesByProduct = async (req, res) => {
             rx.test(String(it.productSnapshot?.name || "")) &&
             safeNum(it.qty) > 0 &&
             (!req.query.warehouseId ||
-              String(it.warehouseId) === String(req.query.warehouseId))
+              String(it.warehouseId) === String(req.query.warehouseId)),
         );
 
         if (matchedItems.length === 0) return null;
@@ -661,7 +659,7 @@ exports.adjustSaleItemQty = async (req, res) => {
       throw new Error("Faqat COMPLETED sale tahrirlanadi");
 
     const itemIndex = sale.items.findIndex(
-      (it) => String(it.productId) === String(productId)
+      (it) => String(it.productId) === String(productId),
     );
     if (itemIndex === -1) throw new Error("Sale ichida bunday product yo‘q");
 
@@ -718,22 +716,22 @@ exports.adjustSaleItemQty = async (req, res) => {
 
     sale.currencyTotals.UZS.grandTotal = Math.max(
       0,
-      uzsSubtotal - (sale.currencyTotals.UZS.discount || 0)
+      uzsSubtotal - (sale.currencyTotals.UZS.discount || 0),
     );
     sale.currencyTotals.USD.grandTotal = Math.max(
       0,
-      usdSubtotal - (sale.currencyTotals.USD.discount || 0)
+      usdSubtotal - (sale.currencyTotals.USD.discount || 0),
     );
 
     sale.currencyTotals.UZS.debtAmount = Math.max(
       0,
       sale.currencyTotals.UZS.grandTotal -
-        (sale.currencyTotals.UZS.paidAmount || 0)
+        (sale.currencyTotals.UZS.paidAmount || 0),
     );
     sale.currencyTotals.USD.debtAmount = Math.max(
       0,
       sale.currencyTotals.USD.grandTotal -
-        (sale.currencyTotals.USD.paidAmount || 0)
+        (sale.currencyTotals.USD.paidAmount || 0),
     );
 
     sale.totals.subtotal = uzsSubtotal + usdSubtotal;
@@ -745,7 +743,7 @@ exports.adjustSaleItemQty = async (req, res) => {
     ===================== */
     if (sale.customerId) {
       const customer = await Customer.findById(sale.customerId).session(
-        session
+        session,
       );
 
       if (customer) {
@@ -844,47 +842,57 @@ exports.deleteSale = async (req, res) => {
     /* =====================
        2️⃣ CUSTOMER BALANCE ROLLBACK
     ===================== */
-    if (sale.customerId && sale.currencyTotals) {
-      const customer = await Customer.findById(sale.customerId).session(
-        session
-      );
+   if (sale.customerId && sale.currencyTotals) {
+     const customer = await Customer.findById(sale.customerId).session(session);
 
-      if (customer) {
-        for (const cur of ["UZS", "USD"]) {
-          const debt = sale.currencyTotals[cur]?.debtAmount || 0;
-          const paid = sale.currencyTotals[cur]?.paidAmount || 0;
+     if (customer) {
+       for (const cur of ["UZS", "USD"]) {
+         const debt = Number(sale.currencyTotals[cur]?.debtAmount || 0);
+         const paid = Number(sale.currencyTotals[cur]?.paidAmount || 0);
 
-          // qarzni qaytarish
-          if (debt > 0) {
-            customer.balance[cur] -= debt;
-            if (customer.balance[cur] < 0) {
-              customer.balance[cur] = 0;
-            }
-          }
+         // ❌ QARZNI BEKOR QILAMIZ (agar bo‘lsa)
+         if (debt > 0) {
+           customer.balance[cur] -= debt;
+         }
 
-          // payment bo‘lgan bo‘lsa rollback yozamiz
-          if (paid > 0) {
-            customer.payment_history.push({
-              currency: cur,
-              amount: paid,
-              direction: "ROLLBACK",
-              note: `Sale ${sale.invoiceNo} delete rollback`,
-              date: new Date(),
-            });
-          }
-        }
+         // ✅ TO‘LANGAN PUL → PREPAID BO‘LIB QOLADI
+         if (paid > 0) {
+           customer.balance[cur] -= paid; // bu minus bo‘lib qoladi (prepaid)
+         }
 
-        await customer.save({ session });
-      }
-    }
+         // tarixga yozamiz
+         if (debt > 0) {
+           customer.payment_history.push({
+             currency: cur,
+             amount: debt,
+             direction: "ROLLBACK",
+             note: `Sale ${sale.invoiceNo} debt rollback`,
+             date: new Date(),
+           });
+         }
+
+         if (paid > 0) {
+           customer.payment_history.push({
+             currency: cur,
+             amount: paid,
+             direction: "PREPAID",
+             note: `Sale ${sale.invoiceNo} prepaid after delete`,
+             date: new Date(),
+           });
+         }
+       }
+
+       await customer.save({ session });
+     }
+   }
+
 
     /* =====================
        3️⃣ SALE MARK AS DELETED
     ===================== */
     sale.status = "DELETED";
     sale.deletedAt = new Date();
-    sale.deleteReason =
-      req.body?.reason || "Xato kiritilgan sale o‘chirildi";
+    sale.deleteReason = req.body?.reason || "Xato kiritilgan sale o‘chirildi";
 
     await sale.save({ session });
 

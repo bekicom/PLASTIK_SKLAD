@@ -96,7 +96,7 @@ exports.getCustomers = async (req, res) => {
       { $match: match },
 
       /* =====================
-         DEBT = REAL BALANCE
+         REAL DEBT (BALANCE > 0)
       ===================== */
       {
         $addFields: {
@@ -164,18 +164,23 @@ exports.getCustomers = async (req, res) => {
     ]);
 
     /* =====================
-       OPENING BALANCE (FAKAT KO‘RINISH UCHUN)
+       RESPONSE CLEANUP
+       🔥 FAQAT PAYMENT KO‘RINADI
     ===================== */
-    items = items.map((c) => {
-      return {
-        ...c,
-        opening_balance: {
-          UZS: c.balance.UZS < 0 ? Math.abs(c.balance.UZS) : 0,
-          USD: c.balance.USD < 0 ? Math.abs(c.balance.USD) : 0,
-        },
-        // 🔥 payment_history o‘zgartirilmaydi
-      };
-    });
+    items = items.map((c) => ({
+      ...c,
+
+      /* === opening balance (faqat ko‘rish uchun) === */
+      opening_balance: {
+        UZS: c.balance.UZS < 0 ? Math.abs(c.balance.UZS) : 0,
+        USD: c.balance.USD < 0 ? Math.abs(c.balance.USD) : 0,
+      },
+
+      /* === PAYMENT ONLY === */
+      payment_history: Array.isArray(c.payment_history)
+        ? c.payment_history.filter((h) => h.direction === "PAYMENT")
+        : [],
+    }));
 
     /* =====================
        TOTALS
@@ -203,6 +208,7 @@ exports.getCustomers = async (req, res) => {
     });
   }
 };
+
 
 
 

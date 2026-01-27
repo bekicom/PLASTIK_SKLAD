@@ -73,7 +73,14 @@ const customerSchema = new mongoose.Schema(
 
         direction: {
           type: String,
-          enum: ["DEBT", "PAYMENT", "PREPAYMENT", "PAYMENT_CANCEL", "ROLLBACK"],
+          enum: [
+            "DEBT",
+            "PAYMENT",
+            "PREPAYMENT",
+            "PAYMENT_CANCEL",
+            "ROLLBACK",
+            "PREPAID",
+          ],
           required: true,
         },
 
