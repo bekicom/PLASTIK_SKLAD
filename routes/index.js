@@ -26,7 +26,6 @@ const {
 // Middlewares
 const { rAuth, rRole } = require("../middlewares/auth.middleware");
 
-
 /**
  * AUTH
  */
@@ -157,9 +156,9 @@ router.put(
 // supplierni delete qilish
 router.delete(
   "/suppliers/:id",
-  rAuth,
-  rRole("ADMIN"),
-  supplierController.deleteSupplier,
+  // rAuth,
+  // rRole("ADMIN", "CASHIER"),
+  supplierController.deleteSupplierHard,
 );
 
 // supplier qarzidan to'lov qilish
@@ -229,6 +228,14 @@ router.put(
   productController.updateProduct,
 );
 
+router.delete(
+  "/products/:id",
+  rAuth,
+  rRole("ADMIN","CASHIER"),
+  productController.deleteProduct,
+);
+
+
 router.put(
   "/products/:id",
   rAuth,
@@ -289,7 +296,7 @@ router.get(
 // bitta customer detail + summary
 router.get(
   "/customers/:id",
- 
+
   customerController.getCustomerById,
 );
 

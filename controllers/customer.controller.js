@@ -80,7 +80,6 @@ exports.getCustomers = async (req, res) => {
     if (req.query.isActive === "true") match.isActive = true;
     if (req.query.isActive === "false") match.isActive = false;
 
-    // 🔥 MODEL STATUS (PENDING, ACTIVE, BLOCKED, ...)
     if (
       req.query.status &&
       ["PENDING", "ACTIVE", "BLOCKED", "REJECTED"].includes(req.query.status)
@@ -94,61 +93,32 @@ exports.getCustomers = async (req, res) => {
     }
 
     let items = await Customer.aggregate([
-      /* =====================
-         CUSTOMER FILTER
-      ===================== */
       { $match: match },
 
       /* =====================
-         SALES → FAQAT COMPLETED
-      ===================== */
-      {
-        $lookup: {
-          from: "sales",
-          let: { customerId: "$_id" },
-          pipeline: [
-            {
-              $match: {
-                $expr: {
-                  $and: [
-                    { $eq: ["$customerId", "$$customerId"] },
-                    { $eq: ["$status", "COMPLETED"] },
-                  ],
-                },
-              },
-            },
-            {
-              $project: {
-                uzsDebt: { $ifNull: ["$currencyTotals.UZS.debtAmount", 0] },
-                usdDebt: { $ifNull: ["$currencyTotals.USD.debtAmount", 0] },
-              },
-            },
-          ],
-          as: "sales",
-        },
-      },
-
-      /* =====================
-         CUSTOMER DEBT
+         DEBT = REAL BALANCE
       ===================== */
       {
         $addFields: {
           debt: {
-            UZS: { $sum: "$sales.uzsDebt" },
-            USD: { $sum: "$sales.usdDebt" },
+            UZS: { $max: ["$balance.UZS", 0] },
+            USD: { $max: ["$balance.USD", 0] },
           },
         },
       },
 
       /* =====================
-         DEBT STATUS (CALCULATED)
+         DEBT STATUS
       ===================== */
       {
         $addFields: {
           debt_status: {
             $cond: [
               {
-                $or: [{ $gt: ["$debt.UZS", 0] }, { $gt: ["$debt.USD", 0] }],
+                $or: [
+                  { $gt: ["$balance.UZS", 0] },
+                  { $gt: ["$balance.USD", 0] },
+                ],
               },
               "DEBT",
               "CLEAR",
@@ -164,7 +134,10 @@ exports.getCustomers = async (req, res) => {
         ? [
             {
               $match: {
-                $or: [{ "debt.UZS": { $gt: 0 } }, { "debt.USD": { $gt: 0 } }],
+                $or: [
+                  { "balance.UZS": { $gt: 0 } },
+                  { "balance.USD": { $gt: 0 } },
+                ],
               },
             },
           ]
@@ -174,19 +147,15 @@ exports.getCustomers = async (req, res) => {
         ? [
             {
               $match: {
-                "debt.UZS": 0,
-                "debt.USD": 0,
+                "balance.UZS": { $lte: 0 },
+                "balance.USD": { $lte: 0 },
               },
             },
           ]
         : []),
 
-      /* =====================
-         CLEAN
-      ===================== */
       {
         $project: {
-          sales: 0,
           __v: 0,
         },
       },
@@ -195,24 +164,16 @@ exports.getCustomers = async (req, res) => {
     ]);
 
     /* =====================
-       OPENING BALANCE AJRATISH
+       OPENING BALANCE (FAKAT KO‘RINISH UCHUN)
     ===================== */
     items = items.map((c) => {
-      const opening_balance = { UZS: 0, USD: 0 };
-      const clean_history = [];
-
-      for (const p of c.payment_history || []) {
-        if (String(p.note || "").includes("Boshlang‘ich")) {
-          opening_balance[p.currency] += Number(p.amount || 0);
-        } else {
-          clean_history.push(p);
-        }
-      }
-
       return {
         ...c,
-        opening_balance,
-        payment_history: clean_history,
+        opening_balance: {
+          UZS: c.balance.UZS < 0 ? Math.abs(c.balance.UZS) : 0,
+          USD: c.balance.USD < 0 ? Math.abs(c.balance.USD) : 0,
+        },
+        // 🔥 payment_history o‘zgartirilmaydi
       };
     });
 

@@ -273,17 +273,22 @@ exports.createSale = async (req, res) => {
        1️⃣1️⃣ CUSTOMER BALANCE
        🔥 FAQAT BALANCE
     ===================== */
-    if (finalCustomerId) {
-      const customerDoc = await Customer.findById(finalCustomerId).session(
-        session
-      );
+if (finalCustomerId) {
+  const customerDoc = await Customer.findById(finalCustomerId).session(session);
 
-      if (customerDoc) {
-        customerDoc.balance.UZS += currencyTotals.UZS.debtAmount;
-        customerDoc.balance.USD += currencyTotals.USD.debtAmount;
-        await customerDoc.save({ session });
-      }
-    }
+  if (customerDoc) {
+    customerDoc.balance.UZS =
+      Number(customerDoc.balance.UZS || 0) +
+      Number(currencyTotals.UZS.debtAmount || 0);
+
+    customerDoc.balance.USD =
+      Number(customerDoc.balance.USD || 0) +
+      Number(currencyTotals.USD.debtAmount || 0);
+
+    await customerDoc.save({ session });
+  }
+}
+
 
     await session.commitTransaction();
 

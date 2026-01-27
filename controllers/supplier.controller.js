@@ -3,6 +3,8 @@ const mongoose = require("mongoose");
 const Purchase = require("../modules/purchases/Purchase");
 const CashIn = require("../modules/cashIn/CashIn");
 const CUR = ["UZS", "USD"];
+const Product = require("../modules/products/Product");
+
 function parseDate(val, endOfDay = false) {
   if (!val) return null;
 
@@ -79,13 +81,7 @@ function calcPurchaseTotals(p) {
 
 exports.createSupplier = async (req, res) => {
   try {
-    const {
-      name,
-      phone,
-      address = "",
-      note = "",
-      balance = {},
-    } = req.body;
+    const { name, phone, address = "", note = "", balance = {} } = req.body;
 
     if (!name || !phone) {
       return res.status(400).json({
@@ -105,45 +101,20 @@ exports.createSupplier = async (req, res) => {
     const balUZS = Number(balance.UZS || 0);
     const balUSD = Number(balance.USD || 0);
 
-    const payment_history = [];
-
-    // 🔥 Boshlang‘ich balans tarixga yoziladi
-    if (balUZS !== 0) {
-      payment_history.push({
-        currency: "UZS",
-        amount: Math.abs(balUZS),
-        direction: balUZS > 0 ? "DEBT" : "PREPAYMENT",
-        note:
-          balUZS > 0
-            ? "Boshlang‘ich qarz (UZS)"
-            : "Boshlang‘ich avans (UZS)",
-        date: new Date(),
-      });
-    }
-
-    if (balUSD !== 0) {
-      payment_history.push({
-        currency: "USD",
-        amount: Math.abs(balUSD),
-        direction: balUSD > 0 ? "DEBT" : "PREPAYMENT",
-        note:
-          balUSD > 0
-            ? "Boshlang‘ich qarz (USD)"
-            : "Boshlang‘ich avans (USD)",
-        date: new Date(),
-      });
-    }
-
     const supplier = await Supplier.create({
       name: String(name).trim(),
       phone: String(phone).trim(),
       address: String(address).trim(),
       note: String(note).trim(),
+
+      // 🔥 FAFAQAT OPENING BALANCE
       balance: {
         UZS: balUZS,
         USD: balUSD,
       },
-      payment_history,
+
+      // 🔥 MUHIM: BOSHLANG‘ICHDA BO‘SH
+      payment_history: [],
     });
 
     return res.status(201).json({
@@ -159,6 +130,7 @@ exports.createSupplier = async (req, res) => {
     });
   }
 };
+
 
 
 exports.getSuppliers = async (req, res) => {
@@ -270,19 +242,49 @@ exports.updateSupplier = async (req, res) => {
   }
 };
 
-exports.deleteSupplier = async (req, res) => {
+exports.deleteSupplierHard = async (req, res) => {
   try {
-    const supplier = await Supplier.findByIdAndDelete(req.params.id);
-    if (!supplier)
-      return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
+    const { id } = req.params;
 
-    return res.json({ ok: true, message: "Zavod o‘chirildi" });
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "supplier id noto‘g‘ri",
+      });
+    }
+
+    // 1️⃣ ZAVOD BORLIGINI TEKSHIRAMIZ
+    const supplier = await Supplier.findById(id);
+    if (!supplier) {
+      return res.status(404).json({
+        ok: false,
+        message: "Zavod topilmadi",
+      });
+    }
+
+    // 2️⃣ SHU ZAVODGA TEGISHLI PRODUCTLARNI O‘CHIRAMIZ
+    await Product.deleteMany({ supplier_id: id });
+
+    // 3️⃣ AGAR TEST BO‘LSA — PURCHASELARNI HAM O‘CHIRAMIZ
+    await Purchase.deleteMany({ supplier_id: id });
+
+    // 4️⃣ OXIRIDA ZAVODNI O‘CHIRAMIZ
+    await Supplier.findByIdAndDelete(id);
+
+    return res.json({
+      ok: true,
+      message: "Zavod va unga tegishli barcha mahsulotlar to‘liq o‘chirildi",
+    });
   } catch (error) {
-    return res
-      .status(500)
-      .json({ ok: false, message: "Server xatoligi", error: error.message });
+    return res.status(500).json({
+      ok: false,
+      message: "Server xatoligi",
+      error: error.message,
+    });
   }
 };
+
+
 exports.getSuppliersDashboard = async (req, res) => {
   try {
     const { q } = req.query;

@@ -122,11 +122,10 @@ exports.getProducts = async (req, res) => {
   try {
     const { q, currency, category, supplier_id } = req.query;
 
-    const filter = {};
+    const filter = {
+      isActive: true, // 🔥 MUHIM
+    };
 
-    /* =====================
-       FILTERS
-    ===================== */
     if (supplier_id && mongoose.isValidObjectId(supplier_id)) {
       filter.supplier_id = supplier_id;
     }
@@ -144,9 +143,6 @@ exports.getProducts = async (req, res) => {
       filter.$or = [{ name: r }, { model: r }, { color: r }, { category: r }];
     }
 
-    /* =====================
-       QUERY (NO PAGINATION)
-    ===================== */
     const items = await Product.find(filter)
       .populate("supplier_id", "name phone")
       .sort({ createdAt: -1 })
@@ -170,6 +166,7 @@ exports.getProducts = async (req, res) => {
     });
   }
 };
+
 
 /* =======================
    GET PRODUCT BY ID
@@ -278,24 +275,15 @@ exports.updateProduct = async (req, res) => {
    DELETE PRODUCT
 ======================= */
 exports.deleteProduct = async (req, res) => {
-  try {
-    const product = await Product.findByIdAndDelete(req.params.id);
-    if (!product) {
-      return res.status(404).json({
-        ok: false,
-        message: "Mahsulot topilmadi",
-      });
-    }
+  const product = await Product.findById(req.params.id);
+  if (!product) return res.status(404).json({ ok: false });
 
-    return res.json({
-      ok: true,
-      message: "Mahsulot o‘chirildi",
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      message: "Server xatoligi",
-      error: error.message,
-    });
-  }
+  product.isActive = false;
+  await product.save();
+
+  return res.json({
+    ok: true,
+    message: "Mahsulot o‘chirildi (arxivlandi)",
+  });
 };
+
