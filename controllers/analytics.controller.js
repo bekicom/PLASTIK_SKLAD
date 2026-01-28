@@ -21,11 +21,16 @@ exports.overview = async (req, res) => {
     const tz = req.query.tz || "Asia/Tashkent";
     const warehouseId = req.query.warehouseId || null;
 
+    // ✅ BU QATORNI QO'SHING
     const data = await service.getOverview({
       from,
       to,
       tz,
       warehouseId,
+      startingBalance: {
+        UZS: 400000000, // 400 million so'm
+        USD: 5000, // 5000 dollar
+      },
     });
 
     return res.json({ ok: true, data });
@@ -80,7 +85,7 @@ exports.top = async (req, res) => {
 
     const limit = Math.min(
       Math.max(parseInt(req.query.limit || "10", 10), 1),
-      50
+      50,
     );
 
     const data = await service.getTop({

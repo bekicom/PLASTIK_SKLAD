@@ -26,7 +26,10 @@ function buildDateMatch(from, to, field = "createdAt") {
 /* =====================
    OVERVIEW (DASHBOARD) - ✅ FIXED CASHFLOW
 ===================== */
-async function getOverview({ from, to, tz, warehouseId }) {
+async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
+  console.log("🎯 getOverview funksiyasi chaqirildi!");
+  console.log("📥 Qabul qilingan startingBalance:", startingBalance);
+
   /* =====================
      HELPERS
   ===================== */
@@ -34,6 +37,14 @@ async function getOverview({ from, to, tz, warehouseId }) {
     warehouseId && mongoose.isValidObjectId(warehouseId)
       ? new mongoose.Types.ObjectId(warehouseId)
       : null;
+
+  // ✅ Boshlang'ich balans (starting balance)
+  const initialBalance = {
+    UZS: Number(startingBalance?.UZS || 0),
+    USD: Number(startingBalance?.USD || 0),
+  };
+
+  console.log("💰 initialBalance o'rnatildi:", initialBalance);
 
   /* =====================
      SALES (UNIQUE SALE COUNT)
@@ -190,12 +201,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
 
   /* =====================
      BALANCES
-     ⚠️ IMPORTANT: Balances - bu JORIY HOLAT (current state)
-     Agar siz faqat ma'lum davrda yaratilgan yoki o'zgargan
-     mijozlarni ko'rmoqchi bo'lsangiz, sana filtri ishlatiladi.
-     
-     Aks holda, balances har doim barcha mijozlarning joriy
-     holatini ko'rsatadi, sana filterdan qat'iy nazar.
   ===================== */
   const balances = {
     customers: {
@@ -208,7 +213,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     },
   };
 
-  // Customer filter - faqat ma'lum davrda yaratilgan mijozlar
   const customerFilter = buildDateMatch(from, to, "createdAt");
   const customers = await Customer.find(customerFilter, { balance: 1 }).lean();
 
@@ -223,7 +227,6 @@ async function getOverview({ from, to, tz, warehouseId }) {
     else if (bd < 0) balances.customers.prepaid.USD += Math.abs(bd);
   }
 
-  // Supplier filter - faqat ma'lum davrda yaratilgan yetkazib beruvchilar
   const supplierPipeline = [];
   const supplierDateMatch = buildDateMatch(from, to, "createdAt");
 
@@ -356,8 +359,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
   }
 
   /* =====================
-     CASHFLOW (ESKI FORMAT + FIX)
-     ✅ supplier cash-out endi minus bo'ladi
+     CASHFLOW + BOSHLANG'ICH BALANS
   ===================== */
   const supplierOut = {
     UZS:
@@ -373,7 +375,8 @@ async function getOverview({ from, to, tz, warehouseId }) {
       cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
   };
 
-  const cashflowTotal = {
+  // ✅ FAQAT PUL OQIMI (boshlang'ich balanssiz)
+  const cashflowMovement = {
     UZS:
       customerIn.UZS -
       supplierOut.UZS -
@@ -386,6 +389,15 @@ async function getOverview({ from, to, tz, warehouseId }) {
       expenses.USD.total -
       investor_withdrawals.USD.total,
   };
+
+  // ✅ YAKUNIY BALANS (boshlang'ich + oqim)
+  const finalBalance = {
+    UZS: initialBalance.UZS + cashflowMovement.UZS,
+    USD: initialBalance.USD + cashflowMovement.USD,
+  };
+
+  console.log("✅ Faqat oqim:", cashflowMovement);
+  console.log("✅ Yakuniy balans:", finalBalance);
 
   return {
     sales,
@@ -400,8 +412,17 @@ async function getOverview({ from, to, tz, warehouseId }) {
     balances,
     cash_in_summary,
     investor_withdrawals,
+
+    // ✅ Boshlang'ich balans
+    starting_balance: initialBalance,
+
+    // ✅✅ YAKUNIY BALANS (yuqori kartochka uchun)
+    final_balance: finalBalance,
+
     cashflow: {
-      total: cashflowTotal,
+      // ✅✅ FAQAT OQIM (pastki "Naqd" va "Karta" uchun)
+      total: cashflowMovement,
+
       by_method: {
         UZS: {
           CASH:
@@ -429,10 +450,7 @@ async function getOverview({ from, to, tz, warehouseId }) {
         },
       },
       breakdown: {
-        // ✅ eski breakdown joyida qoldi
         expenses,
-
-        // ✅ qo'shimcha: cashflow tushunarli bo'lsin
         customer_in: {
           UZS: { ...cash_in_summary.customers.UZS, total: customerIn.UZS },
           USD: { ...cash_in_summary.customers.USD, total: customerIn.USD },
@@ -442,13 +460,14 @@ async function getOverview({ from, to, tz, warehouseId }) {
           USD: { ...cash_in_summary.suppliers.USD, total: supplierOut.USD },
         },
         investor_withdrawals,
+        starting_balance: initialBalance,
       },
     },
   };
 }
 
 /* =====================
-   TIME SERIES - ✅ ALLAQACHON from/to BOR
+   TIME SERIES
 ===================== */
 async function getTimeSeries({ from, to, tz, group }) {
   const unit = group === "month" ? "month" : "day";
@@ -517,7 +536,7 @@ async function getTimeSeries({ from, to, tz, group }) {
 }
 
 /* =====================
-   TOP PRODUCTS - ✅ ALLAQACHON from/to BOR
+   TOP PRODUCTS
 ===================== */
 async function getTop({ from, to, limit = 10 }) {
   return Sale.aggregate([
@@ -567,36 +586,28 @@ async function getTop({ from, to, limit = 10 }) {
 }
 
 /* =====================
-   STOCK - ✅ PURCHASE_DATE BO'YICHA FILTER
-   
-   Ma'lum davrdagi Purchase'larga asoslanib stock hisoblanadi:
-   - Faqat shu davrdagi sotib olingan mahsulotlar
-   - Har bir mahsulot uchun jami qty
-   - Currency bo'yicha guruhlash
+   STOCK
 ===================== */
 async function getStock({ from, to } = {}) {
   const pipeline = [];
 
-  // Purchase_date bo'yicha filtrlash
   if (from || to) {
     const dateMatch = { purchase_date: {} };
 
     if (from) {
-      dateMatch.purchase_date.$gte = from; // ✅ to'g'ridan-to'g'ri Date ob'ekti
+      dateMatch.purchase_date.$gte = from;
     }
 
     if (to) {
-      dateMatch.purchase_date.$lte = to; // ✅ to'g'ridan-to'g'ri Date ob'ekti
+      dateMatch.purchase_date.$lte = to;
     }
 
     pipeline.push({ $match: dateMatch });
   }
 
   pipeline.push(
-    // Items'larni ochish
     { $unwind: "$items" },
 
-    // Product ma'lumotlarini olish
     {
       $lookup: {
         from: "products",
@@ -607,25 +618,20 @@ async function getStock({ from, to } = {}) {
     },
     { $unwind: { path: "$product", preserveNullAndEmptyArrays: true } },
 
-    // Currency bo'yicha guruhlash
     {
       $group: {
         _id: "$items.currency",
 
-        // Nechta turli mahsulot (unique product_id)
         unique_products: { $addToSet: "$items.product_id" },
 
-        // Jami miqdor
         total_qty: { $sum: "$items.qty" },
 
-        // Valuatsiya (sotib olish narxi)
         valuation_buy: {
           $sum: {
             $multiply: ["$items.qty", "$items.buy_price"],
           },
         },
 
-        // Valuatsiya (sotish narxi)
         valuation_sell: {
           $sum: {
             $multiply: ["$items.qty", "$items.sell_price"],
@@ -645,7 +651,7 @@ async function getStock({ from, to } = {}) {
       },
     },
 
-    { $sort: { currency: 1 } }
+    { $sort: { currency: 1 } },
   );
 
   const byCurrency = await Purchase.aggregate(pipeline);
