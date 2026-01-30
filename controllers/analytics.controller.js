@@ -96,8 +96,20 @@ exports.overview = async (req, res) => {
     const tz = req.query.tz || "Asia/Tashkent";
     const warehouseId = req.query.warehouseId || null;
 
-    // ✅ startingBalance ni request dan olish
-    const startingBalance = parseStartingBalance(req);
+    // ✅ BOSHLANG'ICH BALANSNI QO'LDA KIRITISH
+    // Klent aytgan bo'lsa, bu yerda o'zgartiring
+    const startingBalance = {
+      UZS: {
+        total: 250000, // 👈 Bu yerda o'zgartiring
+        CASH: 250000, // 👈 Naqd pul
+        CARD: 0, // 👈 Karta
+      },
+      USD: {
+        total: 0,
+        CASH: 0,
+        CARD: 0,
+      },
+    };
 
     const data = await service.getOverview({
       from,
