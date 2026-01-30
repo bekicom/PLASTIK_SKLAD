@@ -24,7 +24,7 @@ function buildDateMatch(from, to, field = "createdAt") {
 }
 
 /* =====================
-   OVERVIEW (DASHBOARD) - ✅ FIXED CASHFLOW
+   OVERVIEW (DASHBOARD) - ✅ FINAL CORRECT VERSION
 ===================== */
 async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
   console.log("🎯 getOverview funksiyasi chaqirildi!");
@@ -206,6 +206,7 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
     customers: {
       debt: { UZS: 0, USD: 0 },
       prepaid: { UZS: 0, USD: 0 },
+      total: { UZS: 0, USD: 0 },
     },
     suppliers: {
       debt: { UZS: 0, USD: 0 },
@@ -226,6 +227,14 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
     if (bd > 0) balances.customers.debt.USD += bd;
     else if (bd < 0) balances.customers.prepaid.USD += Math.abs(bd);
   }
+
+  // ✅ Total = debt - prepaid
+  balances.customers.total.UZS =
+    balances.customers.debt.UZS - balances.customers.prepaid.UZS;
+  balances.customers.total.USD =
+    balances.customers.debt.USD - balances.customers.prepaid.USD;
+
+  console.log("👥 Mijozlar balansi:", balances.customers);
 
   const supplierPipeline = [];
   const supplierDateMatch = buildDateMatch(from, to, "createdAt");
@@ -359,7 +368,7 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
   }
 
   /* =====================
-     CASHFLOW + BOSHLANG'ICH BALANS
+     CASHFLOW
   ===================== */
   const supplierOut = {
     UZS:
@@ -375,7 +384,6 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
       cash_in_summary.customers.USD.CASH + cash_in_summary.customers.USD.CARD,
   };
 
-  // ✅ FAQAT PUL OQIMI (boshlang'ich balanssiz)
   const cashflowMovement = {
     UZS:
       customerIn.UZS -
@@ -390,7 +398,6 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
       investor_withdrawals.USD.total,
   };
 
-  // ✅ YAKUNIY BALANS (boshlang'ich + oqim)
   const finalBalance = {
     UZS: initialBalance.UZS + cashflowMovement.UZS,
     USD: initialBalance.USD + cashflowMovement.USD,
@@ -399,6 +406,142 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
   console.log("✅ Faqat oqim:", cashflowMovement);
   console.log("✅ Yakuniy balans:", finalBalance);
 
+  /* =====================
+     INVENTORY VALUE - PRODUCT JADVALIDAN
+  ===================== */
+  const inventoryAgg = await Product.aggregate([
+    {
+      $match: {
+        isActive: true,
+        qty: { $gt: 0 },
+      },
+    },
+    {
+      $group: {
+        _id: "$warehouse_currency",
+        total_buy: {
+          $sum: {
+            $multiply: ["$qty", "$buy_price"],
+          },
+        },
+        total_sell: {
+          $sum: {
+            $multiply: ["$qty", "$sell_price"],
+          },
+        },
+        total_qty: { $sum: "$qty" },
+        product_count: { $sum: 1 },
+      },
+    },
+  ]);
+
+  const inventoryValue = {
+    UZS: 0,
+    USD: 0,
+  };
+
+  const inventoryDetails = {
+    UZS: { qty: 0, products: 0, buy_value: 0, sell_value: 0 },
+    USD: { qty: 0, products: 0, buy_value: 0, sell_value: 0 },
+  };
+
+  for (const inv of inventoryAgg) {
+    const currency = inv._id;
+    if (currency === "UZS" || currency === "USD") {
+      inventoryValue[currency] = Number(inv.total_buy || 0);
+      inventoryDetails[currency] = {
+        qty: Number(inv.total_qty || 0),
+        products: Number(inv.product_count || 0),
+        buy_value: Number(inv.total_buy || 0),
+        sell_value: Number(inv.total_sell || 0),
+      };
+    }
+  }
+
+  console.log("📦 Ombor qiymati:", inventoryValue);
+
+  /* =====================
+     ✅✅✅ BUSINESS CAPITAL - TO'G'RI FORMULA!
+     Kassa + Ombor + Mijoz total + Investor yechgan + Taminotchi prepaid - Taminotchi qarzi
+  ===================== */
+  const businessCapital = {
+    UZS:
+      finalBalance.UZS + // 💰 Kassa
+      inventoryValue.UZS + // 📦 Ombor
+      balances.customers.total.UZS + // 👥 Mijoz total (debt - prepaid)
+      investor_withdrawals.UZS.total + // 💼 Investor yechgan (+)
+      balances.suppliers.prepaid.UZS - // 🏭 Taminotchi prepaid (+)
+      balances.suppliers.debt.UZS, // 🏭 Taminotchi qarzi (-)
+
+    USD:
+      finalBalance.USD +
+      inventoryValue.USD +
+      balances.customers.total.USD +
+      investor_withdrawals.USD.total +
+      balances.suppliers.prepaid.USD -
+      balances.suppliers.debt.USD,
+  };
+
+  console.log("💼 BIZNES KAPITALI (to'g'ri formula):", businessCapital);
+
+  /* =====================
+     TOTAL ASSETS & LIABILITIES
+  ===================== */
+  const totalAssets = {
+    UZS:
+      finalBalance.UZS +
+      inventoryValue.UZS +
+      balances.customers.debt.UZS +
+      investor_withdrawals.UZS.total +
+      balances.suppliers.prepaid.UZS,
+    USD:
+      finalBalance.USD +
+      inventoryValue.USD +
+      balances.customers.debt.USD +
+      investor_withdrawals.USD.total +
+      balances.suppliers.prepaid.USD,
+  };
+
+  const totalLiabilities = {
+    UZS: balances.suppliers.debt.UZS + balances.customers.prepaid.UZS,
+    USD: balances.suppliers.debt.USD + balances.customers.prepaid.USD,
+  };
+
+  /* =====================
+     BALANCE SHEET
+  ===================== */
+  const balanceSheet = {
+    assets: {
+      current_assets: {
+        cash_and_bank: finalBalance,
+        inventory: inventoryValue,
+        accounts_receivable: balances.customers.debt,
+        investor_withdrawals: investor_withdrawals,
+        supplier_prepaid: balances.suppliers.prepaid,
+      },
+      total_assets: totalAssets,
+    },
+    liabilities: {
+      accounts_payable: balances.suppliers.debt,
+      customer_prepayments: balances.customers.prepaid,
+      total_liabilities: totalLiabilities,
+    },
+    equity: {
+      starting_capital: initialBalance,
+      retained_earnings: {
+        UZS: profit.UZS - expenses.UZS.total,
+        USD: profit.USD - expenses.USD.total,
+      },
+      total_equity: {
+        UZS: totalAssets.UZS - totalLiabilities.UZS,
+        USD: totalAssets.USD - totalLiabilities.USD,
+      },
+    },
+  };
+
+  /* =====================
+     RETURN RESPONSE
+  ===================== */
   return {
     sales,
     profit: {
@@ -412,17 +555,11 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
     balances,
     cash_in_summary,
     investor_withdrawals,
-
-    // ✅ Boshlang'ich balans
     starting_balance: initialBalance,
-
-    // ✅✅ YAKUNIY BALANS (yuqori kartochka uchun)
     final_balance: finalBalance,
 
     cashflow: {
-      // ✅✅ FAQAT OQIM (pastki "Naqd" va "Karta" uchun)
       total: cashflowMovement,
-
       by_method: {
         UZS: {
           CASH:
@@ -463,6 +600,23 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
         starting_balance: initialBalance,
       },
     },
+
+    inventory_value: inventoryValue,
+    inventory_details: inventoryDetails,
+    business_capital: businessCapital,
+
+    business_capital_breakdown: {
+      cash: finalBalance,
+      inventory: inventoryValue,
+      customer_total: balances.customers.total,
+      investor_withdrawals: investor_withdrawals,
+      supplier_prepaid: balances.suppliers.prepaid,
+      supplier_debt: balances.suppliers.debt,
+      formula:
+        "Kassa + Ombor + Mijoz total + Investor yechgan + Taminotchi prepaid - Taminotchi qarzi",
+    },
+
+    balance_sheet: balanceSheet,
   };
 }
 

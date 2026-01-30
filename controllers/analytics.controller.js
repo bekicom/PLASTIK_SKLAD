@@ -28,8 +28,8 @@ exports.overview = async (req, res) => {
       tz,
       warehouseId,
       startingBalance: {
-        UZS: 400000000, // 400 million so'm
-        USD: 5000, // 5000 dollar
+        UZS: 100000, // 400 million so'm
+        USD: 0, // 5000 dollar
       },
     });
 
