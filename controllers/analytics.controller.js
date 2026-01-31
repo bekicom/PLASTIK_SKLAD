@@ -29,7 +29,7 @@ exports.overview = async (req, res) => {
       warehouseId,
       startingBalance: {
         UZS: {
-          CASH: 300000, // UZS naxt
+          CASH: 0, // UZS naxt
           CARD: 0, // UZS karta
         },
         USD: {
