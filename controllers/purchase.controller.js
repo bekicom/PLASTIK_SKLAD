@@ -175,7 +175,7 @@ exports.getPurchases = async (req, res) => {
 
     // 🔥 SANA FILTER (purchase_date BO'YICHA)
     // FAQAT 2026-01-27 DAN BOSHLAB
-    const minDate = new Date(Date.UTC(2026, 0, 27, 0, 0, 0));
+    const minDate = new Date(Date.UTC(2023, 0, 27, 0, 0, 0));
 
     if (from || to) {
       filter.purchase_date = {};

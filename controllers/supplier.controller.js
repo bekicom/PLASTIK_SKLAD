@@ -429,8 +429,8 @@ exports.getSupplierDetail = async (req, res) => {
        DATE FILTER (purchase_date)
        DEFAULT = FAQAT 2026
     ========================= */
-    const defaultFrom = new Date("2026-01-01T00:00:00.000Z");
-    const defaultTo = new Date("2026-12-31T23:59:59.999Z");
+    const defaultFrom = new Date("2023-01-01T00:00:00.000Z");
+    const defaultTo = new Date("2023-12-31T23:59:59.999Z");
 
     const fromDate = parseDate(req.query.from, false) || defaultFrom;
     const toDate = parseDate(req.query.to, true) || defaultTo;
@@ -603,7 +603,7 @@ exports.getSupplierPurchases = async (req, res) => {
     const supplierId = new mongoose.Types.ObjectId(id);
 
     // 🔥 FAQAT 2026-01-27 DAN BOSHLAB
-    const fromDate = new Date(Date.UTC(2026, 0, 27, 0, 0, 0));
+    const fromDate = new Date(Date.UTC(2023, 0, 27, 0, 0, 0));
 
     const purchases = await Purchase.find({
       supplier_id: supplierId, // 🔒 NULL LAR O‘TMAYDI
