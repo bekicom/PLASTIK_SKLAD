@@ -427,10 +427,11 @@ exports.getSupplierDetail = async (req, res) => {
 
     /* =========================
        DATE FILTER (purchase_date)
-       DEFAULT = FAQAT 2026
+       DEFAULT = joriy yil
     ========================= */
-    const defaultFrom = new Date("2023-01-01T00:00:00.000Z");
-    const defaultTo = new Date("2023-12-31T23:59:59.999Z");
+    const currentYear = new Date().getUTCFullYear();
+    const defaultFrom = new Date(`${currentYear}-01-01T00:00:00.000Z`);
+    const defaultTo = new Date(`${currentYear}-12-31T23:59:59.999Z`);
 
     const fromDate = parseDate(req.query.from, false) || defaultFrom;
     const toDate = parseDate(req.query.to, true) || defaultTo;
@@ -592,6 +593,7 @@ exports.paySupplierDebt = async (req, res) => {
 exports.getSupplierPurchases = async (req, res) => {
   try {
     const { id } = req.params;
+    const { from, to } = req.query;
 
     if (!mongoose.isValidObjectId(id)) {
       return res.status(400).json({
@@ -602,16 +604,22 @@ exports.getSupplierPurchases = async (req, res) => {
 
     const supplierId = new mongoose.Types.ObjectId(id);
 
-    // 🔥 FAQAT 2026-01-27 DAN BOSHLAB
-    const fromDate = new Date(Date.UTC(2023, 0, 27, 0, 0, 0));
+    const fromDate = parseDate(from, false);
+    const toDate = parseDate(to, true);
 
-    const purchases = await Purchase.find({
+    const filter = {
       supplier_id: supplierId, // 🔒 NULL LAR O‘TMAYDI
-      purchase_date: { $gte: fromDate },
-
       status: { $ne: "PAID" },
       $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
-    })
+    };
+
+    if (fromDate || toDate) {
+      filter.purchase_date = {};
+      if (fromDate) filter.purchase_date.$gte = fromDate;
+      if (toDate) filter.purchase_date.$lte = toDate;
+    }
+
+    const purchases = await Purchase.find(filter)
       .sort({ purchase_date: -1 })
       .select(
         "supplier_id batch_no purchase_date totals paid remaining status items createdAt",
