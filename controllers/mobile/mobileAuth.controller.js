@@ -1,6 +1,7 @@
 const Customer = require("../../modules/Customer/Customer");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
+const bcrypt = require("bcrypt");
 
 const Product = require("../../modules/products/Product");
 
@@ -78,31 +79,40 @@ exports.mobileRegister = async (req, res) => {
 ========================= */
 exports.login = async (req, res) => {
   try {
-    const { phone } = req.body || {};
+    const { phone, login, password } = req.body || {};
+    const cleanPhone = String(phone || "").trim();
+    const cleanLogin = String(login || "").trim().toLowerCase();
 
-    if (!phone) {
+    if ((!cleanPhone && !cleanLogin) || !password) {
       return res.status(400).json({
         ok: false,
-        message: "Telefon raqam majburiy",
+        message: "login yoki phone va password majburiy",
       });
     }
 
-    const customer = await Customer.findOne({
-      phone: String(phone).trim(),
-      role: "MOBILE",
-    }).lean();
+    const findFilter = cleanLogin ? { login: cleanLogin } : { phone: cleanPhone };
 
-    if (!customer) {
-      return res.status(404).json({
+    const customer = await Customer.findOne(findFilter).select("+password").lean();
+
+    if (!customer || !customer.password) {
+      return res.status(401).json({
         ok: false,
-        message: "Mobile mijoz topilmadi",
+        message: "Login yoki parol noto‘g‘ri",
       });
     }
 
-    if (customer.status !== "ACTIVE") {
+    const isMatch = await bcrypt.compare(String(password), customer.password);
+    if (!isMatch) {
+      return res.status(401).json({
+        ok: false,
+        message: "Login yoki parol noto‘g‘ri",
+      });
+    }
+
+    if (customer.status !== "ACTIVE" || !customer.isActive) {
       return res.status(403).json({
         ok: false,
-        message: "Account hali ACTIVE emas",
+        message: "Account ACTIVE emas",
         status: customer.status,
       });
     }
@@ -127,6 +137,7 @@ exports.login = async (req, res) => {
         _id: customer._id,
         name: customer.name,
         phone: customer.phone,
+        login: customer.login || null,
         role: customer.role,
       },
     });

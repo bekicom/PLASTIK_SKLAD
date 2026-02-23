@@ -31,7 +31,7 @@ const SaleReturnSchema = new mongoose.Schema(
     customer_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Customer",
-      required: true,
+      default: null,
       index: true,
     },
     warehouse_id: {

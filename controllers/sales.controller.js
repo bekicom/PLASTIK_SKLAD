@@ -14,6 +14,10 @@ function safeNumber(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
+function escapeRegex(str = "") {
+  return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /* =====================
    CREATE SALE
 ===================== */
@@ -594,7 +598,7 @@ exports.searchSalesByProduct = async (req, res) => {
         const matchedItems = (s.items || []).filter(
           (it) =>
             rx.test(String(it.productSnapshot?.name || "")) &&
-            safeNum(it.qty) > 0 &&
+            safeNumber(it.qty) > 0 &&
             (!req.query.warehouseId ||
               String(it.warehouseId) === String(req.query.warehouseId)),
         );

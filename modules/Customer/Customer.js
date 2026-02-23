@@ -14,6 +14,18 @@ const customerSchema = new mongoose.Schema(
     },
 
     phone: { type: String, trim: true, maxlength: 30, index: true },
+    login: {
+      type: String,
+      trim: true,
+      lowercase: true,
+      unique: true,
+      sparse: true,
+      index: true,
+    },
+    password: {
+      type: String,
+      select: false,
+    },
     address: { type: String, trim: true, maxlength: 250 },
     note: { type: String, trim: true, maxlength: 300 },
 

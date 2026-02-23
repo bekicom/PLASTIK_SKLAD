@@ -131,8 +131,6 @@ exports.createSupplier = async (req, res) => {
   }
 };
 
-
-
 exports.getSuppliers = async (req, res) => {
   try {
     const { q } = req.query;
@@ -197,7 +195,6 @@ exports.getSuppliers = async (req, res) => {
     });
   }
 };
-
 
 exports.getSupplierById = async (req, res) => {
   try {
@@ -283,7 +280,6 @@ exports.deleteSupplierHard = async (req, res) => {
     });
   }
 };
-
 
 exports.getSuppliersDashboard = async (req, res) => {
   try {
@@ -641,10 +637,6 @@ exports.getSupplierPurchases = async (req, res) => {
   }
 };
 
-
-
-
-
 exports.updateSupplierBalance = async (req, res) => {
   try {
     const { id } = req.params;
@@ -689,8 +681,6 @@ exports.updateSupplierBalance = async (req, res) => {
     });
   }
 };
-
-
 
 exports.getSupplierTimeline = async (req, res) => {
   try {
@@ -750,7 +740,7 @@ exports.getSupplierTimeline = async (req, res) => {
        3️⃣ ARALASHTIRIB SORT QILAMIZ
     ========================= */
     const timeline = [...purchaseItems, ...cashInItems].sort(
-      (a, b) => new Date(a.date) - new Date(b.date)
+      (a, b) => new Date(a.date) - new Date(b.date),
     );
 
     return res.json({

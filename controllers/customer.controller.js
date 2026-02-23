@@ -1,4 +1,5 @@
 const mongoose = require("mongoose");
+const bcrypt = require("bcrypt");
 const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
 const Order = require("../modules/orders/Order");
@@ -18,7 +19,8 @@ function safeNum(n, def = 0) {
 
 exports.createCustomer = async (req, res) => {
   try {
-    const { name, phone, address, note, balance = {} } = req.body || {};
+    const { name, phone, address, note, balance = {}, login, password } =
+      req.body || {};
 
     if (!name) {
       return res.status(400).json({
@@ -29,12 +31,35 @@ exports.createCustomer = async (req, res) => {
 
     const balUZS = Number(balance.UZS || 0);
     const balUSD = Number(balance.USD || 0);
+    const cleanLogin = login ? String(login).trim().toLowerCase() : "";
+
+    if ((cleanLogin && !password) || (!cleanLogin && password)) {
+      return res.status(400).json({
+        ok: false,
+        message: "login va password birga yuborilishi kerak",
+      });
+    }
+
+    if (cleanLogin) {
+      const existsLogin = await Customer.findOne({ login: cleanLogin }).lean();
+      if (existsLogin) {
+        return res.status(409).json({
+          ok: false,
+          message: "Bu login band",
+        });
+      }
+    }
 
     const customer = await Customer.create({
       name: String(name).trim(),
       phone: normalizePhone(phone),
+      login: cleanLogin || undefined,
+      password: cleanLogin ? await bcrypt.hash(String(password), 10) : undefined,
       address: address?.trim() || "",
       note: note?.trim() || "",
+      registered_from: "ADMIN",
+      role: cleanLogin ? "MOBILE" : "WEB",
+      status: "ACTIVE",
 
       // 🔥 ASOSIY YECHIM
       opening_balance: {
@@ -52,10 +77,13 @@ exports.createCustomer = async (req, res) => {
       isActive: true,
     });
 
+    const customerSafe = customer.toObject();
+    delete customerSafe.password;
+
     return res.status(201).json({
       ok: true,
       message: "Customer yaratildi",
-      customer,
+      customer: customerSafe,
     });
   } catch (error) {
     return res.status(500).json({
@@ -251,6 +279,41 @@ exports.updateCustomer = async (req, res) => {
     if (req.body.name !== undefined) patch.name = req.body.name.trim();
     if (req.body.phone !== undefined)
       patch.phone = normalizePhone(req.body.phone);
+
+    if (req.body.login !== undefined) {
+      const cleanLogin = String(req.body.login || "")
+        .trim()
+        .toLowerCase();
+      if (!cleanLogin) {
+        patch.login = undefined;
+      } else {
+        const existsLogin = await Customer.findOne({
+          login: cleanLogin,
+          _id: { $ne: id },
+        }).lean();
+
+        if (existsLogin) {
+          return res.status(409).json({
+            ok: false,
+            message: "Bu login band",
+          });
+        }
+
+        patch.login = cleanLogin;
+      }
+    }
+
+    if (req.body.password !== undefined) {
+      const rawPassword = String(req.body.password || "");
+      if (rawPassword.length < 4) {
+        return res.status(400).json({
+          ok: false,
+          message: "password kamida 4 ta belgi bo‘lsin",
+        });
+      }
+      patch.password = await bcrypt.hash(rawPassword, 10);
+    }
+
     if (req.body.address !== undefined) patch.address = req.body.address.trim();
     if (req.body.note !== undefined) patch.note = req.body.note.trim();
     if (req.body.isActive !== undefined) patch.isActive = !!req.body.isActive;

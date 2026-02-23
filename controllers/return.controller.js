@@ -3,6 +3,7 @@ const SaleReturn = require("../modules/returns/SaleReturn");
 const Sale = require("../modules/sales/Sale");
 const Warehouse = require("../modules/Warehouse/Warehouse");
 const Product = require("../modules/products/Product"); // 🔥 MUHIM
+const Customer = require("../modules/Customer/Customer");
 
 function safeNum(n, def = 0) {
   const x = Number(n);
@@ -56,11 +57,15 @@ exports.createReturn = async (req, res) => {
       const userId = req.user?._id || req.user?.id;
       if (!userId) throw new Error("Auth required");
 
-      const { sale_id, warehouse_id, items, note } = req.body || {};
+      const body = req.body || {};
+      const saleIdRaw = body.sale_id || body.saleId;
+      const warehouseIdRaw = body.warehouse_id || body.warehouseId;
+      const items = Array.isArray(body.items) ? body.items : [];
+      const note = body.note;
 
-      if (!mongoose.isValidObjectId(sale_id))
+      if (!mongoose.isValidObjectId(saleIdRaw))
         throw new Error("sale_id noto‘g‘ri");
-      if (!mongoose.isValidObjectId(warehouse_id))
+      if (!mongoose.isValidObjectId(warehouseIdRaw))
         throw new Error("warehouse_id noto‘g‘ri");
       if (!Array.isArray(items) || items.length === 0)
         throw new Error("items majburiy");
@@ -68,13 +73,14 @@ exports.createReturn = async (req, res) => {
       /* =====================
          LOAD DATA
       ===================== */
-      const warehouse = await Warehouse.findById(warehouse_id).session(session);
+      const warehouse = await Warehouse.findById(warehouseIdRaw).session(
+        session,
+      );
       if (!warehouse) throw new Error("Ombor topilmadi");
 
-      const sale = await Sale.findById(sale_id).session(session);
+      const sale = await Sale.findById(saleIdRaw).session(session);
       if (!sale) throw new Error("Sale topilmadi");
 
-      if (!sale.customerId) throw new Error("Sale.customerId topilmadi");
       if (!Array.isArray(sale.items) || sale.items.length === 0)
         throw new Error("Sale.items bo‘sh");
 
@@ -93,7 +99,7 @@ exports.createReturn = async (req, res) => {
       let returnSubtotal = 0;
 
       for (const row of items) {
-        const productId = row?.product_id;
+        const productId = row?.product_id || row?.productId;
         const qty = safeNum(row?.qty);
 
         if (!mongoose.isValidObjectId(productId))
@@ -142,7 +148,7 @@ exports.createReturn = async (req, res) => {
         [
           {
             sale_id: sale._id,
-            customer_id: sale.customerId,
+            customer_id: sale.customerId || null,
             warehouse_id: warehouse._id,
             items: normalizedItems,
             returnSubtotal,
@@ -205,6 +211,32 @@ exports.createReturn = async (req, res) => {
       } else {
         sale.returnStatus = "PARTIAL_RETURN";
         sale.items = newSaleItems;
+      }
+
+      /* =====================
+         CUSTOMER BALANCE -
+      ===================== */
+      if (sale.customerId && ["UZS", "USD"].includes(warehouse.currency)) {
+        const customer = await Customer.findById(sale.customerId).session(
+          session,
+        );
+
+        if (customer) {
+          customer.balance[warehouse.currency] =
+            Number(customer.balance?.[warehouse.currency] || 0) - returnSubtotal;
+
+          customer.payment_history.push({
+            currency: warehouse.currency,
+            amount: returnSubtotal,
+            direction: "ROLLBACK",
+            note: note
+              ? `Vozvrat: ${String(note).trim()}`
+              : "Sotuvdan vozvrat qilindi",
+            date: new Date(),
+          });
+
+          await customer.save({ session });
+        }
       }
 
       await sale.save({ session });
