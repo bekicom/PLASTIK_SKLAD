@@ -5,53 +5,59 @@ const bcrypt = require("bcrypt");
 
 const Product = require("../../modules/products/Product");
 
+function normalizePhone(phone) {
+  return String(phone || "").replace(/\s+/g, "").trim();
+}
+
 
 /* =========================
    📱 MOBILE REGISTER
 ========================= */
 exports.mobileRegister = async (req, res) => {
   try {
-    const { name, phone, address } = req.body || {};
+    const { name, phone, address, login, password } = req.body || {};
+    const cleanPhone = normalizePhone(phone);
+    const cleanLogin = String(login || "").trim().toLowerCase();
+    const rawPassword = String(password || "");
 
-    /* =========================
-       VALIDATION
-    ========================= */
-    if (!name || !phone) {
+    if (!name || !cleanPhone) {
       return res.status(400).json({
         ok: false,
         message: "Ism va telefon majburiy",
       });
     }
 
-    const cleanPhone = String(phone).trim();
-
-    /* =========================
-       PHONE UNIQUE CHECK
-    ========================= */
-    const exists = await Customer.findOne({
-      phone: cleanPhone,
-    }).lean();
-
-    if (exists) {
+    const [existsPhone, existsLogin] = await Promise.all([
+      Customer.findOne({ phone: cleanPhone }).lean(),
+      cleanLogin ? Customer.findOne({ login: cleanLogin }).lean() : null,
+    ]);
+    if (existsPhone) {
       return res.status(409).json({
         ok: false,
         message: "Bu telefon raqam bilan mijoz allaqachon mavjud",
       });
     }
+    if (existsLogin) {
+      return res.status(409).json({
+        ok: false,
+        message: "Bu login band",
+      });
+    }
 
-    /* =========================
-       CREATE MOBILE CUSTOMER
-    ========================= */
     const customer = await Customer.create({
       name: String(name).trim(),
       phone: cleanPhone,
+      login: cleanLogin || undefined,
+      password:
+        cleanLogin && rawPassword.length >= 4
+          ? await bcrypt.hash(rawPassword, 10)
+          : undefined,
       address: address?.trim() || "",
 
       role: "MOBILE",
-      status: "PENDING", // 🔒 admin tasdiqlaydi
-      registered_from: "WEB",
+      status: "PENDING",
+      registered_from: "MOBILE",
 
-      // balanslar
       balance: { UZS: 0, USD: 0 },
       opening_balance: { UZS: 0, USD: 0 },
       payment_history: [],
@@ -79,33 +85,22 @@ exports.mobileRegister = async (req, res) => {
 ========================= */
 exports.login = async (req, res) => {
   try {
-    const { phone, login, password } = req.body || {};
-    const cleanPhone = String(phone || "").trim();
-    const cleanLogin = String(login || "").trim().toLowerCase();
+    const { phone } = req.body || {};
+    const cleanPhone = normalizePhone(phone);
 
-    if ((!cleanPhone && !cleanLogin) || !password) {
+    if (!cleanPhone) {
       return res.status(400).json({
         ok: false,
-        message: "login yoki phone va password majburiy",
+        message: "Telefon raqam majburiy",
       });
     }
 
-    const findFilter = cleanLogin ? { login: cleanLogin } : { phone: cleanPhone };
+    const customer = await Customer.findOne({ phone: cleanPhone }).lean();
 
-    const customer = await Customer.findOne(findFilter).select("+password").lean();
-
-    if (!customer || !customer.password) {
+    if (!customer) {
       return res.status(401).json({
         ok: false,
-        message: "Login yoki parol noto‘g‘ri",
-      });
-    }
-
-    const isMatch = await bcrypt.compare(String(password), customer.password);
-    if (!isMatch) {
-      return res.status(401).json({
-        ok: false,
-        message: "Login yoki parol noto‘g‘ri",
+        message: "Bu telefon raqam bilan mijoz topilmadi",
       });
     }
 
@@ -145,65 +140,6 @@ exports.login = async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: "Login qilishda xatolik",
-      error: error.message,
-    });
-  }
-};
-
-exports.mobileRegister = async (req, res) => {
-  try {
-    const { name, phone, address } = req.body || {};
-
-    if (!name || !phone) {
-      return res.status(400).json({
-        ok: false,
-        message: "Ism va telefon majburiy",
-      });
-    }
-
-    /* =========================
-       PHONE UNIQUE CHECK
-    ========================= */
-    const exists = await Customer.findOne({
-      phone: String(phone).trim(),
-    }).lean();
-
-    if (exists) {
-      return res.status(409).json({
-        ok: false,
-        message: "Bu telefon raqam bilan mijoz allaqachon mavjud",
-      });
-    }
-
-    /* =========================
-       CREATE MOBILE CUSTOMER
-    ========================= */
-    const customer = await Customer.create({
-      name: String(name).trim(),
-      phone: String(phone).trim(),
-      address: address?.trim() || "",
-
-      role: "MOBILE",
-      status: "PENDING",
-      registered_from: "MOBILE",
-
-      // 🔒 default
-      balance: { UZS: 0, USD: 0 },
-      opening_balance: { UZS: 0, USD: 0 },
-      payment_history: [],
-      isActive: true,
-    });
-
-    return res.status(201).json({
-      ok: true,
-      message: "Ro‘yxatdan o‘tildi. Admin tasdiqlashini kuting",
-      customer_id: customer._id,
-      status: customer.status,
-    });
-  } catch (error) {
-    return res.status(500).json({
-      ok: false,
-      message: "Ro‘yxatdan o‘tishda xatolik",
       error: error.message,
     });
   }

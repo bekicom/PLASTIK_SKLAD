@@ -5,6 +5,7 @@ const Sale = require("../modules/sales/Sale");
 const Product = require("../modules/products/Product");
 const Warehouse = require("../modules/Warehouse/Warehouse");
 const Customer = require("../modules/Customer/Customer");
+const Supplier = require("../modules/suppliers/Supplier");
 
 /* =====================
    HELPERS
@@ -588,7 +589,41 @@ exports.searchSalesByProduct = async (req, res) => {
       .select(
         "invoiceNo createdAt status customerSnapshot customerId items totals currencyTotals",
       )
+      .populate("customerId", "name phone address note")
       .lean();
+
+    const productIdSet = new Set();
+    for (const s of rows) {
+      for (const it of s.items || []) {
+        if (it?.productId) productIdSet.add(String(it.productId));
+      }
+    }
+
+    const products = await Product.find({
+      _id: { $in: [...productIdSet] },
+    })
+      .select("_id supplier_id")
+      .lean();
+
+    const supplierIdSet = new Set(
+      products.map((p) => String(p.supplier_id || "")).filter(Boolean),
+    );
+
+    const suppliers = await Supplier.find({
+      _id: { $in: [...supplierIdSet] },
+    })
+      .select("_id name phone address")
+      .lean();
+
+    const supplierById = new Map(
+      suppliers.map((s) => [String(s._id), s]),
+    );
+    const supplierByProductId = new Map(
+      products.map((p) => [
+        String(p._id),
+        supplierById.get(String(p.supplier_id)) || null,
+      ]),
+    );
 
     /* =====================
        MAP RESPONSE
@@ -610,10 +645,31 @@ exports.searchSalesByProduct = async (req, res) => {
           invoiceNo: s.invoiceNo,
           createdAt: s.createdAt,
           status: s.status,
-          customer: s.customerId || s.customerSnapshot,
+          customer: s.customerId
+            ? {
+                _id: s.customerId._id,
+                name: s.customerId.name || "",
+                phone: s.customerId.phone || "",
+                address: s.customerId.address || "",
+                note: s.customerId.note || "",
+              }
+            : s.customerSnapshot || null,
           totals: s.totals,
           currencyTotals: s.currencyTotals,
-          matchedItems,
+          matchedItems: matchedItems.map((it) => {
+            const supplier = supplierByProductId.get(String(it.productId));
+            return {
+              ...it,
+              supplier: supplier
+                ? {
+                    _id: supplier._id,
+                    name: supplier.name || "",
+                    phone: supplier.phone || "",
+                    address: supplier.address || "",
+                  }
+                : null,
+            };
+          }),
         };
       })
       .filter(Boolean);

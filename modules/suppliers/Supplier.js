@@ -4,6 +4,8 @@ const supplierSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true },
     phone: { type: String, required: true, unique: true },
+    address: { type: String, trim: true, default: "" },
+    note: { type: String, trim: true, default: "" },
 
     balance: {
       UZS: { type: Number, default: 0 },

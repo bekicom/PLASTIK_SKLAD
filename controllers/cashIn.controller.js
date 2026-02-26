@@ -222,6 +222,38 @@ exports.getCashInReportAll = async (req, res) => {
               { $arrayElemAt: ["$supplier.name", 0] },
             ],
           },
+          target_phone: {
+            $cond: [
+              { $eq: ["$target_type", "CUSTOMER"] },
+              { $arrayElemAt: ["$customer.phone", 0] },
+              { $arrayElemAt: ["$supplier.phone", 0] },
+            ],
+          },
+          target_address: {
+            $ifNull: [
+              {
+                $cond: [
+                  { $eq: ["$target_type", "CUSTOMER"] },
+                  { $arrayElemAt: ["$customer.address", 0] },
+                  { $arrayElemAt: ["$supplier.address", 0] },
+                ],
+              },
+              "",
+            ],
+          },
+          // frontend backward-compatible field
+          address: {
+            $ifNull: [
+              {
+                $cond: [
+                  { $eq: ["$target_type", "CUSTOMER"] },
+                  { $arrayElemAt: ["$customer.address", 0] },
+                  { $arrayElemAt: ["$supplier.address", 0] },
+                ],
+              },
+              "",
+            ],
+          },
         },
       },
 
