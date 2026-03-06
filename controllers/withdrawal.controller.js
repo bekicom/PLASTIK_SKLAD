@@ -224,7 +224,13 @@ exports.updateWithdrawal = async (req, res) => {
       takenAt,
     } = req.body || {};
 
-    if (investor_name !== undefined && investor_name.trim()) {
+    if (investor_name !== undefined) {
+      if (typeof investor_name !== "string" || !investor_name.trim()) {
+        return res.status(400).json({
+          ok: false,
+          message: "investor_name noto‘g‘ri",
+        });
+      }
       doc.investor_name = investor_name.trim();
     }
 
@@ -239,18 +245,33 @@ exports.updateWithdrawal = async (req, res) => {
       doc.amount = amt;
     }
 
-    if (currency !== undefined && ["UZS", "USD"].includes(currency)) {
+    if (currency !== undefined) {
+      if (!["UZS", "USD"].includes(currency)) {
+        return res.status(400).json({
+          ok: false,
+          message: "currency noto‘g‘ri (UZS / USD)",
+        });
+      }
       doc.currency = currency;
     }
 
-    if (
-      payment_method !== undefined &&
-      ["CASH", "CARD"].includes(payment_method)
-    ) {
+    if (payment_method !== undefined) {
+      if (!["CASH", "CARD"].includes(payment_method)) {
+        return res.status(400).json({
+          ok: false,
+          message: "payment_method noto‘g‘ri (CASH / CARD)",
+        });
+      }
       doc.payment_method = payment_method;
     }
 
-    if (purpose !== undefined && purpose.trim()) {
+    if (purpose !== undefined) {
+      if (typeof purpose !== "string" || !purpose.trim()) {
+        return res.status(400).json({
+          ok: false,
+          message: "purpose noto‘g‘ri",
+        });
+      }
       doc.purpose = purpose.trim();
     }
 

@@ -519,6 +519,24 @@ router.put(
   rRole("ADMIN", "CASHIER"),
   withdrawalController.updateWithdrawal,
 );
+router.patch(
+  "/withdrawals/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.updateWithdrawal,
+);
+router.put(
+  "/withdrawals/edit/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.updateWithdrawal,
+);
+router.patch(
+  "/withdrawals/edit/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.updateWithdrawal,
+);
 
 /* =========================
    GET WITHDRAWALS
@@ -532,6 +550,18 @@ router.get(
 );
 router.delete(
   "/withdrawals/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.deleteWithdrawal,
+);
+router.delete(
+  "/withdrawals/delete/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.deleteWithdrawal,
+);
+router.post(
+  "/withdrawals/delete/:id",
   rAuth,
   rRole("ADMIN", "CASHIER"),
   withdrawalController.deleteWithdrawal,
