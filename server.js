@@ -5,6 +5,7 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const path = require("path");
+const { bootstrapAdmin } = require("./utils/bootstrapAdmin");
 
 const skladRoutes = require("./routes");
 
@@ -73,8 +74,14 @@ io.on("connection", (socket) => {
 ====================== */
 mongoose
   .connect(process.env.MONGO_URI)
-  .then(() => {
+  .then(async () => {
     console.log("MongoDB connected");
+    try {
+      await bootstrapAdmin();
+      console.log("✅ Bootstrap admin ready");
+    } catch (e) {
+      console.error("❌ Bootstrap admin error:", e.message);
+    }
 
     const PORT = process.env.PORT || 8071;
     server.listen(PORT, "0.0.0.0", () => {

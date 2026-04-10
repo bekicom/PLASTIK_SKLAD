@@ -10,8 +10,10 @@ const ALLOWED_ROLES = ["ADMIN", "CASHIER", "AGENT"];
 exports.createUser = async (req, res) => {
   try {
     const { name, phone, login, password, role } = req.body;
+    const normalizedPhone = String(phone || "").trim();
+    const normalizedLogin = String(login || "").trim().toLowerCase();
 
-    if (!name || !phone || !login || !password) {
+    if (!name || !normalizedPhone || !normalizedLogin || !password) {
       return res.status(400).json({
         ok: false,
         message: "name, phone, login, password majburiy",
@@ -25,7 +27,12 @@ exports.createUser = async (req, res) => {
       });
     }
 
-    const exists = await User.findOne({ $or: [{ phone }, { login }] });
+    const exists = await User.findOne({
+      $or: [
+        { phone: normalizedPhone },
+        { login: normalizedLogin },
+      ],
+    });
     if (exists) {
       return res.status(409).json({
         ok: false,
@@ -37,8 +44,8 @@ exports.createUser = async (req, res) => {
 
     const user = await User.create({
       name,
-      phone,
-      login,
+      phone: normalizedPhone,
+      login: normalizedLogin,
       password: hashedPassword,
       role: role || "AGENT",
     });
@@ -178,21 +185,23 @@ exports.updateUser = async (req, res) => {
     }
 
     // phone unique check
-    if (phone !== undefined && phone !== user.phone) {
-      const phoneExists = await User.findOne({ phone, _id: { $ne: id } });
+    if (phone !== undefined && String(phone).trim() !== user.phone) {
+      const nextPhone = String(phone).trim();
+      const phoneExists = await User.findOne({ phone: nextPhone, _id: { $ne: id } });
       if (phoneExists) {
         return res.status(409).json({ ok: false, message: "Telefon band" });
       }
-      user.phone = phone;
+      user.phone = nextPhone;
     }
 
     // login unique check
-    if (login !== undefined && login !== user.login) {
-      const loginExists = await User.findOne({ login, _id: { $ne: id } });
+    if (login !== undefined && String(login).trim().toLowerCase() !== user.login) {
+      const nextLogin = String(login).trim().toLowerCase();
+      const loginExists = await User.findOne({ login: nextLogin, _id: { $ne: id } });
       if (loginExists) {
         return res.status(409).json({ ok: false, message: "Login band" });
       }
-      user.login = login;
+      user.login = nextLogin;
     }
 
     if (name !== undefined) user.name = name;

@@ -2,6 +2,10 @@ const bcrypt = require("bcrypt");
 const jwt = require("jsonwebtoken");
 const User = require("../modules/Users/User");
 
+function escapeRegex(str = "") {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 /**
  * POST /api/auth/register
  * (default role: AGENT)
@@ -10,8 +14,10 @@ const User = require("../modules/Users/User");
 exports.register = async (req, res) => {
   try {
     const { name, phone, login, password, role } = req.body;
+    const normalizedLogin = String(login || "").trim().toLowerCase();
+    const normalizedPhone = String(phone || "").trim();
 
-    if (!name || !phone || !login || !password) {
+    if (!name || !normalizedPhone || !normalizedLogin || !password) {
       return res.status(400).json({
         ok: false,
         message: "Barcha maydonlar majburiy",
@@ -19,7 +25,10 @@ exports.register = async (req, res) => {
     }
 
     const exists = await User.findOne({
-      $or: [{ phone }, { login }],
+      $or: [
+        { phone: normalizedPhone },
+        { login: { $regex: `^${escapeRegex(normalizedLogin)}$`, $options: "i" } },
+      ],
     });
 
     if (exists) {
@@ -37,8 +46,8 @@ exports.register = async (req, res) => {
 
     const user = await User.create({
       name,
-      phone,
-      login,
+      phone: normalizedPhone,
+      login: normalizedLogin,
       password: hashedPassword,
       ...(finalRole ? { role: finalRole } : {}), // role berilmasa model default ishlaydi
     });
@@ -69,15 +78,19 @@ exports.register = async (req, res) => {
 exports.login = async (req, res) => {
   try {
     const { login, password } = req.body;
+    const normalizedLogin = String(login || "").trim().toLowerCase();
+    const normalizedPassword = String(password || "").trim();
 
-    if (!login || !password) {
+    if (!normalizedLogin || !normalizedPassword) {
       return res.status(400).json({
         ok: false,
         message: "Login va parol majburiy",
       });
     }
 
-    const user = await User.findOne({ login });
+    const user = await User.findOne({
+      login: { $regex: `^${escapeRegex(normalizedLogin)}$`, $options: "i" },
+    });
     if (!user) {
       return res.status(401).json({
         ok: false,
@@ -85,7 +98,7 @@ exports.login = async (req, res) => {
       });
     }
 
-    const isMatch = await bcrypt.compare(password, user.password);
+    const isMatch = await bcrypt.compare(normalizedPassword, user.password);
     if (!isMatch) {
       return res.status(401).json({
         ok: false,
