@@ -19,6 +19,222 @@ function escapeRegex(str = "") {
   return String(str).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
+function parseMaybeDate(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getCurrentUserId(req) {
+  return req.user?._id || req.user?.id || null;
+}
+
+function cloneCustomerSnapshot(customer) {
+  if (!customer) return null;
+  return {
+    name: customer.name,
+    phone: customer.phone,
+    address: customer.address,
+    note: customer.note,
+  };
+}
+
+function buildCurrencyTotals(items, discount = 0) {
+  const currencyTotals = {
+    UZS: {
+      subtotal: 0,
+      discount: 0,
+      grandTotal: 0,
+      paidAmount: 0,
+      debtAmount: 0,
+    },
+    USD: {
+      subtotal: 0,
+      discount: 0,
+      grandTotal: 0,
+      paidAmount: 0,
+      debtAmount: 0,
+    },
+  };
+
+  for (const it of items) {
+    if (currencyTotals[it.currency]) {
+      currencyTotals[it.currency].subtotal += Number(it.subtotal || 0);
+    }
+  }
+
+  const disc = Math.max(0, safeNumber(discount));
+  const totalAll = currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal;
+
+  if (disc > 0 && totalAll > 0) {
+    currencyTotals.UZS.discount = +(
+      disc * (currencyTotals.UZS.subtotal / totalAll)
+    ).toFixed(2);
+    currencyTotals.USD.discount = +(
+      disc * (currencyTotals.USD.subtotal / totalAll)
+    ).toFixed(2);
+  }
+
+  for (const cur of ["UZS", "USD"]) {
+    currencyTotals[cur].grandTotal = Math.max(
+      0,
+      +(currencyTotals[cur].subtotal - currencyTotals[cur].discount).toFixed(2),
+    );
+  }
+
+  return currencyTotals;
+}
+
+function buildSaleHistoryNote(type, payload = {}) {
+  if (type === "SALE_CREATED") return "Sotuv yaratildi";
+  if (type === "SALE_EDITED") return "Sotuv tahrirlandi";
+  if (type === "RETURN_CREATED") return "Vozvrat qilindi";
+  if (type === "CANCELED") return "Sotuv bekor qilindi";
+  if (type === "DELETED") return "Sotuv o‘chirildi";
+  return payload.note || "";
+}
+
+function buildItemBrief(items = []) {
+  return (items || []).map((it) => ({
+    productId: it.productId,
+    name: it.productSnapshot?.name || "",
+    qty: Number(it.qty || 0),
+    subtotal: Number(it.subtotal || 0),
+    currency: it.currency || "",
+  }));
+}
+
+async function buildSaleItemsFromInput(session, items) {
+  const normalizedItems = [];
+  const productIds = [];
+  const seen = new Set();
+
+  for (const raw of items) {
+    const productId = raw?.productId || raw?.product_id;
+    if (!mongoose.isValidObjectId(productId)) {
+      throw new Error("Product ID noto‘g‘ri");
+    }
+    const key = String(productId);
+    if (seen.has(key)) {
+      throw new Error("Bir xil product takrorlanmasin");
+    }
+    seen.add(key);
+    productIds.push(key);
+  }
+
+  const products = await Product.find({
+    _id: { $in: productIds },
+  })
+    .select("_id name model color category unit images qty buy_price sell_price warehouse_currency")
+    .session(session);
+
+  if (products.length !== productIds.length) {
+    throw new Error("Ba’zi productlar topilmadi");
+  }
+
+  const productMap = new Map(products.map((p) => [String(p._id), p]));
+
+  for (const raw of items) {
+    const productId = raw?.productId || raw?.product_id;
+    const product = productMap.get(String(productId));
+    const qty = safeNumber(raw?.qty);
+    if (qty <= 0) throw new Error("qty noto‘g‘ri");
+
+    const sellPrice = safeNumber(
+      raw?.sell_price ?? raw?.price ?? product.sell_price,
+    );
+    if (sellPrice <= 0) {
+      throw new Error("sell_price noto‘g‘ri");
+    }
+
+    const stockQty = Number(product.qty || 0);
+    if (stockQty < qty) {
+      throw new Error(`Stock yetarli emas: ${product.name}`);
+    }
+
+    normalizedItems.push({
+      productId: product._id,
+      productSnapshot: {
+        name: product.name,
+        model: product.model || "",
+        color: product.color || "",
+        category: product.category || "",
+        unit: product.unit,
+        images: product.images || [],
+      },
+      warehouseId: null,
+      currency: product.warehouse_currency,
+      qty,
+      sell_price: sellPrice,
+      buy_price: safeNumber(product.buy_price),
+      subtotal: +(qty * sellPrice).toFixed(2),
+    });
+  }
+
+  const currencies = [...new Set(products.map((p) => p.warehouse_currency))];
+  const warehouses = await Warehouse.find({
+    currency: { $in: currencies },
+  })
+    .select("_id currency")
+    .session(session);
+
+  const wMap = new Map(warehouses.map((w) => [w.currency, w._id]));
+
+  for (const item of normalizedItems) {
+    const warehouseId = wMap.get(item.currency);
+    if (!warehouseId) {
+      throw new Error(`Warehouse topilmadi: ${item.currency}`);
+    }
+    item.warehouseId = warehouseId;
+  }
+
+  for (const item of normalizedItems) {
+    await Product.updateOne(
+      { _id: item.productId, qty: { $gte: item.qty } },
+      { $inc: { qty: -item.qty } },
+      { session },
+    );
+  }
+
+  return normalizedItems;
+}
+
+async function restoreProductStock(session, items) {
+  for (const it of items || []) {
+    if (!it?.productId || !mongoose.isValidObjectId(it.productId)) continue;
+    const ok = await Product.updateOne(
+      { _id: it.productId },
+      { $inc: { qty: Number(it.qty || 0) } },
+      { session },
+    );
+
+    if (ok.modifiedCount === 0) {
+      throw new Error("Product topilmadi yoki stock qaytarilmadi");
+    }
+  }
+}
+
+async function reapplyExistingSaleItems(session, items) {
+  for (const it of items || []) {
+    if (!it?.productId || !mongoose.isValidObjectId(it.productId)) {
+      throw new Error("Sale item productId noto‘g‘ri");
+    }
+
+    const qty = safeNumber(it.qty);
+    if (qty <= 0) throw new Error("Sale item qty noto‘g‘ri");
+
+    const ok = await Product.updateOne(
+      { _id: it.productId, qty: { $gte: qty } },
+      { $inc: { qty: -qty } },
+      { session },
+    );
+
+    if (ok.modifiedCount === 0) {
+      throw new Error("Stock yetarli emas");
+    }
+  }
+}
+
 /* =====================
    CREATE SALE
 ===================== */
@@ -267,6 +483,30 @@ exports.createSale = async (req, res) => {
               currencyTotals.UZS.grandTotal + currencyTotals.USD.grandTotal,
           },
           currencyTotals,
+          history: [
+            {
+              type: "SALE_CREATED",
+              date: finalSaleDate,
+              by: soldBy,
+              note: note || "Sotuv yaratildi",
+              amountDelta: {
+                UZS: Number(currencyTotals.UZS.debtAmount || 0),
+                USD: Number(currencyTotals.USD.debtAmount || 0),
+              },
+              payload: {
+                customerId: finalCustomerId,
+                items: buildItemBrief(saleItems),
+                totals: {
+                  subtotal:
+                    currencyTotals.UZS.subtotal + currencyTotals.USD.subtotal,
+                  discount: disc,
+                  grandTotal:
+                    currencyTotals.UZS.grandTotal +
+                    currencyTotals.USD.grandTotal,
+                },
+              },
+            },
+          ],
           note,
           status: "COMPLETED",
         },
@@ -301,6 +541,318 @@ exports.createSale = async (req, res) => {
       ok: true,
       message: "Sale yaratildi",
       sale,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      ok: false,
+      message: err.message,
+    });
+  } finally {
+    session.endSession();
+  }
+};
+
+exports.editSale = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      throw new Error("Sale ID noto‘g‘ri");
+    }
+
+    const sale = await Sale.findById(id).session(session);
+    if (!sale) throw new Error("Sale topilmadi");
+    if (sale.status !== "COMPLETED") {
+      throw new Error("Faqat COMPLETED sale tahrirlanadi");
+    }
+
+    const oldItems = (sale.items || []).map((it) => ({ ...it.toObject() }));
+    const oldCurrencyTotals = sale.currencyTotals || {};
+    const oldCustomerId = sale.customerId ? String(sale.customerId) : null;
+    const oldSaleDate = sale.saleDate;
+    const oldDebt = {
+      UZS: Number(oldCurrencyTotals.UZS?.debtAmount || 0),
+      USD: Number(oldCurrencyTotals.USD?.debtAmount || 0),
+    };
+
+    const hasCustomerPatch =
+      Object.prototype.hasOwnProperty.call(req.body || {}, "customerId") ||
+      Object.prototype.hasOwnProperty.call(req.body || {}, "customer");
+    const hasItemsPatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "items",
+    );
+    const hasSaleDatePatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "saleDate",
+    );
+    const hasDiscountPatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "discount",
+    );
+
+    const nextSaleDate = hasSaleDatePatch
+      ? parseMaybeDate(req.body.saleDate)
+      : sale.saleDate;
+    if (hasSaleDatePatch && !nextSaleDate) {
+      throw new Error("saleDate noto‘g‘ri");
+    }
+
+    const nextDiscount = hasDiscountPatch
+      ? safeNumber(req.body.discount)
+      : Number(sale.totals?.discount || 0);
+
+    const nextNote =
+      Object.prototype.hasOwnProperty.call(req.body || {}, "note")
+        ? String(req.body.note || "")
+        : sale.note || "";
+
+    /* =========================
+       1. OLD BALANCE + STOCK ROLLBACK
+    ========================= */
+    if (oldCustomerId) {
+      const oldCustomer = await Customer.findById(oldCustomerId).session(
+        session,
+      );
+      if (oldCustomer) {
+        oldCustomer.balance.UZS =
+          Number(oldCustomer.balance?.UZS || 0) - oldDebt.UZS;
+        oldCustomer.balance.USD =
+          Number(oldCustomer.balance?.USD || 0) - oldDebt.USD;
+        await oldCustomer.save({ session });
+      }
+    }
+
+    await restoreProductStock(session, oldItems);
+
+    /* =========================
+       2. NEW CUSTOMER
+    ========================= */
+    let nextCustomerId = sale.customerId || null;
+    let nextCustomerSnapshot = sale.customerSnapshot || null;
+    let nextCustomerDoc = null;
+
+    if (hasCustomerPatch) {
+      const customerId = req.body.customerId;
+      const customerRaw = req.body.customer;
+
+      if (mongoose.isValidObjectId(customerId)) {
+        nextCustomerDoc = await Customer.findById(customerId).session(session);
+        if (!nextCustomerDoc) throw new Error("Customer topilmadi");
+      } else if (customerRaw && typeof customerRaw === "object") {
+        const name = String(customerRaw.name || "").trim();
+        const phone = String(customerRaw.phone || "").trim();
+        const address = String(customerRaw.address || "").trim();
+        const note = String(customerRaw.note || "").trim();
+
+        if (!name) {
+          throw new Error("customer name majburiy");
+        }
+
+        if (phone) {
+          const existing = await Customer.findOne({ phone }).session(session);
+          if (existing) {
+            nextCustomerDoc = existing;
+          }
+        }
+
+        if (!nextCustomerDoc) {
+          nextCustomerDoc = await Customer.create(
+            [
+              {
+                name,
+                phone,
+                address,
+                note,
+                balance: { UZS: 0, USD: 0 },
+              },
+            ],
+            { session },
+          ).then((rows) => rows[0]);
+        }
+      } else if (customerId === null || customerRaw === null) {
+        nextCustomerDoc = null;
+      } else {
+        throw new Error("customerId yoki customer noto‘g‘ri");
+      }
+
+      nextCustomerId = nextCustomerDoc ? nextCustomerDoc._id : null;
+      nextCustomerSnapshot = nextCustomerDoc
+        ? cloneCustomerSnapshot(nextCustomerDoc)
+        : null;
+    } else if (nextCustomerId) {
+      nextCustomerDoc = await Customer.findById(nextCustomerId).session(session);
+    }
+
+    /* =========================
+       3. ITEMS
+    ========================= */
+    let nextItems = oldItems;
+    if (hasItemsPatch) {
+      if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
+        throw new Error("items bo‘sh bo‘lishi mumkin emas");
+      }
+
+      nextItems = await buildSaleItemsFromInput(session, req.body.items);
+    } else {
+      await reapplyExistingSaleItems(session, oldItems);
+    }
+
+    /* =========================
+       4. TOTALS
+    ========================= */
+    const nextCurrencyTotals = buildCurrencyTotals(nextItems, nextDiscount);
+    nextCurrencyTotals.UZS.paidAmount = Number(
+      oldCurrencyTotals.UZS?.paidAmount || 0,
+    );
+    nextCurrencyTotals.USD.paidAmount = Number(
+      oldCurrencyTotals.USD?.paidAmount || 0,
+    );
+    nextCurrencyTotals.UZS.debtAmount = Math.max(
+      0,
+      nextCurrencyTotals.UZS.grandTotal - nextCurrencyTotals.UZS.paidAmount,
+    );
+    nextCurrencyTotals.USD.debtAmount = Math.max(
+      0,
+      nextCurrencyTotals.USD.grandTotal - nextCurrencyTotals.USD.paidAmount,
+    );
+
+    const newDebt = {
+      UZS: Number(nextCurrencyTotals.UZS.debtAmount || 0),
+      USD: Number(nextCurrencyTotals.USD.debtAmount || 0),
+    };
+
+    /* =========================
+       5. BALANCE TRANSFER
+    ========================= */
+    const changedCustomer = String(nextCustomerId || "") !== String(oldCustomerId || "");
+
+    if (nextCustomerDoc) {
+      if (oldCustomerId && String(nextCustomerDoc._id) === oldCustomerId) {
+        nextCustomerDoc.balance.UZS =
+          Number(nextCustomerDoc.balance?.UZS || 0) + newDebt.UZS;
+        nextCustomerDoc.balance.USD =
+          Number(nextCustomerDoc.balance?.USD || 0) + newDebt.USD;
+      } else {
+        nextCustomerDoc.balance.UZS =
+          Number(nextCustomerDoc.balance?.UZS || 0) + newDebt.UZS;
+        nextCustomerDoc.balance.USD =
+          Number(nextCustomerDoc.balance?.USD || 0) + newDebt.USD;
+      }
+      await nextCustomerDoc.save({ session });
+    }
+
+    if (changedCustomer && oldCustomerId) {
+      const oldCustomer = await Customer.findById(oldCustomerId).session(
+        session,
+      );
+      if (oldCustomer) {
+        if (oldDebt.UZS > 0) {
+          oldCustomer.payment_history.push({
+            currency: "UZS",
+            amount: oldDebt.UZS,
+            direction: "PAYMENT_CANCEL",
+            note: `Sale ${sale.invoiceNo} boshqa mijozga o‘tkazildi`,
+            date: new Date(),
+          });
+        }
+        if (oldDebt.USD > 0) {
+          oldCustomer.payment_history.push({
+            currency: "USD",
+            amount: oldDebt.USD,
+            direction: "PAYMENT_CANCEL",
+            note: `Sale ${sale.invoiceNo} boshqa mijozga o‘tkazildi`,
+            date: new Date(),
+          });
+        }
+        await oldCustomer.save({ session });
+      }
+
+      if (nextCustomerDoc) {
+        if (newDebt.UZS > 0) {
+          nextCustomerDoc.payment_history.push({
+            currency: "UZS",
+            amount: newDebt.UZS,
+            direction: "DEBT",
+            note: `Sale ${sale.invoiceNo} mijozga biriktirildi`,
+            date: new Date(),
+          });
+        }
+        if (newDebt.USD > 0) {
+          nextCustomerDoc.payment_history.push({
+            currency: "USD",
+            amount: newDebt.USD,
+            direction: "DEBT",
+            note: `Sale ${sale.invoiceNo} mijozga biriktirildi`,
+            date: new Date(),
+          });
+        }
+        await nextCustomerDoc.save({ session });
+      }
+    }
+
+    /* =========================
+       6. SAVE SALE
+    ========================= */
+    sale.saleDate = nextSaleDate;
+    sale.customerId = nextCustomerId;
+    sale.customerSnapshot = nextCustomerSnapshot;
+    sale.items = nextItems;
+    sale.totals = {
+      subtotal: nextCurrencyTotals.UZS.subtotal + nextCurrencyTotals.USD.subtotal,
+      discount: nextDiscount,
+      grandTotal:
+        nextCurrencyTotals.UZS.grandTotal + nextCurrencyTotals.USD.grandTotal,
+    };
+    sale.currencyTotals = nextCurrencyTotals;
+    sale.note = nextNote;
+    sale.editedAt = new Date();
+    sale.editedBy = getCurrentUserId(req);
+    sale.editReason = String(req.body.editReason || req.body.reason || "").slice(
+      0,
+      500,
+    );
+    sale.revision = Number(sale.revision || 0) + 1;
+    sale.history = Array.isArray(sale.history) ? sale.history : [];
+    sale.history.push({
+      type: "SALE_EDITED",
+      date: new Date(),
+      by: getCurrentUserId(req),
+      note: sale.editReason || "Sotuv tahrirlandi",
+      amountDelta: {
+        UZS: newDebt.UZS - oldDebt.UZS,
+        USD: newDebt.USD - oldDebt.USD,
+      },
+      payload: {
+        oldCustomerId,
+        newCustomerId: nextCustomerId ? String(nextCustomerId) : null,
+        oldSaleDate,
+        newSaleDate: nextSaleDate,
+        oldItems: buildItemBrief(oldItems),
+        newItems: buildItemBrief(nextItems),
+        oldTotals: {
+          UZS: oldDebt.UZS,
+          USD: oldDebt.USD,
+        },
+        newTotals: {
+          UZS: newDebt.UZS,
+          USD: newDebt.USD,
+        },
+      },
+    });
+
+    await sale.save({ session });
+
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message: "Sale yangilandi",
+      sale,
+      debt: newDebt,
     });
   } catch (err) {
     await session.abortTransaction();
@@ -373,6 +925,7 @@ exports.getSales = async (req, res) => {
         path: "items.warehouseId",
         select: "name currency",
       })
+      .select("invoiceNo saleDate createdAt soldBy customerId customerSnapshot items totals currencyTotals status note canceledAt cancelReason history")
       .lean();
 
     /* =====================
@@ -429,6 +982,7 @@ exports.getSales = async (req, res) => {
       currencyTotals: sale.currencyTotals,
       payments: sale.payments || [],
       note: sale.note || "",
+      history: Array.isArray(sale.history) ? sale.history : [],
     }));
 
     return res.json({
@@ -453,10 +1007,17 @@ exports.getSaleById = async (req, res) => {
 
     const sale = await Sale.findById(id)
       .populate("customerId", "name phone address note")
+      .select("invoiceNo saleDate createdAt soldBy customerId customerSnapshot items totals currencyTotals status note canceledAt cancelReason history editedAt editedBy editReason revision")
       .lean();
     if (!sale) return res.status(404).json({ message: "Sale topilmadi" });
 
-    return res.json({ ok: true, item: sale });
+    return res.json({
+      ok: true,
+      item: {
+        ...sale,
+        history: Array.isArray(sale.history) ? sale.history : [],
+      },
+    });
   } catch (err) {
     return res
       .status(500)

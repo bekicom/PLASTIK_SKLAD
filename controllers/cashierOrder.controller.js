@@ -19,6 +19,11 @@ function normCurrency(c) {
   return x === "UZS" || x === "USD" ? x : null;
 }
 
+function safeNum(n, def = 0) {
+  const x = Number(n);
+  return Number.isFinite(x) ? x : def;
+}
+
 // ✅ MANA SHU YERGA
 function parseDate(value, endOfDay = false) {
   if (!value) return null;
@@ -340,6 +345,175 @@ exports.cancelOrder = async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
+      error: error.message,
+    });
+  }
+};
+
+/* =======================
+   EDIT ORDER (NEW ONLY)
+   Zakasni qabul qilishdan oldin qty/price/note ni tahrirlash
+======================= */
+exports.editOrder = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { items, note } = req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({ ok: false, message: "order id noto‘g‘ri" });
+    }
+
+    const order = await Order.findById(id);
+    if (!order) {
+      return res.status(404).json({ ok: false, message: "Zakas topilmadi" });
+    }
+
+    if (order.status !== "NEW") {
+      return res.status(400).json({
+        ok: false,
+        message: "Faqat NEW zakas tahrirlanadi",
+      });
+    }
+
+    let nextItems = order.items || [];
+
+    if (items !== undefined) {
+      if (!Array.isArray(items) || items.length === 0) {
+        return res.status(400).json({
+          ok: false,
+          message: "items bo‘sh bo‘lishi mumkin emas",
+        });
+      }
+
+      const productIds = items.map((i) => i.product_id || i.productId);
+      const validIds = productIds.filter((x) => mongoose.isValidObjectId(x));
+      if (validIds.length !== items.length) {
+        return res.status(400).json({
+          ok: false,
+          message: "items ichida product_id noto‘g‘ri",
+        });
+      }
+
+      const products = await Product.find({
+        _id: { $in: validIds },
+      })
+        .select("_id name model color category unit images qty warehouse_currency sell_price")
+        .lean();
+
+      if (products.length !== items.length) {
+        return res.status(400).json({
+          ok: false,
+          message: "Ba'zi productlar topilmadi",
+        });
+      }
+
+      const pMap = new Map(products.map((p) => [String(p._id), p]));
+      const seen = new Set();
+      const rebuilt = [];
+
+      for (const it of items) {
+        const pid = String(it.product_id || it.productId);
+        if (seen.has(pid)) {
+          return res.status(400).json({
+            ok: false,
+            message: "Bir xil mahsulot takrorlanmasin",
+          });
+        }
+        seen.add(pid);
+
+        const p = pMap.get(pid);
+        if (!p) {
+          return res.status(400).json({
+            ok: false,
+            message: "Product topilmadi",
+          });
+        }
+
+        const qty = safeNum(it.qty);
+        if (qty <= 0) {
+          return res.status(400).json({
+            ok: false,
+            message: "qty 0 dan katta bo‘lishi kerak",
+          });
+        }
+
+        // NEW orderda stock reserve qilinmagan, shuning uchun edit payti ham tekshirib qo'yamiz.
+        if (safeNum(p.qty) < qty) {
+          return res.status(400).json({
+            ok: false,
+            message: `${p.name} uchun omborda ${p.qty} dona bor, siz ${qty} kiritdingiz`,
+          });
+        }
+
+        const price = safeNum(it.price ?? it.price_snapshot ?? p.sell_price);
+        if (price <= 0) {
+          return res.status(400).json({
+            ok: false,
+            message: "price noto‘g‘ri",
+          });
+        }
+
+        const subtotal = Number((qty * price).toFixed(2));
+
+        rebuilt.push({
+          product_id: p._id,
+          product_snapshot: {
+            name: p.name,
+            model: p.model || "",
+            color: p.color || "",
+            category: p.category || "",
+            unit: p.unit,
+            images: p.images || [],
+          },
+          qty,
+          price_snapshot: price,
+          subtotal,
+          currency_snapshot: p.warehouse_currency,
+        });
+      }
+
+      nextItems = rebuilt;
+    }
+
+    if (note !== undefined) {
+      order.note = String(note || "").slice(0, 500);
+    }
+
+    order.items = nextItems;
+    order.total_uzs = (nextItems || [])
+      .filter((x) => x.currency_snapshot === "UZS")
+      .reduce((s, x) => s + safeNum(x.subtotal), 0);
+    order.total_usd = (nextItems || [])
+      .filter((x) => x.currency_snapshot === "USD")
+      .reduce((s, x) => s + safeNum(x.subtotal), 0);
+
+    await order.save();
+
+    return res.json({
+      ok: true,
+      message: "Zakas yangilandi",
+      order: {
+        _id: order._id,
+        status: order.status,
+        note: order.note || "",
+        totals: {
+          UZS: Number(order.total_uzs || 0),
+          USD: Number(order.total_usd || 0),
+        },
+        items: (order.items || []).map((it) => ({
+          product_id: it.product_id,
+          name: it.product_snapshot?.name || "",
+          qty: Number(it.qty || 0),
+          price: Number(it.price_snapshot || 0),
+          subtotal: Number(it.subtotal || 0),
+          currency: it.currency_snapshot,
+        })),
+      },
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Order editda xato",
       error: error.message,
     });
   }

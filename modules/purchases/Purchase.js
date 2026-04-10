@@ -73,6 +73,12 @@ const purchaseSchema = new mongoose.Schema(
       index: true,
     },
 
+    note: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
     items: {
       type: [purchaseItemSchema],
       required: true,
@@ -80,6 +86,28 @@ const purchaseSchema = new mongoose.Schema(
         (arr) => arr.length > 0,
         "Kamida 1 ta mahsulot bo‘lishi kerak",
       ],
+    },
+
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+
+    editedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    editReason: {
+      type: String,
+      default: "",
+    },
+
+    revision: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
   },
   { timestamps: true }

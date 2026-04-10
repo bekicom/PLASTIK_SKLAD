@@ -9,6 +9,9 @@ const Product = require("../products/Product");
 const CashIn = require("../cashIn/CashIn");
 const Withdrawal = require("../withdrawals/Withdrawal");
 const Purchase = require("../purchases/Purchase");
+const SaleReturn = require("../returns/SaleReturn");
+const StartingBalance = require("./StartingBalance");
+const InventoryRevaluation = require("./InventoryRevaluation");
 
 /* =====================
    HELPERS
@@ -21,6 +24,45 @@ function buildDateMatch(from, to, field = "createdAt") {
     if (to) m[field].$lte = to;
   }
   return m;
+}
+
+async function getStartingBalanceSummary({ beforeDate = null } = {}) {
+  const match = {};
+  if (beforeDate instanceof Date && !Number.isNaN(beforeDate.getTime())) {
+    match.date = { $lte: beforeDate };
+  }
+
+  const agg = await StartingBalance.aggregate([
+    { $match: match },
+    {
+      $group: {
+        _id: {
+          currency: "$currency",
+          method: { $ifNull: ["$payment_method", "CASH"] },
+        },
+        total: { $sum: "$amount" },
+      },
+    },
+  ]);
+
+  const initialBalance = {
+    UZS: { CASH: 0, CARD: 0, total: 0 },
+    USD: { CASH: 0, CARD: 0, total: 0 },
+  };
+
+  for (const row of agg) {
+    const currency = row?._id?.currency;
+    const method = row?._id?.method;
+    if (!initialBalance[currency]) continue;
+    if (method !== "CASH" && method !== "CARD") continue;
+
+    initialBalance[currency][method] += Number(row.total || 0);
+  }
+
+  initialBalance.UZS.total = initialBalance.UZS.CASH + initialBalance.UZS.CARD;
+  initialBalance.USD.total = initialBalance.USD.CASH + initialBalance.USD.CARD;
+
+  return initialBalance;
 }
 
 /* =====================
@@ -38,22 +80,11 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
       ? new mongoose.Types.ObjectId(warehouseId)
       : null;
 
-  // ✅ Boshlang'ich balans (starting balance) - CASH va CARD bilan
-  const initialBalance = {
-    UZS: {
-      CASH: Number(startingBalance?.UZS?.CASH || 0),
-      CARD: Number(startingBalance?.UZS?.CARD || 0),
-      total: 0,
-    },
-    USD: {
-      CASH: Number(startingBalance?.USD?.CASH || 0),
-      CARD: Number(startingBalance?.USD?.CARD || 0),
-      total: 0,
-    },
+  // ✅ Boshlang'ich balans DB yoki caller orqali keladi
+  const initialBalance = startingBalance || {
+    UZS: { CASH: 0, CARD: 0, total: 0 },
+    USD: { CASH: 0, CARD: 0, total: 0 },
   };
-
-  initialBalance.UZS.total = initialBalance.UZS.CASH + initialBalance.UZS.CARD;
-  initialBalance.USD.total = initialBalance.USD.CASH + initialBalance.USD.CARD;
 
   console.log("💰 initialBalance o'rnatildi:", initialBalance);
 
@@ -61,7 +92,7 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
      SALES (UNIQUE SALE COUNT)
   ===================== */
   const saleMatch = {
-    ...buildDateMatch(from, to, "createdAt"),
+    ...buildDateMatch(from, to, "saleDate"),
     status: "COMPLETED",
   };
 
@@ -169,7 +200,33 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
     { $project: { _id: 0 } },
   ]);
 
-  const profit = profitAgg[0] || { UZS: 0, USD: 0 };
+  const salesProfit = profitAgg[0] || { UZS: 0, USD: 0 };
+
+  const revaluationAgg = await InventoryRevaluation.aggregate([
+    {
+      $match: {
+        ...buildDateMatch(from, to, "date"),
+      },
+    },
+    {
+      $group: {
+        _id: "$currency",
+        total: { $sum: "$delta_profit" },
+      },
+    },
+  ]);
+
+  const revaluation = { UZS: 0, USD: 0 };
+  for (const r of revaluationAgg) {
+    if (r._id === "UZS" || r._id === "USD") {
+      revaluation[r._id] = Number(r.total || 0);
+    }
+  }
+
+  const profit = {
+    UZS: Number(salesProfit.UZS || 0) + revaluation.UZS,
+    USD: Number(salesProfit.USD || 0) + revaluation.USD,
+  };
 
   /* =====================
      EXPENSES
@@ -226,8 +283,9 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
     },
   };
 
-  const customerFilter = buildDateMatch(from, to, "createdAt");
-  const customers = await Customer.find(customerFilter, { balance: 1 }).lean();
+  // Current balance is a live state, not a period snapshot.
+  // So we do not filter it by createdAt, otherwise dashboard periods become misleading.
+  const customers = await Customer.find({}, { balance: 1 }).lean();
 
   for (const c of customers) {
     const bu = Number(c.balance?.UZS || 0);
@@ -247,14 +305,7 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
 
   console.log("👥 Mijozlar balansi:", balances.customers);
 
-  const supplierPipeline = [];
-  const supplierDateMatch = buildDateMatch(from, to, "createdAt");
-
-  if (Object.keys(supplierDateMatch).length > 0) {
-    supplierPipeline.push({ $match: supplierDateMatch });
-  }
-
-  supplierPipeline.push(
+  const supplierPipeline = [
     {
       $project: {
         debtUZS: { $cond: [{ $gt: ["$balance.UZS", 0] }, "$balance.UZS", 0] },
@@ -267,16 +318,16 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
         },
       },
     },
-    {
-      $group: {
-        _id: null,
-        debtUZS: { $sum: "$debtUZS" },
-        debtUSD: { $sum: "$debtUSD" },
-        prepaidUZS: { $sum: "$prepaidUZS" },
-        prepaidUSD: { $sum: "$prepaidUSD" },
+      {
+        $group: {
+          _id: null,
+          debtUZS: { $sum: "$debtUZS" },
+          debtUSD: { $sum: "$debtUSD" },
+          prepaidUZS: { $sum: "$prepaidUZS" },
+          prepaidUSD: { $sum: "$prepaidUSD" },
+        },
       },
-    },
-  );
+  ];
 
   const supplierBalanceAgg = await Supplier.aggregate(supplierPipeline);
 
@@ -302,7 +353,7 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
   const cashInAgg = await CashIn.aggregate([
     {
       $match: {
-        ...buildDateMatch(from, to, "createdAt"),
+        ...buildDateMatch(from, to, "paymentDate"),
         amount: { $gt: 0 },
       },
     },
@@ -594,6 +645,8 @@ async function getOverview({ from, to, tz, warehouseId, startingBalance }) {
   return {
     sales,
     profit: {
+      sales: salesProfit,
+      revaluation,
       gross: profit,
       net: {
         UZS: profit.UZS - expenses.UZS.total,
@@ -663,11 +716,11 @@ async function getTimeSeries({ from, to, tz, group }) {
 
   const sales = await Sale.aggregate([
     {
-      $match: { ...buildDateMatch(from, to, "createdAt"), status: "COMPLETED" },
+      $match: { ...buildDateMatch(from, to, "saleDate"), status: "COMPLETED" },
     },
     {
       $group: {
-        _id: { $dateTrunc: { date: "$createdAt", unit, timezone: tz } },
+        _id: { $dateTrunc: { date: "$saleDate", unit, timezone: tz } },
         count: { $sum: 1 },
         uzs_total: { $sum: "$currencyTotals.UZS.grandTotal" },
         usd_total: { $sum: "$currencyTotals.USD.grandTotal" },
@@ -731,7 +784,7 @@ async function getTop({ from, to, limit = 10 }) {
   return Sale.aggregate([
     {
       $match: {
-        ...buildDateMatch(from, to, "createdAt"),
+        ...buildDateMatch(from, to, "saleDate"),
         status: "COMPLETED",
       },
     },
@@ -848,9 +901,598 @@ async function getStock({ from, to } = {}) {
   return { byCurrency };
 }
 
+/* =====================
+   PROFIT DETAILS (CARD EYE)
+===================== */
+async function getProfitDetails({
+  from,
+  to,
+  currency = "ALL",
+  productId = null,
+  customerId = null,
+  limit = 500,
+} = {}) {
+  const saleMatch = {
+    ...buildDateMatch(from, to, "saleDate"),
+    status: "COMPLETED",
+  };
+
+  if (customerId && mongoose.isValidObjectId(customerId)) {
+    saleMatch.customerId = new mongoose.Types.ObjectId(customerId);
+  }
+
+  const sales = await Sale.find(saleMatch)
+    .select("invoiceNo saleDate customerId customerSnapshot items")
+    .lean();
+
+  const returns = await SaleReturn.find({
+    ...buildDateMatch(from, to, "createdAt"),
+  })
+    .select("sale_id createdAt items")
+    .lean();
+
+  const saleItemBuyMap = new Map();
+  for (const s of sales) {
+    for (const it of s.items || []) {
+      const key = `${String(s._id)}|${String(it.productId)}`;
+      saleItemBuyMap.set(key, Number(it.buy_price || 0));
+    }
+  }
+
+  const rows = [];
+  for (const s of sales) {
+    for (const it of s.items || []) {
+      if (productId && String(it.productId) !== String(productId)) continue;
+      if (currency !== "ALL" && it.currency !== currency) continue;
+
+      const qty = Number(it.qty || 0);
+      const sellPrice = Number(it.sell_price || 0);
+      const buyPrice = Number(it.buy_price || 0);
+      const revenue = qty * sellPrice;
+      const cost = qty * buyPrice;
+      const profit = revenue - cost;
+
+      rows.push({
+        date: s.saleDate || s.createdAt,
+        type: "SALE",
+        docNo: s.invoiceNo || "",
+        saleId: s._id,
+        customerId: s.customerId || null,
+        customerName: s.customerSnapshot?.name || "",
+        productId: it.productId,
+        productName: it.productSnapshot?.name || "",
+        model: it.productSnapshot?.model || "",
+        category: it.productSnapshot?.category || "",
+        unit: it.productSnapshot?.unit || "",
+        currency: it.currency,
+        qty,
+        sellPrice,
+        buyPrice,
+        revenue,
+        cost,
+        profit,
+      });
+    }
+  }
+
+  const revaluationRows = await InventoryRevaluation.find({
+    ...buildDateMatch(from, to, "date"),
+    ...(currency !== "ALL" ? { currency } : {}),
+  })
+    .select("date currency product existing_qty incoming_buy_price old_avg_buy_price delta_profit kind note purchase_id")
+    .lean();
+
+  for (const r of revaluationRows) {
+    rows.push({
+      date: r.date,
+      type: "REVALUATION",
+      docNo: "",
+      saleId: null,
+      customerId: null,
+      customerName: "",
+      productId: null,
+      productName: r?.product?.name || "",
+      model: r?.product?.model || "",
+      category: r?.product?.category || "",
+      unit: r?.product?.unit || "",
+      currency: r.currency,
+      qty: Number(r.existing_qty || 0),
+      sellPrice: 0,
+      buyPrice: Number(r.incoming_buy_price || 0),
+      revenue: Number(r.delta_profit || 0),
+      cost: 0,
+      profit: Number(r.delta_profit || 0),
+      note: r.note || "",
+      kind: r.kind || "",
+      purchaseId: r.purchase_id || null,
+      oldAvgBuyPrice: Number(r.old_avg_buy_price || 0),
+    });
+  }
+
+  for (const r of returns) {
+    for (const it of r.items || []) {
+      if (productId && String(it.product_id) !== String(productId)) continue;
+
+      const saleIdStr = String(r.sale_id || "");
+      const productIdStr = String(it.product_id || "");
+      const buyPrice =
+        Number(saleItemBuyMap.get(`${saleIdStr}|${productIdStr}`) || 0);
+      const sellPrice = Number(it.price || 0);
+      const qty = Number(it.qty || 0);
+
+      const returnCurrencyRows = rows.filter(
+        (x) =>
+          String(x.saleId) === saleIdStr &&
+          String(x.productId) === productIdStr &&
+          x.type === "SALE",
+      );
+      const itemCurrency = returnCurrencyRows[0]?.currency || "UZS";
+
+      if (currency !== "ALL" && itemCurrency !== currency) continue;
+
+      const revenue = -(qty * sellPrice);
+      const cost = -(qty * buyPrice);
+      const profit = revenue - cost;
+
+      rows.push({
+        date: r.createdAt,
+        type: "RETURN",
+        docNo: "",
+        saleId: r.sale_id || null,
+        customerId: null,
+        customerName: "",
+        productId: it.product_id,
+        productName: it.product_snapshot?.name || "",
+        model: "",
+        category: "",
+        unit: it.product_snapshot?.unit || "",
+        currency: itemCurrency,
+        qty: -qty,
+        sellPrice,
+        buyPrice,
+        revenue,
+        cost,
+        profit,
+      });
+    }
+  }
+
+  rows.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  const byCurrency = {
+    UZS: { revenue: 0, cost: 0, grossProfit: 0, qty: 0, rows: 0 },
+    USD: { revenue: 0, cost: 0, grossProfit: 0, qty: 0, rows: 0 },
+  };
+
+  const productMap = new Map();
+
+  for (const r of rows) {
+    if (!byCurrency[r.currency]) continue;
+
+    byCurrency[r.currency].revenue += Number(r.revenue || 0);
+    byCurrency[r.currency].cost += Number(r.cost || 0);
+    byCurrency[r.currency].grossProfit += Number(r.profit || 0);
+    byCurrency[r.currency].qty += Number(r.qty || 0);
+    byCurrency[r.currency].rows += 1;
+
+    const productKeyName =
+      String(r.productId || "").trim() ||
+      `${String(r.productName || "").trim()}|${String(r.model || "").trim()}|${String(r.category || "").trim()}|${String(r.unit || "").trim()}`;
+
+    const key2 = `${productKeyName}|${r.currency}`;
+    const acc = productMap.get(key2) || {
+      productId: r.productId || null,
+      productName: r.productName,
+      model: r.model,
+      category: r.category,
+      unit: r.unit,
+      currency: r.currency,
+      soldQty: 0,
+      returnedQty: 0,
+      netQty: 0,
+      revenue: 0,
+      cost: 0,
+      grossProfit: 0,
+      transactions: 0,
+    };
+
+    if (r.type === "SALE") acc.soldQty += Math.max(0, Number(r.qty || 0));
+    if (r.type === "RETURN") acc.returnedQty += Math.abs(Number(r.qty || 0));
+
+    acc.netQty += r.type === "REVALUATION" ? 0 : Number(r.qty || 0);
+    acc.revenue += Number(r.revenue || 0);
+    acc.cost += Number(r.cost || 0);
+    acc.grossProfit += Number(r.profit || 0);
+    acc.transactions += 1;
+
+    productMap.set(key2, acc);
+  }
+
+  const byProduct = Array.from(productMap.values())
+    .sort((a, b) => b.grossProfit - a.grossProfit)
+    .slice(0, Math.max(1, Number(limit || 500)));
+
+  return {
+    filters: {
+      from: from || null,
+      to: to || null,
+      currency,
+      productId: productId || null,
+      customerId: customerId || null,
+      limit: Math.max(1, Number(limit || 500)),
+    },
+    summary: {
+      UZS: byCurrency.UZS,
+      USD: byCurrency.USD,
+      totalRows: rows.length,
+      totalProducts: byProduct.length,
+    },
+    byProduct,
+    transactions: rows.slice(0, Math.max(1, Number(limit || 500))),
+  };
+}
+
+/* =====================
+   BUSINESS ANALYSIS (FULL)
+===================== */
+function ensureStatBucket() {
+  return {
+    revenue: 0,
+    cost: 0,
+    profit: 0,
+    qty: 0,
+    transactions: 0,
+  };
+}
+
+function touchStat(map, key, seed = {}) {
+  const cur = map.get(key) || { ...seed, UZS: ensureStatBucket(), USD: ensureStatBucket() };
+  map.set(key, cur);
+  return cur;
+}
+
+function applyStatRow(stat, currency, { revenue = 0, cost = 0, profit = 0, qty = 0 }) {
+  if (!["UZS", "USD"].includes(currency)) return;
+  stat[currency].revenue += Number(revenue || 0);
+  stat[currency].cost += Number(cost || 0);
+  stat[currency].profit += Number(profit || 0);
+  stat[currency].qty += Number(qty || 0);
+  stat[currency].transactions += 1;
+}
+
+function normalizeStatRow(stat) {
+  const out = {
+    UZS: {
+      revenue: Number(stat?.UZS?.revenue || 0),
+      cost: Number(stat?.UZS?.cost || 0),
+      profit: Number(stat?.UZS?.profit || 0),
+      qty: Number(stat?.UZS?.qty || 0),
+      transactions: Number(stat?.UZS?.transactions || 0),
+      marginPercent: 0,
+    },
+    USD: {
+      revenue: Number(stat?.USD?.revenue || 0),
+      cost: Number(stat?.USD?.cost || 0),
+      profit: Number(stat?.USD?.profit || 0),
+      qty: Number(stat?.USD?.qty || 0),
+      transactions: Number(stat?.USD?.transactions || 0),
+      marginPercent: 0,
+    },
+  };
+
+  out.UZS.marginPercent = out.UZS.revenue
+    ? Number(((out.UZS.profit / out.UZS.revenue) * 100).toFixed(2))
+    : 0;
+  out.USD.marginPercent = out.USD.revenue
+    ? Number(((out.USD.profit / out.USD.revenue) * 100).toFixed(2))
+    : 0;
+
+  return out;
+}
+
+function sortByProfitCurrency(rows, currency = "UZS", desc = true) {
+  const dir = desc ? -1 : 1;
+  return [...rows].sort((a, b) => {
+    const av = Number(a?.stats?.[currency]?.profit || 0);
+    const bv = Number(b?.stats?.[currency]?.profit || 0);
+    if (av === bv) return 0;
+    return av > bv ? dir : -dir;
+  });
+}
+
+async function getBusinessAnalysis({
+  from,
+  to,
+  currency = "ALL",
+  limit = 10,
+} = {}) {
+  const validCurrency = ["ALL", "UZS", "USD"].includes(currency) ? currency : "ALL";
+  const topLimit = Math.min(50, Math.max(1, Number(limit || 10)));
+
+  const saleMatch = {
+    ...buildDateMatch(from, to, "saleDate"),
+    status: "COMPLETED",
+  };
+
+  const sales = await Sale.find(saleMatch)
+    .select("invoiceNo saleDate createdAt customerId customerSnapshot items")
+    .lean();
+
+  const returns = await SaleReturn.find({
+    ...buildDateMatch(from, to, "createdAt"),
+  })
+    .select("sale_id customer_id createdAt items")
+    .lean();
+
+  const productIdSet = new Set();
+  for (const s of sales) {
+    for (const it of s.items || []) {
+      if (it?.productId) productIdSet.add(String(it.productId));
+    }
+  }
+  for (const r of returns) {
+    for (const it of r.items || []) {
+      if (it?.product_id) productIdSet.add(String(it.product_id));
+    }
+  }
+
+  const products = await Product.find({
+    _id: { $in: [...productIdSet] },
+  })
+    .select("_id supplier_id name model category unit warehouse_currency")
+    .lean();
+
+  const productMap = new Map(products.map((p) => [String(p._id), p]));
+  const supplierIds = [
+    ...new Set(products.map((p) => String(p.supplier_id || "")).filter(Boolean)),
+  ];
+
+  const suppliers = await Supplier.find({
+    _id: { $in: supplierIds },
+  })
+    .select("_id name phone balance")
+    .lean();
+  const supplierMap = new Map(suppliers.map((s) => [String(s._id), s]));
+
+  const customerIds = [
+    ...new Set(
+      sales.map((s) => String(s.customerId || "")).filter(Boolean).concat(
+        returns.map((r) => String(r.customer_id || "")).filter(Boolean),
+      ),
+    ),
+  ];
+
+  const customers = await Customer.find({
+    _id: { $in: customerIds },
+  })
+    .select("_id name phone balance")
+    .lean();
+  const customerMap = new Map(customers.map((c) => [String(c._id), c]));
+
+  const saleItemMeta = new Map();
+  const saleCustomerMeta = new Map();
+
+  const customerStats = new Map();
+  const productStats = new Map();
+  const supplierStats = new Map();
+
+  const overall = {
+    UZS: ensureStatBucket(),
+    USD: ensureStatBucket(),
+  };
+
+  for (const s of sales) {
+    const saleId = String(s._id);
+    const customerKey = s.customerId ? String(s.customerId) : `SNAP:${String(s.customerSnapshot?.name || "Walk-in").trim() || "Walk-in"}`;
+    const customerName =
+      customerMap.get(String(s.customerId || ""))?.name ||
+      s.customerSnapshot?.name ||
+      "Walk-in";
+
+    saleCustomerMeta.set(saleId, { key: customerKey, name: customerName });
+
+    for (const it of s.items || []) {
+      const rowCurrency = String(it.currency || "");
+      if (!["UZS", "USD"].includes(rowCurrency)) continue;
+      if (validCurrency !== "ALL" && validCurrency !== rowCurrency) continue;
+
+      const qty = Number(it.qty || 0);
+      const sellPrice = Number(it.sell_price || 0);
+      const buyPrice = Number(it.buy_price || 0);
+      const revenue = qty * sellPrice;
+      const cost = qty * buyPrice;
+      const profit = revenue - cost;
+
+      const productId = String(it.productId || "");
+      const p = productMap.get(productId);
+      const productKey =
+        productId ||
+        `PSNAP:${String(it?.productSnapshot?.name || "").trim()}|${String(it?.productSnapshot?.model || "").trim()}|${rowCurrency}`;
+      const productName = p?.name || it?.productSnapshot?.name || "Noma'lum";
+
+      const supplierId = String(p?.supplier_id || "");
+      const supplier = supplierMap.get(supplierId);
+      const supplierKey = supplierId || "UNKNOWN_SUPPLIER";
+      const supplierName = supplier?.name || "Noma'lum zavod";
+
+      const line = { revenue, cost, profit, qty };
+
+      const cSeed = {
+        id: s.customerId || null,
+        name: customerName,
+        phone: customerMap.get(String(s.customerId || ""))?.phone || "",
+        balance: customerMap.get(String(s.customerId || ""))?.balance || { UZS: 0, USD: 0 },
+      };
+      const c = touchStat(customerStats, customerKey, cSeed);
+      applyStatRow(c, rowCurrency, line);
+
+      const pSeed = {
+        id: p?._id || null,
+        name: productName,
+        model: p?.model || it?.productSnapshot?.model || "",
+        category: p?.category || it?.productSnapshot?.category || "",
+        unit: p?.unit || it?.productSnapshot?.unit || "",
+        supplierId: supplier?._id || null,
+        supplierName,
+      };
+      const pStat = touchStat(productStats, productKey, pSeed);
+      applyStatRow(pStat, rowCurrency, line);
+
+      const sSeed = {
+        id: supplier?._id || null,
+        name: supplierName,
+        phone: supplier?.phone || "",
+        balance: supplier?.balance || { UZS: 0, USD: 0 },
+      };
+      const sStat = touchStat(supplierStats, supplierKey, sSeed);
+      applyStatRow(sStat, rowCurrency, line);
+
+      applyStatRow(overall, rowCurrency, line);
+
+      saleItemMeta.set(`${saleId}|${productId}`, {
+        buyPrice,
+        currency: rowCurrency,
+        customerKey,
+        customerName,
+      });
+    }
+  }
+
+  for (const r of returns) {
+    const saleId = String(r.sale_id || "");
+    const fallBackCustomer = saleCustomerMeta.get(saleId);
+    const customerKey = r.customer_id
+      ? String(r.customer_id)
+      : fallBackCustomer?.key || "UNKNOWN_CUSTOMER";
+    const customerName =
+      customerMap.get(String(r.customer_id || ""))?.name ||
+      fallBackCustomer?.name ||
+      "Noma'lum mijoz";
+
+    for (const it of r.items || []) {
+      const productId = String(it.product_id || "");
+      const meta = saleItemMeta.get(`${saleId}|${productId}`);
+      const p = productMap.get(productId);
+
+      const rowCurrency = meta?.currency || p?.warehouse_currency || "UZS";
+      if (!["UZS", "USD"].includes(rowCurrency)) continue;
+      if (validCurrency !== "ALL" && validCurrency !== rowCurrency) continue;
+
+      const qtyAbs = Number(it.qty || 0);
+      const qty = -qtyAbs;
+      const sellPrice = Number(it.price || 0);
+      const buyPrice = Number(meta?.buyPrice || 0);
+
+      const revenue = qty * sellPrice;
+      const cost = qty * buyPrice;
+      const profit = revenue - cost;
+
+      const supplierId = String(p?.supplier_id || "");
+      const supplier = supplierMap.get(supplierId);
+      const supplierKey = supplierId || "UNKNOWN_SUPPLIER";
+      const supplierName = supplier?.name || "Noma'lum zavod";
+
+      const line = { revenue, cost, profit, qty };
+
+      const cSeed = {
+        id: r.customer_id || null,
+        name: customerName,
+        phone: customerMap.get(String(r.customer_id || ""))?.phone || "",
+        balance: customerMap.get(String(r.customer_id || ""))?.balance || { UZS: 0, USD: 0 },
+      };
+      const c = touchStat(customerStats, customerKey, cSeed);
+      applyStatRow(c, rowCurrency, line);
+
+      const productKey =
+        productId ||
+        `PSNAP:${String(it?.product_snapshot?.name || "").trim()}|${String(it?.product_snapshot?.unit || "").trim()}|${rowCurrency}`;
+      const pSeed = {
+        id: p?._id || null,
+        name: p?.name || it?.product_snapshot?.name || "Noma'lum",
+        model: p?.model || "",
+        category: p?.category || "",
+        unit: p?.unit || it?.product_snapshot?.unit || "",
+        supplierId: supplier?._id || null,
+        supplierName,
+      };
+      const pStat = touchStat(productStats, productKey, pSeed);
+      applyStatRow(pStat, rowCurrency, line);
+
+      const sSeed = {
+        id: supplier?._id || null,
+        name: supplierName,
+        phone: supplier?.phone || "",
+        balance: supplier?.balance || { UZS: 0, USD: 0 },
+      };
+      const sStat = touchStat(supplierStats, supplierKey, sSeed);
+      applyStatRow(sStat, rowCurrency, line);
+
+      applyStatRow(overall, rowCurrency, line);
+    }
+  }
+
+  const mapToRows = (map) =>
+    Array.from(map.values()).map((x) => ({
+      ...x,
+      stats: normalizeStatRow(x),
+    }));
+
+  const customerRows = mapToRows(customerStats);
+  const productRows = mapToRows(productStats);
+  const supplierRows = mapToRows(supplierStats);
+
+  const rankCurrency = validCurrency === "ALL" ? "UZS" : validCurrency;
+
+  const customerTop = sortByProfitCurrency(customerRows, rankCurrency, true).slice(0, topLimit);
+  const customerBottom = sortByProfitCurrency(customerRows, rankCurrency, false).slice(0, topLimit);
+  const productTop = sortByProfitCurrency(productRows, rankCurrency, true).slice(0, topLimit);
+  const productBottom = sortByProfitCurrency(productRows, rankCurrency, false).slice(0, topLimit);
+  const supplierTop = sortByProfitCurrency(supplierRows, rankCurrency, true).slice(0, topLimit);
+  const supplierBottom = sortByProfitCurrency(supplierRows, rankCurrency, false).slice(0, topLimit);
+
+  return {
+    filters: {
+      from: from || null,
+      to: to || null,
+      currency: validCurrency,
+      limit: topLimit,
+    },
+    overview: {
+      uniqueCustomers: customerRows.length,
+      uniqueProducts: productRows.length,
+      uniqueSuppliers: supplierRows.length,
+      salesCount: sales.length,
+      returnsCount: returns.length,
+      totals: normalizeStatRow(overall),
+    },
+    rankings: {
+      customers: {
+        top: customerTop,
+        bottom: customerBottom,
+      },
+      products: {
+        top: productTop,
+        bottom: productBottom,
+      },
+      suppliers: {
+        top: supplierTop,
+        bottom: supplierBottom,
+      },
+    },
+    tables: {
+      customers: sortByProfitCurrency(customerRows, rankCurrency, true),
+      products: sortByProfitCurrency(productRows, rankCurrency, true),
+      suppliers: sortByProfitCurrency(supplierRows, rankCurrency, true),
+    },
+  };
+}
+
 module.exports = {
+  getStartingBalanceSummary,
   getOverview,
   getTimeSeries,
   getTop,
   getStock,
+  getProfitDetails,
+  getBusinessAnalysis,
 };

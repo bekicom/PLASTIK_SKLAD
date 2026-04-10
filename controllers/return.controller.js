@@ -208,6 +208,7 @@ exports.createReturn = async (req, res) => {
       if (newSaleItems.length === 0) {
         sale.returnStatus = "FULL_RETURN";
         sale.isHidden = true;
+        sale.items = [];
       } else {
         sale.returnStatus = "PARTIAL_RETURN";
         sale.items = newSaleItems;
@@ -238,6 +239,29 @@ exports.createReturn = async (req, res) => {
           await customer.save({ session });
         }
       }
+
+      sale.history = Array.isArray(sale.history) ? sale.history : [];
+      sale.history.push({
+        type: "RETURN_CREATED",
+        date: new Date(),
+        by: userId,
+        note: note ? String(note).trim() : "Sotuvdan vozvrat qilindi",
+        amountDelta: {
+          UZS: warehouse.currency === "UZS" ? -returnSubtotal : 0,
+          USD: warehouse.currency === "USD" ? -returnSubtotal : 0,
+        },
+        payload: {
+          returnSubtotal,
+          warehouseId: warehouse._id,
+          items: normalizedItems.map((it) => ({
+            productId: it.product_id,
+            qty: it.qty,
+            subtotal: it.subtotal,
+            reason: it.reason || "",
+            product_snapshot: it.product_snapshot || null,
+          })),
+        },
+      });
 
       await sale.save({ session });
     });

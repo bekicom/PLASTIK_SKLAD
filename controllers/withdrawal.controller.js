@@ -195,6 +195,41 @@ exports.getWithdrawals = async (req, res) => {
 };
 
 /* =========================
+   GET WITHDRAWAL BY ID
+   GET /api/withdrawals/:id
+========================= */
+exports.getWithdrawalById = async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "id noto‘g‘ri",
+      });
+    }
+
+    const item = await Withdrawal.findById(id).lean();
+    if (!item) {
+      return res.status(404).json({
+        ok: false,
+        message: "Withdrawal topilmadi",
+      });
+    }
+
+    return res.json({
+      ok: true,
+      item,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Withdrawal bitta yozuvini olishda xato",
+      error: err.message,
+    });
+  }
+};
+
+/* =========================
    UPDATE WITHDRAWAL
    PUT /api/withdrawals/:id
 ========================= */
@@ -214,6 +249,15 @@ exports.updateWithdrawal = async (req, res) => {
         message: "Withdrawal topilmadi",
       });
     }
+
+    const before = {
+      investor_name: doc.investor_name,
+      amount: doc.amount,
+      currency: doc.currency,
+      payment_method: doc.payment_method,
+      purpose: doc.purpose,
+      takenAt: doc.takenAt,
+    };
 
     const {
       investor_name,
@@ -288,9 +332,28 @@ exports.updateWithdrawal = async (req, res) => {
 
     await doc.save();
 
+    const after = {
+      investor_name: doc.investor_name,
+      amount: doc.amount,
+      currency: doc.currency,
+      payment_method: doc.payment_method,
+      purpose: doc.purpose,
+      takenAt: doc.takenAt,
+    };
+
+    const changedFields = Object.keys(after).filter((k) => {
+      if (k === "takenAt") {
+        return new Date(before.takenAt).getTime() !== new Date(after.takenAt).getTime();
+      }
+      return String(before[k]) !== String(after[k]);
+    });
+
     return res.json({
       ok: true,
       message: "Withdrawal yangilandi",
+      changedFields,
+      before,
+      after,
       data: doc,
     });
   } catch (err) {

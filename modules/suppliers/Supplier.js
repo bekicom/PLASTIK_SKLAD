@@ -12,6 +12,11 @@ const supplierSchema = new mongoose.Schema(
       USD: { type: Number, default: 0 },
     },
 
+    opening_balance: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+
     payment_history: [
       {
         currency: { type: String, enum: ["UZS", "USD"], required: true },

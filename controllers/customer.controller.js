@@ -3,6 +3,8 @@ const bcrypt = require("bcrypt");
 const Customer = require("../modules/Customer/Customer");
 const Sale = require("../modules/sales/Sale");
 const Order = require("../modules/orders/Order");
+const SaleReturn = require("../modules/returns/SaleReturn");
+const Product = require("../modules/products/Product");
 
 /* =======================
    HELPERS
@@ -191,6 +193,159 @@ exports.getCustomers = async (req, res) => {
       { $sort: { createdAt: -1 } },
     ]);
 
+    const customerIds = items.map((c) => c._id).filter(Boolean);
+
+    let returnsSummaryByCustomer = new Map();
+    let recentReturnsByCustomer = new Map();
+
+    if (customerIds.length) {
+      const returnsSummary = await SaleReturn.aggregate([
+        {
+          $match: {
+            customer_id: { $in: customerIds },
+          },
+        },
+        {
+          $lookup: {
+            from: "warehouses",
+            localField: "warehouse_id",
+            foreignField: "_id",
+            as: "warehouse",
+          },
+        },
+        {
+          $addFields: {
+            currency: {
+              $ifNull: [{ $arrayElemAt: ["$warehouse.currency", 0] }, "UZS"],
+            },
+          },
+        },
+        {
+          $group: {
+            _id: {
+              customer_id: "$customer_id",
+              currency: "$currency",
+            },
+            total_amount: { $sum: { $ifNull: ["$returnSubtotal", 0] } },
+            count: { $sum: 1 },
+          },
+        },
+      ]);
+
+      for (const r of returnsSummary) {
+        const cid = String(r._id.customer_id);
+        const cur = r._id.currency;
+        if (!returnsSummaryByCustomer.has(cid)) {
+          returnsSummaryByCustomer.set(cid, {
+            UZS: 0,
+            USD: 0,
+            count: 0,
+          });
+        }
+
+        const row = returnsSummaryByCustomer.get(cid);
+        if (cur === "UZS" || cur === "USD") {
+          row[cur] += Number(r.total_amount || 0);
+        }
+        row.count += Number(r.count || 0);
+      }
+
+      const recentReturns = await SaleReturn.find({
+        customer_id: { $in: customerIds },
+      })
+        .sort({ createdAt: -1 })
+        .limit(300)
+        .populate("warehouse_id", "name currency")
+        .select("customer_id sale_id returnSubtotal items note createdAt warehouse_id")
+        .lean();
+
+      const recentReturnProductIds = [];
+      const recentReturnSaleIds = [];
+      for (const rr of recentReturns) {
+        if (rr.sale_id) recentReturnSaleIds.push(String(rr.sale_id));
+        for (const it of rr.items || []) {
+          if (it?.product_id) recentReturnProductIds.push(String(it.product_id));
+        }
+      }
+
+      const uniqueProductIds = [...new Set(recentReturnProductIds)];
+      const uniqueSaleIds = [...new Set(recentReturnSaleIds)];
+
+      const [products, sales] = await Promise.all([
+        uniqueProductIds.length
+          ? Product.find({ _id: { $in: uniqueProductIds } })
+              .select("_id name unit")
+              .lean()
+          : [],
+        uniqueSaleIds.length
+          ? Sale.find({ _id: { $in: uniqueSaleIds } })
+              .select("_id items")
+              .lean()
+          : [],
+      ]);
+
+      const productMap = new Map(products.map((p) => [String(p._id), p]));
+      const saleItemSnapshotMap = new Map();
+      for (const s of sales) {
+        for (const it of s.items || []) {
+          saleItemSnapshotMap.set(
+            `${String(s._id)}|${String(it.productId)}`,
+            it.productSnapshot || {},
+          );
+        }
+      }
+
+      for (const rr of recentReturns) {
+        const cid = String(rr.customer_id || "");
+        if (!cid) continue;
+
+        if (!recentReturnsByCustomer.has(cid)) {
+          recentReturnsByCustomer.set(cid, []);
+        }
+
+        const arr = recentReturnsByCustomer.get(cid);
+        if (arr.length >= 5) continue; // har customer uchun oxirgi 5 ta qaytarish
+
+        arr.push({
+          _id: rr._id,
+          sale_id: rr.sale_id || null,
+          date: rr.createdAt,
+          warehouse: rr.warehouse_id
+            ? {
+                _id: rr.warehouse_id._id,
+                name: rr.warehouse_id.name,
+                currency: rr.warehouse_id.currency,
+              }
+            : null,
+          returnSubtotal: Number(rr.returnSubtotal || 0),
+          note: rr.note || "",
+          items: (rr.items || []).map((it) => ({
+            product_id: it.product_id,
+            name:
+              (
+                ((saleItemSnapshotMap.get(
+                  `${String(rr.sale_id || "")}|${String(it.product_id || "")}`,
+                ) || {}).name) ||
+                (productMap.get(String(it.product_id || "")) || {}).name ||
+                ""
+              ),
+            unit:
+              (
+                ((saleItemSnapshotMap.get(
+                  `${String(rr.sale_id || "")}|${String(it.product_id || "")}`,
+                ) || {}).unit) ||
+                (productMap.get(String(it.product_id || "")) || {}).unit ||
+                ""
+              ),
+            qty: Number(it.qty || 0),
+            price: Number(it.price || 0),
+            subtotal: Number(it.subtotal || 0),
+            reason: it.reason || "",
+          })),
+        });
+      }
+    }
+
     /* =====================
        RESPONSE CLEANUP
        🔥 FAQAT PAYMENT KO‘RINADI
@@ -198,16 +353,58 @@ exports.getCustomers = async (req, res) => {
     items = items.map((c) => ({
       ...c,
 
-      /* === opening balance (faqat ko‘rish uchun) === */
+      /* === opening balance (DB dagi real qiymat) === */
       opening_balance: {
-        UZS: c.balance.UZS < 0 ? Math.abs(c.balance.UZS) : 0,
-        USD: c.balance.USD < 0 ? Math.abs(c.balance.USD) : 0,
+        UZS: Number(c.opening_balance?.UZS || 0),
+        USD: Number(c.opening_balance?.USD || 0),
       },
 
-      /* === PAYMENT ONLY === */
+      /* === PAYMENT HISTORY (PAYMENT + RETURN/ROLLBACK ham ko‘rinsin) === */
       payment_history: Array.isArray(c.payment_history)
-        ? c.payment_history.filter((h) => h.direction === "PAYMENT")
+        ? c.payment_history.filter((h) =>
+            [
+              "PAYMENT",
+              "ROLLBACK",
+              "PAYMENT_CANCEL",
+              "PREPAID",
+              "PREPAYMENT",
+              "DEBT",
+            ].includes(h.direction),
+          )
         : [],
+
+      payment_summary: (() => {
+        const summary = {
+          paid: { UZS: 0, USD: 0 },
+          rollback: { UZS: 0, USD: 0 },
+          net_paid: { UZS: 0, USD: 0 },
+        };
+
+        const hist = Array.isArray(c.payment_history) ? c.payment_history : [];
+        for (const h of hist) {
+          const cur = h.currency;
+          const amt = Number(h.amount || 0);
+          if (!["UZS", "USD"].includes(cur) || amt <= 0) continue;
+
+          if (h.direction === "PAYMENT" || h.direction === "PREPAID" || h.direction === "PREPAYMENT") {
+            summary.paid[cur] += amt;
+            summary.net_paid[cur] += amt;
+          } else if (h.direction === "ROLLBACK" || h.direction === "PAYMENT_CANCEL") {
+            summary.rollback[cur] += amt;
+            summary.net_paid[cur] -= amt;
+          }
+        }
+
+        return summary;
+      })(),
+
+      returns: returnsSummaryByCustomer.get(String(c._id)) || {
+        UZS: 0,
+        USD: 0,
+        count: 0,
+      },
+
+      returns_history: recentReturnsByCustomer.get(String(c._id)) || [],
     }));
 
     /* =====================
@@ -215,11 +412,15 @@ exports.getCustomers = async (req, res) => {
     ===================== */
     const totals = {
       debt: { UZS: 0, USD: 0 },
+      returns: { UZS: 0, USD: 0, count: 0 },
     };
 
     for (const c of items) {
       totals.debt.UZS += Number(c.debt?.UZS || 0);
       totals.debt.USD += Number(c.debt?.USD || 0);
+      totals.returns.UZS += Number(c.returns?.UZS || 0);
+      totals.returns.USD += Number(c.returns?.USD || 0);
+      totals.returns.count += Number(c.returns?.count || 0);
     }
 
     return res.json({
@@ -390,6 +591,109 @@ exports.updateCustomerBalance = async (req, res) => {
   }
 };
 
+exports.updateCustomerOpeningBalance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { opening_balance = {}, note, set_as_baseline = false } = req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "ID noto‘g‘ri",
+      });
+    }
+
+    const hasUZS = Object.prototype.hasOwnProperty.call(opening_balance, "UZS");
+    const hasUSD = Object.prototype.hasOwnProperty.call(opening_balance, "USD");
+
+    if (!hasUZS && !hasUSD) {
+      return res.status(400).json({
+        ok: false,
+        message: "opening_balance.UZS yoki opening_balance.USD yuboring",
+      });
+    }
+
+    const customer = await Customer.findById(id);
+    if (!customer) {
+      return res.status(404).json({
+        ok: false,
+        message: "Customer topilmadi",
+      });
+    }
+
+    if (!customer.opening_balance) customer.opening_balance = { UZS: 0, USD: 0 };
+
+    const changes = [];
+    for (const cur of ["UZS", "USD"]) {
+      if (!Object.prototype.hasOwnProperty.call(opening_balance, cur)) continue;
+
+      const nextOpening = Number(opening_balance[cur]);
+      if (!Number.isFinite(nextOpening)) {
+        return res.status(400).json({
+          ok: false,
+          message: `${cur} opening balance noto‘g‘ri`,
+        });
+      }
+
+      const prevOpening = Number(customer.opening_balance?.[cur] || 0);
+      const currentBalance = Number(customer.balance?.[cur] || 0);
+      const operationalBalance = currentBalance - prevOpening; // opening'dan tashqari qism
+
+      let nextBalance = currentBalance;
+      let delta = 0;
+      if (!set_as_baseline) {
+        nextBalance = operationalBalance + nextOpening;
+        delta = nextBalance - currentBalance;
+      }
+
+      customer.opening_balance[cur] = nextOpening;
+      customer.balance[cur] = nextBalance;
+
+      if (delta !== 0) {
+        customer.payment_history.push({
+          currency: cur,
+          amount: Math.abs(delta),
+          direction: delta > 0 ? "DEBT" : "PAYMENT",
+          note:
+            note ||
+            `Boshlang'ich balans tahrirlandi (${prevOpening} → ${nextOpening})`,
+          date: new Date(),
+        });
+      }
+
+      changes.push({
+        currency: cur,
+        previous_opening_balance: prevOpening,
+        current_opening_balance: nextOpening,
+        set_as_baseline: !!set_as_baseline,
+        operational_balance: operationalBalance,
+        delta,
+        current_balance: nextBalance,
+      });
+    }
+
+    await customer.save();
+
+    return res.json({
+      ok: true,
+      message: "Customer boshlang‘ich balansi yangilandi",
+      customer: {
+        id: customer._id,
+        name: customer.name,
+        opening_balance: customer.opening_balance,
+        balance: customer.balance,
+      },
+      changes,
+    });
+  } catch (err) {
+    return res.status(500).json({
+      ok: false,
+      message: "Customer boshlang‘ich balansini tahrirlashda xato",
+      error: err.message,
+    });
+  }
+};
+
 
 /**
  * DELETE /customers/:id  (soft delete)
@@ -488,7 +792,9 @@ exports.getCustomerSales = async (req, res) => {
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limit)
-        .select("invoiceNo createdAt items totals currencyTotals payments note")
+        .select(
+          "invoiceNo createdAt saleDate items totals currencyTotals payments note history",
+        )
         .lean(),
       Sale.countDocuments(filter),
     ]);
@@ -511,6 +817,7 @@ exports.getCustomerSales = async (req, res) => {
         _id: s._id,
         invoiceNo: s.invoiceNo,
         createdAt: s.createdAt,
+        saleDate: s.saleDate || s.createdAt,
         status,
 
         totals: s.totals,
@@ -532,6 +839,7 @@ exports.getCustomerSales = async (req, res) => {
         })),
 
         note: s.note || "",
+        history: Array.isArray(s.history) ? s.history : [],
       };
     });
 
@@ -723,6 +1031,7 @@ exports.getCustomerSummary = async (req, res) => {
     })
       .sort({ saleDate: -1 }) // 🔥 ASOSIY SANA
       .limit(10)
+      .select("invoiceNo saleDate createdAt items totals currencyTotals note history")
       .lean();
 
     const lastSales = lastSalesRaw.map((s) => {
@@ -771,6 +1080,7 @@ exports.getCustomerSummary = async (req, res) => {
         })),
 
         note: s.note || "",
+        history: Array.isArray(s.history) ? s.history : [],
       };
     });
 
@@ -1075,21 +1385,66 @@ exports.getCustomerTimeline = async (req, res) => {
     ===================== */
     const sales = await Sale.find({
       customerId,
-      status: "COMPLETED",
-      ...(Object.keys(dateFilter).length ? { saleDate: dateFilter } : {}),
+      status: { $ne: "DELETED" },
     })
-      .select("invoiceNo saleDate currencyTotals")
+      .select("invoiceNo saleDate currencyTotals history items status")
       .lean();
 
-    const saleEvents = sales.map((s) => ({
-      type: "SALE",
-      date: s.saleDate,
-      ref: s.invoiceNo,
-      note: "Sotuv (qarz)",
-      UZS: Number(s.currencyTotals?.UZS?.grandTotal || 0),
-      USD: Number(s.currencyTotals?.USD?.grandTotal || 0),
-      kind: "DEBT", // 🔥 FAOLIYAT TURI
-    }));
+    const saleEvents = [];
+
+    for (const s of sales) {
+      const history = Array.isArray(s.history) && s.history.length ? s.history : null;
+
+      if (history) {
+        for (const h of history) {
+          if (h.type === "SALE_CREATED") {
+            saleEvents.push({
+              type: "SALE",
+              date: h.date || s.saleDate,
+              ref: s.invoiceNo,
+              note: h.note || "Sotuv (qarz)",
+              UZS: Number(h.amountDelta?.UZS || 0),
+              USD: Number(h.amountDelta?.USD || 0),
+              kind: "DEBT",
+            });
+          }
+
+          if (h.type === "SALE_EDITED") {
+            saleEvents.push({
+              type: "SALE_EDIT",
+              date: h.date || s.saleDate,
+              ref: s.invoiceNo,
+              note: h.note || "Sotuv tahrirlandi",
+              UZS: Number(h.amountDelta?.UZS || 0),
+              USD: Number(h.amountDelta?.USD || 0),
+              kind: "ADJUST",
+            });
+          }
+
+          if (h.type === "RETURN_CREATED") {
+            saleEvents.push({
+              type: "RETURN",
+              date: h.date || s.saleDate,
+              ref: s.invoiceNo,
+              note: h.note || "Vozvrat",
+              UZS: Number(h.amountDelta?.UZS || 0),
+              USD: Number(h.amountDelta?.USD || 0),
+              kind: "RETURN",
+            });
+          }
+        }
+      } else {
+        saleEvents.push({
+          type: "SALE",
+          date: s.saleDate,
+          ref: s.invoiceNo,
+          note: "Sotuv (qarz)",
+          UZS: Number(s.currencyTotals?.UZS?.grandTotal || 0),
+          USD: Number(s.currencyTotals?.USD?.grandTotal || 0),
+          kind: "DEBT",
+        });
+      }
+    }
 
     /* =====================
        2️⃣ PAYMENTS → FAQAT PAYMENT
@@ -1099,23 +1454,60 @@ exports.getCustomerTimeline = async (req, res) => {
       .lean();
 
     const paymentEvents = (customer.payment_history || [])
-      .filter((p) => p.direction === "PAYMENT") // 🔥 FAQAT PAYMENT
+      .filter((p) =>
+        ["PAYMENT", "DEBT", "ROLLBACK", "PREPAID", "PAYMENT_CANCEL"].includes(
+          p.direction,
+        ),
+      )
       .map((p) => ({
-        type: "PAYMENT",
+        type: p.direction,
         date: p.date,
         ref: p.note || "",
-        note: "To‘lov",
-        UZS: p.currency === "UZS" ? p.amount : 0,
-        USD: p.currency === "USD" ? p.amount : 0,
-        kind: "PAYMENT",
+        note:
+          p.direction === "DEBT"
+            ? "Qarz yozildi"
+            : p.direction === "PAYMENT"
+              ? "To‘lov"
+              : p.direction === "PAYMENT_CANCEL"
+                ? "To‘lov bekor qilindi"
+                : "Qaytarish / rollback",
+        UZS:
+          p.currency === "UZS"
+            ? Number(p.amount || 0)
+            : 0,
+        USD:
+          p.currency === "USD"
+            ? Number(p.amount || 0)
+            : 0,
+        kind:
+          p.direction === "DEBT"
+            ? "DEBT"
+            : ["PAYMENT", "ROLLBACK", "PAYMENT_CANCEL", "PREPAID"].includes(
+                p.direction,
+              )
+              ? "PAYMENT"
+              : "PAYMENT",
       }));
 
     /* =====================
        3️⃣ MERGE + SORT
     ===================== */
-    const timelineRaw = [...saleEvents, ...paymentEvents].sort(
+    let timelineRaw = [...saleEvents, ...paymentEvents].sort(
       (a, b) => new Date(a.date) - new Date(b.date)
     );
+
+    if (Object.keys(dateFilter).length) {
+      timelineRaw = timelineRaw.filter((e) => {
+        const t = new Date(e.date).getTime();
+        if (dateFilter.$gte && t < new Date(dateFilter.$gte).getTime()) {
+          return false;
+        }
+        if (dateFilter.$lte && t > new Date(dateFilter.$lte).getTime()) {
+          return false;
+        }
+        return true;
+      });
+    }
 
     /* =====================
        4️⃣ RUNNING DEBT
@@ -1130,6 +1522,12 @@ exports.getCustomerTimeline = async (req, res) => {
       } else if (e.kind === "PAYMENT") {
         debtUZS -= e.UZS;
         debtUSD -= e.USD;
+      } else if (e.kind === "ADJUST") {
+        debtUZS += e.UZS;
+        debtUSD += e.USD;
+      } else if (e.kind === "RETURN") {
+        debtUZS += e.UZS;
+        debtUSD += e.USD;
       }
 
       return {
@@ -1138,8 +1536,14 @@ exports.getCustomerTimeline = async (req, res) => {
         ref: e.ref,
         note: e.note,
         change: {
-          UZS: e.kind === "DEBT" ? e.UZS : -e.UZS,
-          USD: e.kind === "DEBT" ? e.USD : -e.USD,
+          UZS:
+            e.kind === "DEBT" || e.kind === "ADJUST" || e.kind === "RETURN"
+              ? e.UZS
+              : -e.UZS,
+          USD:
+            e.kind === "DEBT" || e.kind === "ADJUST" || e.kind === "RETURN"
+              ? e.USD
+              : -e.USD,
         },
         debtAfter: {
           UZS: debtUZS,

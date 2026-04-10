@@ -2,13 +2,266 @@ const mongoose = require("mongoose");
 const Supplier = require("../modules/suppliers/Supplier");
 const Product = require("../modules/products/Product");
 const Purchase = require("../modules/purchases/Purchase");
+const InventoryRevaluation = require("../modules/analytics/InventoryRevaluation");
+
+function parseMaybeDate(value) {
+  if (value === undefined || value === null || value === "") return null;
+  const d = new Date(value);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getCurrentUserId(req) {
+  return req.user?._id || req.user?.id || null;
+}
+
+async function restorePurchaseStock(session, items) {
+  for (const it of items || []) {
+    if (!it?.product_id || !mongoose.isValidObjectId(it.product_id)) continue;
+    const ok = await Product.updateOne(
+      { _id: it.product_id },
+      { $inc: { qty: -Number(it.qty || 0) } },
+      { session },
+    );
+
+    if (ok.modifiedCount === 0) {
+      throw new Error("Product topilmadi yoki stock qaytarilmadi");
+    }
+  }
+}
+
+async function reapplyExistingPurchaseItems(session, items) {
+  for (const it of items || []) {
+    if (!it?.product_id || !mongoose.isValidObjectId(it.product_id)) {
+      throw new Error("Purchase item product_id noto‘g‘ri");
+    }
+
+    const qty = Number(it.qty);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw new Error("Purchase item qty noto‘g‘ri");
+    }
+
+    const ok = await Product.updateOne(
+      { _id: it.product_id, qty: { $gte: qty } },
+      { $inc: { qty: qty } },
+      { session },
+    );
+
+    if (ok.modifiedCount === 0) {
+      throw new Error("Product topilmadi yoki qty yetarli emas");
+    }
+  }
+}
+
+async function buildPurchaseItemsFromInput(session, supplierId, items) {
+  const totals = { UZS: 0, USD: 0 };
+  const purchaseItems = [];
+  const affectedProducts = [];
+  const seen = new Set();
+
+  for (const it of items) {
+    const name = String(it.name || "").trim();
+    const model = String(it.model || "").trim() || null;
+    const color = String(it.color || "").trim();
+    const category = String(it.category || "").trim();
+    const unit = String(it.unit || "").trim();
+    const currency = String(it.currency || "").trim();
+
+    const qty = Number(it.qty);
+    const buy_price = Number(it.buy_price);
+    const sell_price = Number(it.sell_price || 0);
+
+    if (
+      !name ||
+      !color ||
+      !unit ||
+      !["UZS", "USD"].includes(currency) ||
+      !Number.isFinite(qty) ||
+      qty <= 0 ||
+      !Number.isFinite(buy_price) ||
+      buy_price < 0 ||
+      !Number.isFinite(sell_price) ||
+      sell_price < 0
+    ) {
+      throw new Error("Item ma’lumotlari noto‘g‘ri");
+    }
+
+    const rowTotal = qty * buy_price;
+    totals[currency] += rowTotal;
+
+    const key = [
+      String(supplierId),
+      name,
+      model || "",
+      color,
+      currency,
+      buy_price,
+      sell_price,
+      unit,
+    ].join("|");
+
+    if (seen.has(key)) {
+      throw new Error("Bir xil purchase item takrorlanmasin");
+    }
+    seen.add(key);
+
+    let product = await Product.findOne(
+      {
+        supplier_id: supplierId,
+        name,
+        model,
+        color,
+        warehouse_currency: currency,
+        buy_price,
+        sell_price,
+        unit,
+      },
+      null,
+      { session },
+    );
+
+    if (product) {
+      product.qty += qty;
+      await product.save({ session });
+    } else {
+      const created = await Product.create(
+        [
+          {
+            supplier_id: supplierId,
+            name,
+            model,
+            color,
+            category,
+            unit,
+            warehouse_currency: currency,
+            buy_price,
+            sell_price,
+            qty,
+            images: [],
+          },
+        ],
+        { session },
+      );
+      product = created[0];
+    }
+
+    affectedProducts.push(product);
+
+    purchaseItems.push({
+      product_id: product._id,
+      name,
+      model,
+      color,
+      unit,
+      qty,
+      buy_price,
+      sell_price,
+      currency,
+      row_total: rowTotal,
+    });
+  }
+
+  return { totals, purchaseItems, affectedProducts };
+}
+
+async function buildRevaluationEntriesForItems({
+  session,
+  supplierId,
+  rawItems = [],
+  purchaseDate = new Date(),
+  userId = null,
+}) {
+  const entries = [];
+
+  for (const it of rawItems || []) {
+    const name = String(it.name || "").trim();
+    const model = String(it.model || "").trim() || null;
+    const color = String(it.color || "").trim();
+    const category = String(it.category || "").trim();
+    const unit = String(it.unit || "").trim();
+    const currency = String(it.currency || "").trim();
+    const incomingBuy = Number(it.buy_price || 0);
+
+    if (
+      !name ||
+      !color ||
+      !unit ||
+      !["UZS", "USD"].includes(currency) ||
+      !Number.isFinite(incomingBuy) ||
+      incomingBuy < 0
+    ) {
+      continue;
+    }
+
+    const similarProducts = await Product.find(
+      {
+        supplier_id: supplierId,
+        name,
+        model,
+        color,
+        unit,
+        warehouse_currency: currency,
+        isActive: true,
+        qty: { $gt: 0 },
+      },
+      null,
+      { session },
+    ).lean();
+
+    let existingQty = 0;
+    let existingValue = 0;
+
+    for (const p of similarProducts) {
+      const pQty = Number(p.qty || 0);
+      const pBuy = Number(p.buy_price || 0);
+      if (pQty <= 0) continue;
+      if (pBuy === incomingBuy) continue;
+
+      existingQty += pQty;
+      existingValue += pQty * pBuy;
+    }
+
+    if (existingQty <= 0) continue;
+
+    const revaluedValue = existingQty * incomingBuy;
+    const delta = Number((revaluedValue - existingValue).toFixed(2));
+    if (delta === 0) continue;
+
+    const oldAvg = Number((existingValue / existingQty).toFixed(6));
+
+    entries.push({
+      supplier_id: supplierId,
+      date: purchaseDate,
+      currency,
+      product: {
+        name,
+        model: model || "",
+        color,
+        category,
+        unit,
+      },
+      existing_qty: existingQty,
+      incoming_buy_price: incomingBuy,
+      old_avg_buy_price: oldAvg,
+      delta_profit: delta,
+      kind: delta > 0 ? "GAIN" : "LOSS",
+      note:
+        delta > 0
+          ? "Kirim narxi oshgani sabab qayta baholash foydasi"
+          : "Kirim narxi tushgani sabab qayta baholash ziyon",
+      createdBy: userId || null,
+    });
+  }
+
+  return entries;
+}
 
 exports.createPurchase = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
 
   try {
-    const { supplier_id, batch_no, items = [], purchase_date } = req.body;
+    const { supplier_id, batch_no, items = [], purchase_date, note = "" } =
+      req.body;
 
     if (!mongoose.isValidObjectId(supplier_id) || !batch_no) {
       throw new Error("supplier_id yoki batch_no noto‘g‘ri");
@@ -26,6 +279,8 @@ exports.createPurchase = async (req, res) => {
     const totals = { UZS: 0, USD: 0 };
     const purchaseItems = [];
     const affectedProducts = [];
+    const pendingRevaluations = [];
+    const currentUserId = getCurrentUserId(req);
 
     for (const it of items) {
       const name = String(it.name).trim();
@@ -54,6 +309,15 @@ exports.createPurchase = async (req, res) => {
         throw new Error("Item ma’lumotlari noto‘g‘ri");
       }
  
+
+      const revRows = await buildRevaluationEntriesForItems({
+        session,
+        supplierId: supplier_id,
+        rawItems: [it],
+        purchaseDate: parsedDate,
+        userId: currentUserId,
+      });
+      pendingRevaluations.push(...revRows);
 
       const rowTotal = qty * buy_price;
       totals[currency] += rowTotal;
@@ -133,6 +397,7 @@ exports.createPurchase = async (req, res) => {
           paid,
           remaining,
           status,
+          note: String(note || "").trim(),
           items: purchaseItems,
         },
       ],
@@ -143,6 +408,16 @@ exports.createPurchase = async (req, res) => {
     supplier.balance.USD += remaining.USD;
     await supplier.save({ session });
 
+    if (pendingRevaluations.length > 0) {
+      await InventoryRevaluation.insertMany(
+        pendingRevaluations.map((x) => ({
+          ...x,
+          purchase_id: purchase._id,
+        })),
+        { session },
+      );
+    }
+
     await session.commitTransaction();
 
     res.status(201).json({
@@ -150,10 +425,232 @@ exports.createPurchase = async (req, res) => {
       message: "Kirim muvaffaqiyatli saqlandi",
       purchase,
       products: affectedProducts,
+      inventoryRevaluationCount: pendingRevaluations.length,
     });
   } catch (err) {
     await session.abortTransaction();
     res.status(400).json({ ok: false, message: err.message });
+  } finally {
+    session.endSession();
+  }
+};
+
+exports.editPurchase = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
+  try {
+    const { id } = req.params;
+    if (!mongoose.isValidObjectId(id)) {
+      throw new Error("purchase id noto‘g‘ri");
+    }
+
+    const purchase = await Purchase.findById(id).session(session);
+    if (!purchase) throw new Error("Purchase topilmadi");
+
+    const oldSupplierId = String(purchase.supplier_id);
+    const oldItems = (purchase.items || []).map((it) => ({ ...it.toObject() }));
+    const oldRemaining = {
+      UZS: Number(purchase.remaining?.UZS || 0),
+      USD: Number(purchase.remaining?.USD || 0),
+    };
+    const oldPaid = {
+      UZS: Number(purchase.paid?.UZS || 0),
+      USD: Number(purchase.paid?.USD || 0),
+    };
+    const currentUserId = getCurrentUserId(req);
+
+    const hasSupplierPatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "supplier_id",
+    );
+    const hasItemsPatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "items",
+    );
+    const hasDatePatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "purchase_date",
+    );
+    const hasBatchPatch = Object.prototype.hasOwnProperty.call(
+      req.body || {},
+      "batch_no",
+    );
+
+    const nextPurchaseDate = hasDatePatch
+      ? parseMaybeDate(req.body.purchase_date)
+      : purchase.purchase_date;
+    if (hasDatePatch && !nextPurchaseDate) {
+      throw new Error("purchase_date noto‘g‘ri");
+    }
+
+    const nextBatchNo = hasBatchPatch
+      ? String(req.body.batch_no || "").trim()
+      : purchase.batch_no;
+    if (hasBatchPatch && !nextBatchNo) {
+      throw new Error("batch_no bo‘sh bo‘lishi mumkin emas");
+    }
+
+    const nextSupplierId = hasSupplierPatch
+      ? req.body.supplier_id
+      : purchase.supplier_id;
+    if (!mongoose.isValidObjectId(nextSupplierId)) {
+      throw new Error("supplier_id noto‘g‘ri");
+    }
+
+    const nextSupplier = await Supplier.findById(nextSupplierId).session(session);
+    if (!nextSupplier) throw new Error("Supplier topilmadi");
+
+    const nextNote =
+      Object.prototype.hasOwnProperty.call(req.body || {}, "note")
+        ? String(req.body.note || "")
+        : purchase.note || "";
+
+    // eski qayta-baholash yozuvlari qayta hisoblanadi
+    await InventoryRevaluation.deleteMany({ purchase_id: purchase._id }).session(
+      session,
+    );
+
+    /* =========================
+       1. OLD ROLLBACK
+    ========================= */
+    const oldSupplier = await Supplier.findById(oldSupplierId).session(session);
+    if (oldSupplier) {
+      oldSupplier.balance.UZS =
+        Number(oldSupplier.balance?.UZS || 0) - oldRemaining.UZS;
+      oldSupplier.balance.USD =
+        Number(oldSupplier.balance?.USD || 0) - oldRemaining.USD;
+      await oldSupplier.save({ session });
+    }
+
+    await restorePurchaseStock(session, oldItems);
+
+    /* =========================
+       2. NEW ITEMS
+    ========================= */
+    let nextItems = oldItems;
+    let affectedProducts = [];
+    let nextTotals = {
+      UZS: Number(purchase.totals?.UZS || 0),
+      USD: Number(purchase.totals?.USD || 0),
+    };
+
+    if (hasItemsPatch) {
+      if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
+        throw new Error("items bo‘sh bo‘lishi mumkin emas");
+      }
+
+      var pendingRevaluations = await buildRevaluationEntriesForItems({
+        session,
+        supplierId: nextSupplier._id,
+        rawItems: req.body.items,
+        purchaseDate: nextPurchaseDate,
+        userId: currentUserId,
+      });
+
+      const built = await buildPurchaseItemsFromInput(
+        session,
+        nextSupplier._id,
+        req.body.items,
+      );
+      nextItems = built.purchaseItems;
+      nextTotals = built.totals;
+      affectedProducts = built.affectedProducts;
+    } else {
+      const oldRawItems = oldItems.map((it) => ({
+        name: it.name,
+        model: it.model,
+        color: it.color,
+        category: "",
+        unit: it.unit,
+        currency: it.currency,
+        buy_price: it.buy_price,
+      }));
+
+      var pendingRevaluations = await buildRevaluationEntriesForItems({
+        session,
+        supplierId: nextSupplier._id,
+        rawItems: oldRawItems,
+        purchaseDate: nextPurchaseDate,
+        userId: currentUserId,
+      });
+
+      await reapplyExistingPurchaseItems(session, oldItems);
+    }
+
+    /* =========================
+       3. FINANCIALS
+    ========================= */
+    const nextPaid = {
+      UZS: oldPaid.UZS,
+      USD: oldPaid.USD,
+    };
+    const nextRemaining = {
+      UZS: Math.max(0, nextTotals.UZS - nextPaid.UZS),
+      USD: Math.max(0, nextTotals.USD - nextPaid.USD),
+    };
+    const nextStatus =
+      nextRemaining.UZS > 0 || nextRemaining.USD > 0
+        ? nextPaid.UZS > 0 || nextPaid.USD > 0
+          ? "PARTIAL"
+          : "DEBT"
+        : "PAID";
+
+    /* =========================
+       4. NEW SUPPLIER BALANCE
+    ========================= */
+    nextSupplier.balance.UZS =
+      Number(nextSupplier.balance?.UZS || 0) + nextRemaining.UZS;
+    nextSupplier.balance.USD =
+      Number(nextSupplier.balance?.USD || 0) + nextRemaining.USD;
+    await nextSupplier.save({ session });
+
+    /* =========================
+       5. SAVE PURCHASE
+    ========================= */
+    purchase.supplier_id = nextSupplier._id;
+    purchase.purchase_date = nextPurchaseDate;
+    purchase.batch_no = nextBatchNo;
+    purchase.totals = nextTotals;
+    purchase.paid = nextPaid;
+    purchase.remaining = nextRemaining;
+    purchase.status = nextStatus;
+    purchase.items = nextItems;
+    purchase.editedAt = new Date();
+    purchase.editedBy = getCurrentUserId(req);
+    purchase.editReason = String(
+      req.body.editReason || req.body.reason || "",
+    ).slice(0, 500);
+    purchase.revision = Number(purchase.revision || 0) + 1;
+    purchase.note = nextNote;
+
+    await purchase.save({ session });
+
+    if (pendingRevaluations.length > 0) {
+      await InventoryRevaluation.insertMany(
+        pendingRevaluations.map((x) => ({
+          ...x,
+          purchase_id: purchase._id,
+        })),
+        { session },
+      );
+    }
+
+    await session.commitTransaction();
+
+    return res.json({
+      ok: true,
+      message: "Purchase yangilandi",
+      purchase,
+      affectedProducts,
+      inventoryRevaluationCount: pendingRevaluations.length,
+    });
+  } catch (err) {
+    await session.abortTransaction();
+    return res.status(400).json({
+      ok: false,
+      message: err.message,
+    });
   } finally {
     session.endSession();
   }
@@ -225,15 +722,25 @@ exports.addProductImage = async (req, res) => {
     return res.status(400).json({ message: "product id noto‘g‘ri" });
   }
 
-  if (!req.file) {
-    return res.status(400).json({ message: "Rasm yuborilmadi" });
+  const incomingFiles = Array.isArray(req.files)
+    ? req.files
+    : req.file
+      ? [req.file]
+      : [];
+
+  if (incomingFiles.length === 0) {
+    return res.status(400).json({ message: "Kamida 1 ta rasm yuboring" });
   }
 
-  const imageUrl = `/uploads/products/${req.file.filename}`;
+  if (incomingFiles.length > 5) {
+    return res.status(400).json({ message: "Ko‘pi bilan 5 ta rasm yuboring" });
+  }
+
+  const imageUrls = incomingFiles.map((f) => `/uploads/products/${f.filename}`);
 
   const product = await Product.findByIdAndUpdate(
     id,
-    { $addToSet: { images: imageUrl } }, // dublikat bo‘lmaydi
+    { $addToSet: { images: { $each: imageUrls } } }, // dublikat bo‘lmaydi
     { new: true },
   );
 
@@ -243,7 +750,8 @@ exports.addProductImage = async (req, res) => {
 
   return res.json({
     ok: true,
-    message: "Rasm qo‘shildi",
+    message: `${imageUrls.length} ta rasm qo‘shildi`,
+    added: imageUrls,
     product,
   });
 };
@@ -301,6 +809,13 @@ exports.deletePurchase = async (req, res) => {
 
       await product.save({ session });
     }
+
+    /* =====================
+       INVENTORY REVALUATION DELETE
+    ===================== */
+    await InventoryRevaluation.deleteMany({ purchase_id: purchase._id }).session(
+      session,
+    );
 
     /* =====================
        DELETE PURCHASE

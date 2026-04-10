@@ -16,6 +16,71 @@ const productSchema = new mongoose.Schema(
       index: true,
     },
 
+    archive_qty: {
+      type: Number,
+      default: 0,
+      min: 0,
+    },
+
+    archive_status: {
+      type: String,
+      enum: ["ACTIVE", "PARTIAL", "ARCHIVED"],
+      default: "ACTIVE",
+      index: true,
+    },
+
+    archivedAt: {
+      type: Date,
+      default: null,
+    },
+
+    archivedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    archiveReason: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+
+    history: [
+      {
+        type: {
+          type: String,
+          enum: [
+            "ARCHIVE_OUT",
+            "ARCHIVE_IN",
+            "MANUAL_UPDATE",
+            "CREATED",
+          ],
+          required: true,
+        },
+        date: {
+          type: Date,
+          default: Date.now,
+        },
+        by: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "User",
+          default: null,
+        },
+        note: {
+          type: String,
+          default: "",
+          trim: true,
+        },
+        qtyDelta: { type: Number, default: 0 },
+        archiveQtyDelta: { type: Number, default: 0 },
+        payload: {
+          type: mongoose.Schema.Types.Mixed,
+          default: {},
+        },
+      },
+    ],
+
     name: {
       type: String,
       required: true,

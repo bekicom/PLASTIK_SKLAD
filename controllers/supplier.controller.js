@@ -112,6 +112,10 @@ exports.createSupplier = async (req, res) => {
         UZS: balUZS,
         USD: balUSD,
       },
+      opening_balance: {
+        UZS: balUZS,
+        USD: balUSD,
+      },
 
       // 🔥 MUHIM: BOSHLANG‘ICHDA BO‘SH
       payment_history: [],
@@ -678,6 +682,111 @@ exports.updateSupplierBalance = async (req, res) => {
     return res.status(500).json({
       message: "Server xato",
       error: err.message,
+    });
+  }
+};
+
+exports.updateSupplierOpeningBalance = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { opening_balance = {}, note, set_as_baseline = false } = req.body || {};
+
+    if (!mongoose.isValidObjectId(id)) {
+      return res.status(400).json({
+        ok: false,
+        message: "supplier id noto‘g‘ri",
+      });
+    }
+
+    const hasUZS = Object.prototype.hasOwnProperty.call(opening_balance, "UZS");
+    const hasUSD = Object.prototype.hasOwnProperty.call(opening_balance, "USD");
+
+    if (!hasUZS && !hasUSD) {
+      return res.status(400).json({
+        ok: false,
+        message: "opening_balance.UZS yoki opening_balance.USD yuboring",
+      });
+    }
+
+    const supplier = await Supplier.findById(id);
+    if (!supplier) {
+      return res.status(404).json({
+        ok: false,
+        message: "Zavod topilmadi",
+      });
+    }
+
+    if (!supplier.opening_balance) supplier.opening_balance = { UZS: 0, USD: 0 };
+
+    const currencies = ["UZS", "USD"];
+    const changes = [];
+
+    for (const cur of currencies) {
+      if (!Object.prototype.hasOwnProperty.call(opening_balance, cur)) continue;
+
+      const nextOpening = Number(opening_balance[cur]);
+      if (!Number.isFinite(nextOpening)) {
+        return res.status(400).json({
+          ok: false,
+          message: `${cur} opening balance noto‘g‘ri`,
+        });
+      }
+
+      const prevOpening = Number(supplier.opening_balance?.[cur] || 0);
+      const currentBalance = Number(supplier.balance?.[cur] || 0);
+      const operationalBalance = currentBalance - prevOpening; // opening'dan tashqari qism
+
+      let nextBalance = currentBalance;
+      let delta = 0;
+      if (!set_as_baseline) {
+        nextBalance = operationalBalance + nextOpening;
+        delta = nextBalance - currentBalance;
+      }
+
+      supplier.opening_balance[cur] = nextOpening;
+      supplier.balance[cur] = nextBalance;
+
+      if (delta !== 0) {
+        supplier.payment_history.push({
+          currency: cur,
+          amount: Math.abs(delta),
+          direction: delta > 0 ? "DEBT" : "PREPAYMENT",
+          note:
+            note ||
+            `Boshlang'ich balans tahrirlandi (${prevOpening} → ${nextOpening})`,
+          date: new Date(),
+        });
+      }
+
+      changes.push({
+        currency: cur,
+        previous_opening_balance: prevOpening,
+        current_opening_balance: nextOpening,
+        set_as_baseline: !!set_as_baseline,
+        operational_balance: operationalBalance,
+        delta,
+        current_balance: nextBalance,
+      });
+    }
+
+    await supplier.save();
+
+    return res.json({
+      ok: true,
+      message: "Zavod boshlang‘ich balansi yangilandi",
+      supplier: {
+        id: supplier._id,
+        name: supplier.name,
+        opening_balance: supplier.opening_balance,
+        balance: supplier.balance,
+      },
+      changes,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      ok: false,
+      message: "Zavod boshlang‘ich balansini tahrirlashda xato",
+      error: error.message,
     });
   }
 };

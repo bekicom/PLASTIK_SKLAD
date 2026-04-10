@@ -75,6 +75,40 @@ const currencyTotalSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const saleHistorySchema = new mongoose.Schema(
+  {
+    type: {
+      type: String,
+      enum: ["SALE_CREATED", "SALE_EDITED", "RETURN_CREATED", "CANCELED", "DELETED"],
+      required: true,
+    },
+    date: {
+      type: Date,
+      default: Date.now,
+      index: true,
+    },
+    by: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    note: {
+      type: String,
+      default: "",
+      trim: true,
+    },
+    amountDelta: {
+      UZS: { type: Number, default: 0 },
+      USD: { type: Number, default: 0 },
+    },
+    payload: {
+      type: mongoose.Schema.Types.Mixed,
+      default: {},
+    },
+  },
+  { _id: false },
+);
+
 /* =========================
    SALE
 ========================= */
@@ -132,6 +166,11 @@ const saleSchema = new mongoose.Schema(
       USD: { type: currencyTotalSchema, default: () => ({}) },
     },
 
+    history: {
+      type: [saleHistorySchema],
+      default: [],
+    },
+
     status: {
       type: String,
       enum: ["COMPLETED", "CANCELED", "DELETED"],
@@ -152,6 +191,28 @@ const saleSchema = new mongoose.Schema(
     cancelReason: {
       type: String,
       default: "",
+    },
+
+    editedAt: {
+      type: Date,
+      default: null,
+    },
+
+    editedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+
+    editReason: {
+      type: String,
+      default: "",
+    },
+
+    revision: {
+      type: Number,
+      default: 0,
+      min: 0,
     },
   },
   {

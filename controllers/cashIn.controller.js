@@ -308,7 +308,16 @@ exports.editCashIn = async (req, res) => {
 
   try {
     const { id } = req.params;
-    const { amount, currency, payment_method, note, paymentDate } = req.body;
+    const {
+      amount,
+      currency,
+      payment_method,
+      note,
+      paymentDate,
+      target_type,
+      customer_id,
+      supplier_id,
+    } = req.body || {};
 
     if (!mongoose.isValidObjectId(id)) {
       throw new Error("CashIn ID noto‘g‘ri");
@@ -316,10 +325,6 @@ exports.editCashIn = async (req, res) => {
 
     const cashIn = await CashIn.findById(id).session(session);
     if (!cashIn) throw new Error("Cash-in topilmadi");
-
-    if (cashIn.target_type !== "CUSTOMER") {
-      throw new Error("Faqat CUSTOMER cash-in tahrirlanadi");
-    }
 
     const newAmount = Number(amount);
     if (!Number.isFinite(newAmount) || newAmount <= 0) {
@@ -334,39 +339,149 @@ exports.editCashIn = async (req, res) => {
       throw new Error("payment_method noto‘g‘ri");
     }
 
-    const customer = await Customer.findById(cashIn.customer_id).session(
-      session
-    );
-    if (!customer) throw new Error("Customer topilmadi");
+    const newPayDate = paymentDate ? new Date(paymentDate) : cashIn.paymentDate;
+    const oldAmount = Number(cashIn.amount || 0);
+    const oldCurrency = cashIn.currency;
+    const newTargetType = target_type
+      ? String(target_type).toUpperCase()
+      : cashIn.target_type;
 
-    /* =========================
-       1️⃣ ESKI TA’SIRNI ORQAGA QAYTARISH
-    ========================= */
-    customer.balance[cashIn.currency] += cashIn.amount;
+    if (!["CUSTOMER", "SUPPLIER"].includes(newTargetType)) {
+      throw new Error("target_type noto‘g‘ri");
+    }
 
-    /* =========================
-       2️⃣ YANGI TA’SIR
-    ========================= */
-    customer.balance[currency] -= newAmount;
+    const newCustomerId =
+      newTargetType === "CUSTOMER" ? customer_id || cashIn.customer_id : null;
+    const newSupplierId =
+      newTargetType === "SUPPLIER" ? supplier_id || cashIn.supplier_id : null;
 
-    customer.payment_history.push({
-      currency,
-      amount: newAmount,
-      direction: "PAYMENT",
-      note: note || "Cash-in tahrirlandi",
-      ref_id: cash[0]._id, // 🔥 SHART
-      date: paymentDate ? new Date(paymentDate) : new Date(),
-    });
+    if (
+      newTargetType === "CUSTOMER" &&
+      !mongoose.isValidObjectId(newCustomerId)
+    ) {
+      throw new Error("customer_id noto‘g‘ri");
+    }
+
+    if (
+      newTargetType === "SUPPLIER" &&
+      !mongoose.isValidObjectId(newSupplierId)
+    ) {
+      throw new Error("supplier_id noto‘g‘ri");
+    }
+
+    // 1) ESKI TARGET ROLLBACK
+    if (cashIn.target_type === "CUSTOMER") {
+      const oldCustomer = await Customer.findById(cashIn.customer_id).session(
+        session,
+      );
+      if (!oldCustomer) throw new Error("Customer topilmadi");
+
+      /* =========================
+         1️⃣ OLD ROLLBACK (balance + sale paid rollback)
+      ========================= */
+      oldCustomer.balance[oldCurrency] =
+        Number(oldCustomer.balance?.[oldCurrency] || 0) + oldAmount;
+
+      let rollbackRemain = oldAmount;
+      const oldSales = await Sale.find({
+        customerId: oldCustomer._id,
+        [`currencyTotals.${oldCurrency}.paidAmount`]: { $gt: 0 },
+      })
+        .sort({ saleDate: -1 }) // LIFO rollback
+        .session(session);
+
+      for (const sale of oldSales) {
+        if (rollbackRemain <= 0) break;
+        const paid = Number(sale.currencyTotals[oldCurrency].paidAmount || 0);
+        if (paid <= 0) continue;
+
+        const move = Math.min(paid, rollbackRemain);
+        sale.currencyTotals[oldCurrency].paidAmount -= move;
+        sale.currencyTotals[oldCurrency].debtAmount += move;
+        rollbackRemain -= move;
+        await sale.save({ session });
+      }
+
+      /* =========================
+         2️⃣ NEW APPLY (balance + sale debt close)
+      ========================= */
+      await oldCustomer.save({ session });
+    } else if (cashIn.target_type === "SUPPLIER") {
+      const oldSupplier = await Supplier.findById(cashIn.supplier_id).session(
+        session,
+      );
+      if (!oldSupplier) throw new Error("Supplier topilmadi");
+
+      oldSupplier.balance[oldCurrency] =
+        Number(oldSupplier.balance?.[oldCurrency] || 0) + oldAmount;
+      await oldSupplier.save({ session });
+    }
+
+    // 2) YANGI TARGET APPLY
+    if (newTargetType === "CUSTOMER") {
+      const customer = await Customer.findById(newCustomerId).session(session);
+      if (!customer) throw new Error("Yangi customer topilmadi");
+
+      customer.balance[currency] =
+        Number(customer.balance?.[currency] || 0) - newAmount;
+
+      let applyRemain = newAmount;
+      const newSales = await Sale.find({
+        customerId: customer._id,
+        [`currencyTotals.${currency}.debtAmount`]: { $gt: 0 },
+      })
+        .sort({ saleDate: 1 })
+        .session(session);
+
+      for (const sale of newSales) {
+        if (applyRemain <= 0) break;
+        const debt = Number(sale.currencyTotals[currency].debtAmount || 0);
+        if (debt <= 0) continue;
+
+        const move = Math.min(debt, applyRemain);
+        sale.currencyTotals[currency].paidAmount += move;
+        sale.currencyTotals[currency].debtAmount -= move;
+        applyRemain -= move;
+        await sale.save({ session });
+      }
+
+      customer.payment_history.push({
+        currency,
+        amount: newAmount,
+        direction: "PAYMENT",
+        note: note || "Cash-in tahrirlandi",
+        date: newPayDate || new Date(),
+      });
+
+      await customer.save({ session });
+    } else {
+      const supplier = await Supplier.findById(newSupplierId).session(session);
+      if (!supplier) throw new Error("Yangi supplier topilmadi");
+
+      supplier.balance[currency] =
+        Number(supplier.balance?.[currency] || 0) - newAmount;
+
+      supplier.payment_history.push({
+        currency,
+        amount: newAmount,
+        direction: "PAYMENT",
+        note: note || "Supplier cash-in tahrirlandi",
+        ref_id: cashIn._id,
+        date: newPayDate || new Date(),
+      });
+
+      await supplier.save({ session });
+    }
 
     cashIn.amount = newAmount;
     cashIn.currency = currency;
     cashIn.payment_method = payment_method;
     cashIn.note = note || cashIn.note;
-    cashIn.paymentDate = paymentDate
-      ? new Date(paymentDate)
-      : cashIn.paymentDate;
+    cashIn.paymentDate = newPayDate || cashIn.paymentDate;
+    cashIn.target_type = newTargetType;
+    cashIn.customer_id = newTargetType === "CUSTOMER" ? newCustomerId : null;
+    cashIn.supplier_id = newTargetType === "SUPPLIER" ? newSupplierId : null;
 
-    await customer.save({ session });
     await cashIn.save({ session });
 
     await session.commitTransaction();
@@ -374,7 +489,9 @@ exports.editCashIn = async (req, res) => {
     return res.json({
       ok: true,
       message: "Cash-in muvaffaqiyatli tahrirlandi",
-      balance: customer.balance,
+      target_type: cashIn.target_type,
+      customer_id: cashIn.customer_id || null,
+      supplier_id: cashIn.supplier_id || null,
     });
   } catch (error) {
     await session.abortTransaction();

@@ -15,10 +15,13 @@ const agentOrderController = require("../controllers/agentOrder.controller");
 const cashierOrderController = require("../controllers/cashierOrder.controller");
 const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
+const moneyEntryController = require("../controllers/moneyEntry.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
 const withdrawalController = require("../controllers/withdrawal.controller");
 const cashInController = require("../controllers/cashIn.controller");
+const reconciliationController = require("../controllers/reconciliation.controller");
+const agentDebtPaymentController = require("../controllers/agentDebtPayment.controller");
 const {
   createProductWriteOff,
 } = require("../controllers/productWriteOff.controller");
@@ -175,6 +178,18 @@ router.post(
   rRole("ADMIN"),
   supplierController.updateSupplierBalance,
 );
+router.put(
+  "/suppliers/:id/opening-balance",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  supplierController.updateSupplierOpeningBalance,
+);
+router.patch(
+  "/suppliers/:id/opening-balance",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  supplierController.updateSupplierOpeningBalance,
+);
 
 router.get(
   "/suppliers/:id/purchases",
@@ -211,6 +226,13 @@ router.get(
   productController.getProducts,
 );
 
+router.get(
+  "/products/archive",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  productController.getArchivedProducts,
+);
+
 // bitta productni get qilish
 router.get(
   "/products/:id",
@@ -219,13 +241,34 @@ router.get(
   productController.getProductById,
 );
 
+router.get(
+  "/products/:id/history",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "WAREHOUSE"),
+  productController.getProductHistory,
+);
+
 // productni update qilish
 router.put(
   "/products/:id",
   rAuth,
   rRole("ADMIN"),
-  uploadProductImages.single("image"), // OK
+  uploadProductImages.array("images", 5), // 1-5 ta rasm
   productController.updateProduct,
+);
+
+router.post(
+  "/products/:id/archive",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "WAREHOUSE"),
+  productController.archiveProductStock,
+);
+
+router.post(
+  "/products/:id/restore-archive",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "WAREHOUSE"),
+  productController.restoreArchivedProductStock,
 );
 
 router.delete(
@@ -240,7 +283,7 @@ router.put(
   "/products/:id",
   rAuth,
   rRole("ADMIN"),
-  uploadProductImages.single("image"),
+  uploadProductImages.array("images", 5),
   productController.updateProduct,
 );
 
@@ -263,8 +306,14 @@ router.post(
   "/products/:id/image",
   rAuth,
   rRole("ADMIN", "CASHIER"),
-  uploadProductImages.single("image"),
+  uploadProductImages.array("images", 5),
   purchaseController.addProductImage,
+);
+router.delete(
+  "/products/:id/image",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  productController.deleteProductImage,
 );
 
 router.delete(
@@ -272,6 +321,18 @@ router.delete(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   purchaseController.deletePurchase,
+);
+router.put(
+  "/purchases/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  purchaseController.editPurchase,
+);
+router.patch(
+  "/purchases/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  purchaseController.editPurchase,
 );
 /**
  * CUSTOMERS (HOZMAKLAR)
@@ -344,6 +405,18 @@ router.post(
   rRole("ADMIN", "CASHIER"),
   customerController.payCustomerDebt,
 );
+router.put(
+  "/customers/:id/opening-balance",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.updateCustomerOpeningBalance,
+);
+router.patch(
+  "/customers/:id/opening-balance",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  customerController.updateCustomerOpeningBalance,
+);
 router.get(
   "/customers/:id/debt-sales",
   rAuth,
@@ -398,6 +471,18 @@ router.delete(
   rRole("AGENT", "ADMIN", "CASHIER"),
   salesController.deleteSale,
 );
+router.put(
+  "/sales/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  salesController.editSale,
+);
+router.patch(
+  "/sales/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  salesController.editSale,
+);
 
 /**
  * AGENT ORDERS (ZAKAS)
@@ -432,6 +517,41 @@ router.get(
 );
 
 /**
+ * AGENT DEBT PAYMENT REQUESTS
+ * Agent kiritadi -> Admin tasdiqlaydi
+ */
+router.post(
+  "/agent-debt-payments",
+  rAuth,
+  rRole("AGENT", "ADMIN", "CASHIER"),
+  agentDebtPaymentController.createAgentDebtPaymentRequest,
+);
+router.get(
+  "/agent-debt-payments/my",
+  rAuth,
+  rRole("AGENT", "ADMIN", "CASHIER"),
+  agentDebtPaymentController.getMyAgentDebtPaymentRequests,
+);
+router.get(
+  "/agent-debt-payments",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentDebtPaymentController.getAgentDebtPaymentRequests,
+);
+router.patch(
+  "/agent-debt-payments/:id/approve",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentDebtPaymentController.approveAgentDebtPaymentRequest,
+);
+router.patch(
+  "/agent-debt-payments/:id/reject",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentDebtPaymentController.rejectAgentDebtPaymentRequest,
+);
+
+/**
  * CASHIER ORDERS (AGENT ZAKAS QABUL QILISH)
  */
 
@@ -449,6 +569,19 @@ router.post(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   cashierOrderController.confirmOrder,
+);
+
+router.put(
+  "/orders/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashierOrderController.editOrder,
+);
+router.patch(
+  "/orders/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashierOrderController.editOrder,
 );
 
 // zakasni bekor qilish
@@ -495,6 +628,44 @@ router.put("/expenses/:id", rAuth, expenseController.updateExpense);
 
 // DELETE
 router.delete("/expenses/:id", rAuth, expenseController.deleteExpense);
+
+// MONEY ENTRIES (pul kirdi / pul chiqdi)
+router.post(
+  "/money-entries",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  moneyEntryController.createMoneyEntry,
+);
+router.get(
+  "/money-entries",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  moneyEntryController.getMoneyEntries,
+);
+router.get(
+  "/money-entries/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  moneyEntryController.getMoneyEntryById,
+);
+router.put(
+  "/money-entries/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  moneyEntryController.updateMoneyEntry,
+);
+router.patch(
+  "/money-entries/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  moneyEntryController.updateMoneyEntry,
+);
+router.delete(
+  "/money-entries/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  moneyEntryController.deleteMoneyEntry,
+);
 
 router.use("/analytics", rAuth, rRole("ADMIN", "CASHIER"), analyticsRoutes);
 
@@ -548,6 +719,12 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   withdrawalController.getWithdrawals,
 );
+router.get(
+  "/withdrawals/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  withdrawalController.getWithdrawalById,
+);
 router.delete(
   "/withdrawals/:id",
   rAuth,
@@ -579,6 +756,20 @@ router.get(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   cashInController.getCashInReportAll,
+);
+
+router.get(
+  "/reconciliation/counterparties",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  reconciliationController.getCounterparties,
+);
+
+router.get(
+  "/reconciliation/:type/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  reconciliationController.getActSverka,
 );
 
 router.put(
