@@ -10,7 +10,6 @@ const CashIn = require("../cashIn/CashIn");
 const Withdrawal = require("../withdrawals/Withdrawal");
 const Purchase = require("../purchases/Purchase");
 const SaleReturn = require("../returns/SaleReturn");
-const Expense = require("../expenses/Expense");
 const StartingBalance = require("./StartingBalance");
 const InventoryRevaluation = require("./InventoryRevaluation");
 
