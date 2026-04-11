@@ -5,6 +5,21 @@ const CashIn = require("../modules/cashIn/CashIn");
 const CUR = ["UZS", "USD"];
 const Product = require("../modules/products/Product");
 
+function maybeInitOpeningBalance(entity, currency, prevBalance, nextBalance) {
+  if (!entity.opening_balance) entity.opening_balance = { UZS: 0, USD: 0 };
+
+  const prevOpening = Number(entity.opening_balance?.[currency] || 0);
+  const pb = Number(prevBalance || 0);
+  const nb = Number(nextBalance || 0);
+
+  // Birinchi marta qarz kiritilganda opening_balancega yozamiz
+  if (prevOpening === 0 && pb === 0 && nb > 0) {
+    entity.opening_balance[currency] = nb;
+    return true;
+  }
+  return false;
+}
+
 function parseDate(val, endOfDay = false) {
   if (!val) return null;
 
@@ -146,7 +161,9 @@ exports.getSuppliers = async (req, res) => {
     }
 
     const suppliers = await Supplier.find(filter)
-      .select("name phone balance payment_history createdAt updatedAt")
+      .select(
+        "name phone balance opening_balance payment_history createdAt updatedAt",
+      )
       .sort({ createdAt: -1 })
       .lean();
 
@@ -163,6 +180,10 @@ exports.getSuppliers = async (req, res) => {
         balance: {
           UZS: uzs,
           USD: usd,
+        },
+        opening_balance: {
+          UZS: Number(s.opening_balance?.UZS || 0),
+          USD: Number(s.opening_balance?.USD || 0),
         },
 
         // 🔥 FRONTEND STATUS
@@ -547,6 +568,12 @@ exports.paySupplierDebt = async (req, res) => {
     ========================= */
     const newBalance = prevBalance - delta;
     supplier.balance[currency] = newBalance;
+    const openingInitialized = maybeInitOpeningBalance(
+      supplier,
+      currency,
+      prevBalance,
+      newBalance,
+    );
 
     /* =========================
        3. PAYMENT HISTORY
@@ -571,12 +598,14 @@ exports.paySupplierDebt = async (req, res) => {
         name: supplier.name,
         phone: supplier.phone,
         balance: supplier.balance,
+        opening_balance: supplier.opening_balance || { UZS: 0, USD: 0 },
       },
       change: {
         currency,
         amount: delta,
         previous_balance: prevBalance,
         current_balance: newBalance,
+        opening_balance_initialized: openingInitialized,
       },
     });
   } catch (error) {
@@ -661,7 +690,15 @@ exports.updateSupplierBalance = async (req, res) => {
     }
 
     // 🔥 ASOSIY QATOR
+    const prevBalance = Number(supplier.balance?.[currency] || 0);
     supplier.balance[currency] += delta;
+    const nextBalance = Number(supplier.balance?.[currency] || 0);
+    const openingInitialized = maybeInitOpeningBalance(
+      supplier,
+      currency,
+      prevBalance,
+      nextBalance,
+    );
 
     supplier.payment_history.push({
       currency,
@@ -677,6 +714,8 @@ exports.updateSupplierBalance = async (req, res) => {
       ok: true,
       message: "Balance yangilandi",
       balance: supplier.balance,
+      opening_balance: supplier.opening_balance || { UZS: 0, USD: 0 },
+      opening_balance_initialized: openingInitialized,
     });
   } catch (err) {
     return res.status(500).json({
@@ -746,17 +785,7 @@ exports.updateSupplierOpeningBalance = async (req, res) => {
       supplier.opening_balance[cur] = nextOpening;
       supplier.balance[cur] = nextBalance;
 
-      if (delta !== 0) {
-        supplier.payment_history.push({
-          currency: cur,
-          amount: Math.abs(delta),
-          direction: delta > 0 ? "DEBT" : "PREPAYMENT",
-          note:
-            note ||
-            `Boshlang'ich balans tahrirlandi (${prevOpening} → ${nextOpening})`,
-          date: new Date(),
-        });
-      }
+      // Opening balance tahriri payment_historyga yozilmaydi.
 
       changes.push({
         currency: cur,

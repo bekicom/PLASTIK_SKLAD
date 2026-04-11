@@ -921,25 +921,54 @@ async function getProfitDetails({
     saleMatch.customerId = new mongoose.Types.ObjectId(customerId);
   }
 
+  const safeLimit = Math.max(1, Number(limit || 500));
+
   const sales = await Sale.find(saleMatch)
-    .select("invoiceNo saleDate customerId customerSnapshot items")
+    .select("invoiceNo saleDate createdAt customerId customerSnapshot items")
     .lean();
 
-  const returns = await SaleReturn.find({
+  const saleIds = sales.map((s) => s._id).filter(Boolean);
+
+  const returnMatch = {
     ...buildDateMatch(from, to, "createdAt"),
-  })
-    .select("sale_id createdAt items")
+  };
+  if (customerId && mongoose.isValidObjectId(customerId)) {
+    returnMatch.customer_id = new mongoose.Types.ObjectId(customerId);
+  } else if (saleIds.length) {
+    returnMatch.sale_id = { $in: saleIds };
+  }
+
+  const returns = await SaleReturn.find(returnMatch)
+    .select("sale_id customer_id createdAt note returnSubtotal items")
     .lean();
 
-  const saleItemBuyMap = new Map();
+  const saleItemMetaMap = new Map();
+  const saleMetaMap = new Map();
+
   for (const s of sales) {
+    const sid = String(s._id);
+    const saleMeta = {
+      saleId: s._id,
+      docNo: s.invoiceNo || "",
+      date: s.saleDate || s.createdAt,
+      customerId: s.customerId || null,
+      customerName: s.customerSnapshot?.name || "",
+    };
+    saleMetaMap.set(sid, saleMeta);
+
     for (const it of s.items || []) {
-      const key = `${String(s._id)}|${String(it.productId)}`;
-      saleItemBuyMap.set(key, Number(it.buy_price || 0));
+      const key = `${sid}|${String(it.productId)}`;
+      saleItemMetaMap.set(key, {
+        buyPrice: Number(it.buy_price || 0),
+        currency: it.currency || "UZS",
+        productSnapshot: it.productSnapshot || {},
+        saleMeta,
+      });
     }
   }
 
   const rows = [];
+
   for (const s of sales) {
     for (const it of s.items || []) {
       if (productId && String(it.productId) !== String(productId)) continue;
@@ -983,10 +1012,11 @@ async function getProfitDetails({
     .lean();
 
   for (const r of revaluationRows) {
+    const revalType = r.kind === "LOSS" ? "REVALUATION_LOSS" : "REVALUATION_GAIN";
     rows.push({
       date: r.date,
-      type: "REVALUATION",
-      docNo: "",
+      type: revalType,
+      docNo: `RV-${String(r._id || "").slice(-6)}`,
       saleId: null,
       customerId: null,
       customerName: "",
@@ -1015,18 +1045,12 @@ async function getProfitDetails({
 
       const saleIdStr = String(r.sale_id || "");
       const productIdStr = String(it.product_id || "");
-      const buyPrice =
-        Number(saleItemBuyMap.get(`${saleIdStr}|${productIdStr}`) || 0);
+      const linked = saleItemMetaMap.get(`${saleIdStr}|${productIdStr}`);
+      const buyPrice = Number(linked?.buyPrice || 0);
       const sellPrice = Number(it.price || 0);
       const qty = Number(it.qty || 0);
-
-      const returnCurrencyRows = rows.filter(
-        (x) =>
-          String(x.saleId) === saleIdStr &&
-          String(x.productId) === productIdStr &&
-          x.type === "SALE",
-      );
-      const itemCurrency = returnCurrencyRows[0]?.currency || "UZS";
+      const itemCurrency = linked?.currency || "UZS";
+      const saleMeta = saleMetaMap.get(saleIdStr) || linked?.saleMeta || {};
 
       if (currency !== "ALL" && itemCurrency !== currency) continue;
 
@@ -1037,15 +1061,21 @@ async function getProfitDetails({
       rows.push({
         date: r.createdAt,
         type: "RETURN",
-        docNo: "",
+        docNo: saleMeta.docNo || `RET-${String(r._id || "").slice(-6)}`,
         saleId: r.sale_id || null,
-        customerId: null,
-        customerName: "",
+        customerId: r.customer_id || saleMeta.customerId || null,
+        customerName: saleMeta.customerName || "",
         productId: it.product_id,
-        productName: it.product_snapshot?.name || "",
-        model: "",
-        category: "",
-        unit: it.product_snapshot?.unit || "",
+        productName:
+          linked?.productSnapshot?.name ||
+          it.product_snapshot?.name ||
+          "",
+        model: linked?.productSnapshot?.model || "",
+        category: linked?.productSnapshot?.category || "",
+        unit:
+          linked?.productSnapshot?.unit ||
+          it.product_snapshot?.unit ||
+          "",
         currency: itemCurrency,
         qty: -qty,
         sellPrice,
@@ -1053,6 +1083,7 @@ async function getProfitDetails({
         revenue,
         cost,
         profit,
+        note: r.note || it.reason || "",
       });
     }
   }
@@ -1065,6 +1096,8 @@ async function getProfitDetails({
   };
 
   const productMap = new Map();
+  const customerMap = new Map();
+  const documentMap = new Map();
 
   for (const r of rows) {
     if (!byCurrency[r.currency]) continue;
@@ -1106,11 +1139,58 @@ async function getProfitDetails({
     acc.transactions += 1;
 
     productMap.set(key2, acc);
+
+    const customerKey =
+      String(r.customerId || "").trim() || String(r.customerName || "").trim();
+    if (customerKey) {
+      const ckey = `${customerKey}|${r.currency}`;
+      const cAcc = customerMap.get(ckey) || {
+        customerId: r.customerId || null,
+        customerName: r.customerName || "",
+        currency: r.currency,
+        revenue: 0,
+        cost: 0,
+        grossProfit: 0,
+        transactions: 0,
+      };
+      cAcc.revenue += Number(r.revenue || 0);
+      cAcc.cost += Number(r.cost || 0);
+      cAcc.grossProfit += Number(r.profit || 0);
+      cAcc.transactions += 1;
+      customerMap.set(ckey, cAcc);
+    }
+
+    const docKey = `${String(r.docNo || "")}|${String(r.saleId || "")}|${r.currency}`;
+    if (r.docNo || r.saleId) {
+      const dAcc = documentMap.get(docKey) || {
+        docNo: r.docNo || "",
+        saleId: r.saleId || null,
+        customerName: r.customerName || "",
+        currency: r.currency,
+        revenue: 0,
+        cost: 0,
+        grossProfit: 0,
+        transactions: 0,
+      };
+      dAcc.revenue += Number(r.revenue || 0);
+      dAcc.cost += Number(r.cost || 0);
+      dAcc.grossProfit += Number(r.profit || 0);
+      dAcc.transactions += 1;
+      documentMap.set(docKey, dAcc);
+    }
   }
 
   const byProduct = Array.from(productMap.values())
     .sort((a, b) => b.grossProfit - a.grossProfit)
-    .slice(0, Math.max(1, Number(limit || 500)));
+    .slice(0, safeLimit);
+
+  const byCustomer = Array.from(customerMap.values())
+    .sort((a, b) => b.grossProfit - a.grossProfit)
+    .slice(0, safeLimit);
+
+  const byDocument = Array.from(documentMap.values())
+    .sort((a, b) => b.grossProfit - a.grossProfit)
+    .slice(0, safeLimit);
 
   return {
     filters: {
@@ -1119,16 +1199,20 @@ async function getProfitDetails({
       currency,
       productId: productId || null,
       customerId: customerId || null,
-      limit: Math.max(1, Number(limit || 500)),
+      limit: safeLimit,
     },
     summary: {
       UZS: byCurrency.UZS,
       USD: byCurrency.USD,
       totalRows: rows.length,
       totalProducts: byProduct.length,
+      totalCustomers: byCustomer.length,
+      totalDocuments: byDocument.length,
     },
     byProduct,
-    transactions: rows.slice(0, Math.max(1, Number(limit || 500))),
+    byCustomer,
+    byDocument,
+    transactions: rows.slice(0, safeLimit),
   };
 }
 

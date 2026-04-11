@@ -19,6 +19,21 @@ function safeNum(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
+function maybeInitOpeningBalance(entity, currency, prevBalance, nextBalance) {
+  if (!entity.opening_balance) entity.opening_balance = { UZS: 0, USD: 0 };
+
+  const prevOpening = Number(entity.opening_balance?.[currency] || 0);
+  const pb = Number(prevBalance || 0);
+  const nb = Number(nextBalance || 0);
+
+  // Birinchi marta qarz kiritilganda opening_balancega yozamiz
+  if (prevOpening === 0 && pb === 0 && nb > 0) {
+    entity.opening_balance[currency] = nb;
+    return true;
+  }
+  return false;
+}
+
 exports.createCustomer = async (req, res) => {
   try {
     const { name, phone, address, note, balance = {}, login, password } =
@@ -562,7 +577,15 @@ exports.updateCustomerBalance = async (req, res) => {
       return res.status(404).json({ message: "Customer topilmadi" });
 
     // 🔥 BALANCE
+    const prevBalance = Number(customer.balance?.[currency] || 0);
     customer.balance[currency] -= delta;
+    const nextBalance = Number(customer.balance?.[currency] || 0);
+    const openingInitialized = maybeInitOpeningBalance(
+      customer,
+      currency,
+      prevBalance,
+      nextBalance,
+    );
     // delta > 0 → qarz kamayadi
     // delta < 0 → avans oshadi
 
@@ -581,6 +604,8 @@ exports.updateCustomerBalance = async (req, res) => {
       ok: true,
       message: "To‘lov qabul qilindi",
       balance: customer.balance,
+      opening_balance: customer.opening_balance || { UZS: 0, USD: 0 },
+      opening_balance_initialized: openingInitialized,
     });
   } catch (err) {
     return res.status(500).json({
@@ -649,17 +674,7 @@ exports.updateCustomerOpeningBalance = async (req, res) => {
       customer.opening_balance[cur] = nextOpening;
       customer.balance[cur] = nextBalance;
 
-      if (delta !== 0) {
-        customer.payment_history.push({
-          currency: cur,
-          amount: Math.abs(delta),
-          direction: delta > 0 ? "DEBT" : "PAYMENT",
-          note:
-            note ||
-            `Boshlang'ich balans tahrirlandi (${prevOpening} → ${nextOpening})`,
-          date: new Date(),
-        });
-      }
+      // Opening balance tahriri payment_historyga yozilmaydi.
 
       changes.push({
         currency: cur,
@@ -1234,6 +1249,13 @@ exports.payCustomerDebt = async (req, res) => {
          🔥 ASOSIY FORMULA
       ========================= */
       customer.balance[currency] = prevBalance - delta;
+      const newBalance = Number(customer.balance?.[currency] || 0);
+      const openingInitialized = maybeInitOpeningBalance(
+        customer,
+        currency,
+        prevBalance,
+        newBalance,
+      );
       // delta > 0  → balance kamayadi
       // delta < 0  → balance oshadi
 
@@ -1259,12 +1281,14 @@ exports.payCustomerDebt = async (req, res) => {
           id: customer._id,
           name: customer.name,
           balance: customer.balance,
+          opening_balance: customer.opening_balance || { UZS: 0, USD: 0 },
         },
         change: {
           currency,
           amount: delta,
           previous_balance: prevBalance,
           current_balance: customer.balance[currency],
+          opening_balance_initialized: openingInitialized,
         },
       };
     });
