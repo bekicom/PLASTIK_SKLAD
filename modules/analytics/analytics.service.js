@@ -10,6 +10,7 @@ const CashIn = require("../cashIn/CashIn");
 const Withdrawal = require("../withdrawals/Withdrawal");
 const Purchase = require("../purchases/Purchase");
 const SaleReturn = require("../returns/SaleReturn");
+const Expense = require("../expenses/Expense");
 const StartingBalance = require("./StartingBalance");
 const InventoryRevaluation = require("./InventoryRevaluation");
 
@@ -1039,6 +1040,41 @@ async function getProfitDetails({
     });
   }
 
+  // Harajatlar ham foyda tafsilotlariga kiradi (net foyda uchun)
+  const expenseRows = await Expense.find({
+    ...buildDateMatch(from, to, "expense_date"),
+    ...(currency !== "ALL" ? { currency } : {}),
+  })
+    .select("_id expense_date category note amount currency payment_method")
+    .lean();
+
+  for (const e of expenseRows) {
+    const amt = Number(e.amount || 0);
+    if (!Number.isFinite(amt) || amt <= 0) continue;
+    rows.push({
+      date: e.expense_date || e.createdAt || new Date(),
+      type: "EXPENSE",
+      docNo: `EXP-${String(e._id || "").slice(-6)}`,
+      saleId: null,
+      customerId: null,
+      customerName: "",
+      productId: null,
+      productName: e.category || "Harajat",
+      model: "",
+      category: e.category || "",
+      unit: "",
+      currency: e.currency || "UZS",
+      qty: 0,
+      sellPrice: 0,
+      buyPrice: amt,
+      revenue: 0,
+      cost: amt,
+      profit: -amt,
+      note: e.note || "",
+      paymentMethod: e.payment_method || "CASH",
+    });
+  }
+
   for (const r of returns) {
     for (const it of r.items || []) {
       if (productId && String(it.product_id) !== String(productId)) continue;
@@ -1094,6 +1130,7 @@ async function getProfitDetails({
     UZS: { revenue: 0, cost: 0, grossProfit: 0, qty: 0, rows: 0 },
     USD: { revenue: 0, cost: 0, grossProfit: 0, qty: 0, rows: 0 },
   };
+  const expenseTotals = { UZS: 0, USD: 0 };
 
   const productMap = new Map();
   const customerMap = new Map();
@@ -1107,6 +1144,33 @@ async function getProfitDetails({
     byCurrency[r.currency].grossProfit += Number(r.profit || 0);
     byCurrency[r.currency].qty += Number(r.qty || 0);
     byCurrency[r.currency].rows += 1;
+
+    if (r.type === "EXPENSE") {
+      expenseTotals[r.currency] += Number(r.cost || 0);
+    }
+
+    // Harajatlar mahsulot breakdownga kirmaydi
+    if (r.type === "EXPENSE") {
+      const docKey = `${String(r.docNo || "")}|${String(r.saleId || "")}|${r.currency}`;
+      if (r.docNo || r.saleId) {
+        const dAcc = documentMap.get(docKey) || {
+          docNo: r.docNo || "",
+          saleId: r.saleId || null,
+          customerName: r.customerName || "",
+          currency: r.currency,
+          revenue: 0,
+          cost: 0,
+          grossProfit: 0,
+          transactions: 0,
+        };
+        dAcc.revenue += Number(r.revenue || 0);
+        dAcc.cost += Number(r.cost || 0);
+        dAcc.grossProfit += Number(r.profit || 0);
+        dAcc.transactions += 1;
+        documentMap.set(docKey, dAcc);
+      }
+      continue;
+    }
 
     const productKeyName =
       String(r.productId || "").trim() ||
@@ -1204,6 +1268,15 @@ async function getProfitDetails({
     summary: {
       UZS: byCurrency.UZS,
       USD: byCurrency.USD,
+      expenses: expenseTotals,
+      grossBeforeExpense: {
+        UZS: Number(byCurrency.UZS.grossProfit || 0) + Number(expenseTotals.UZS || 0),
+        USD: Number(byCurrency.USD.grossProfit || 0) + Number(expenseTotals.USD || 0),
+      },
+      netProfit: {
+        UZS: Number(byCurrency.UZS.grossProfit || 0),
+        USD: Number(byCurrency.USD.grossProfit || 0),
+      },
       totalRows: rows.length,
       totalProducts: byProduct.length,
       totalCustomers: byCustomer.length,
