@@ -14,9 +14,20 @@ function getCurrentUserId(req) {
   return req.user?._id || req.user?.id || null;
 }
 
-function buildProductMatchFilter({ supplierId, name, model, color, unit, currency }) {
+function buildFlexibleSupplierFilter(id) {
+  const raw = String(id || "").trim();
+  if (!raw) return null;
+
+  const or = [{ _id: raw }];
+  if (mongoose.isValidObjectId(raw)) {
+    or.push({ _id: new mongoose.Types.ObjectId(raw) });
+  }
+
+  return { $or: or };
+}
+
+function buildProductMatchFilter({ name, model, color, unit, currency }) {
   return {
-    supplier_id: supplierId,
     name,
     model,
     color,
@@ -26,10 +37,9 @@ function buildProductMatchFilter({ supplierId, name, model, color, unit, currenc
   };
 }
 
-async function findLatestMatchingProduct(session, supplierId, item) {
+async function findLatestMatchingProduct(session, item) {
   return Product.findOne(
     buildProductMatchFilter({
-      supplierId,
       name: item.name,
       model: item.model,
       color: item.color,
@@ -51,13 +61,14 @@ async function upsertPurchaseProduct({
   category,
   currentUserId = null,
 }) {
-  const existing = await findLatestMatchingProduct(session, supplierId, item);
+  const existing = await findLatestMatchingProduct(session, item);
 
   if (existing) {
     const prevBuyPrice = Number(existing.buy_price || 0);
     const prevSellPrice = Number(existing.sell_price || 0);
 
     existing.qty = Number(existing.qty || 0) + qty;
+    existing.supplier_id = supplierId;
     existing.buy_price = buyPrice;
     existing.sell_price = sellPrice;
     const nextCategory = String(category || "").trim();
@@ -256,7 +267,6 @@ async function buildRevaluationEntriesForItems({
 
     const similarProducts = await Product.find(
       {
-        supplier_id: supplierId,
         name,
         model,
         color,
@@ -333,7 +343,7 @@ exports.createPurchase = async (req, res) => {
       throw new Error("Kamida 1 ta mahsulot bo‘lishi shart");
     }
 
-    const supplier = await Supplier.findById(supplier_id).session(session);
+    const supplier = await Supplier.findOne(buildFlexibleSupplierFilter(supplier_id)).session(session);
     if (!supplier) throw new Error("Supplier topilmadi");
 
     const parsedDate = purchase_date ? new Date(purchase_date) : new Date();
@@ -529,7 +539,9 @@ exports.editPurchase = async (req, res) => {
       throw new Error("supplier_id noto‘g‘ri");
     }
 
-    const nextSupplier = await Supplier.findById(nextSupplierId).session(session);
+    const nextSupplier = await Supplier.findOne(
+      buildFlexibleSupplierFilter(nextSupplierId),
+    ).session(session);
     if (!nextSupplier) throw new Error("Supplier topilmadi");
 
     const nextNote =
@@ -694,7 +706,7 @@ exports.getPurchases = async (req, res) => {
 
     const filter = {};
 
-    if (supplier_id && mongoose.isValidObjectId(supplier_id)) {
+    if (supplier_id) {
       filter.supplier_id = supplier_id;
     }
 
@@ -815,9 +827,9 @@ exports.deletePurchase = async (req, res) => {
        SUPPLIER BALANCE ROLLBACK
        (faqat qarzni qaytarish)
     ===================== */
-    const supplier = await Supplier.findById(purchase.supplier_id).session(
-      session,
-    );
+    const supplier = await Supplier.findOne(
+      buildFlexibleSupplierFilter(purchase.supplier_id),
+    ).session(session);
     if (!supplier) throw new Error("Supplier topilmadi");
 
     supplier.balance.UZS -= purchase.remaining?.UZS || 0;

@@ -67,6 +67,72 @@ function normCmp(v) {
   return String(v || "").trim().toLowerCase();
 }
 
+function buildProductMergeKey(product) {
+  return [
+    String(product?.supplier_id?._id || product?.supplier_id || ""),
+    normCmp(product?.name),
+    normCmp(product?.model),
+    normCmp(product?.color),
+    normCmp(product?.unit),
+    normCmp(product?.warehouse_currency),
+  ].join("|");
+}
+
+function isSameMergeKey(a, b) {
+  return buildProductMergeKey(a) === buildProductMergeKey(b);
+}
+
+function mergeProductRows(rows = []) {
+  const groups = new Map();
+
+  for (const row of rows || []) {
+    const key = buildProductMergeKey(row);
+    const nextQty = Number(row?.qty || 0);
+    const nextArchiveQty = Number(row?.archive_qty || 0);
+    const prev = groups.get(key);
+
+    if (!prev) {
+      groups.set(key, {
+        ...row,
+        qty: nextQty,
+        archive_qty: nextArchiveQty,
+        _rows: [row],
+      });
+      continue;
+    }
+
+    prev.qty = Number(prev.qty || 0) + nextQty;
+    prev.archive_qty = Number(prev.archive_qty || 0) + nextArchiveQty;
+    prev._rows.push(row);
+
+    const prevUpdated = new Date(prev.updatedAt || prev.createdAt || 0).getTime();
+    const nextUpdated = new Date(row.updatedAt || row.createdAt || 0).getTime();
+    if (nextUpdated >= prevUpdated) {
+      prev._id = row._id;
+      prev.id = String(row._id);
+      prev.name = row.name;
+      prev.model = row.model;
+      prev.color = row.color;
+      prev.category = row.category;
+      prev.unit = row.unit;
+      prev.warehouse_currency = row.warehouse_currency;
+      prev.buy_price = row.buy_price;
+      prev.sell_price = row.sell_price;
+      prev.updatedAt = row.updatedAt;
+      prev.createdAt = row.createdAt;
+      prev.supplier_id = row.supplier_id;
+    }
+  }
+
+  return [...groups.values()].map((row) => {
+    const merged = { ...row };
+    delete merged._rows;
+    merged.id = String(merged._id);
+    merged._id = merged._id;
+    return merged;
+  });
+}
+
 function normalizeStoredImagePath(raw) {
   const s = String(raw || "").trim();
   if (!s) return "";
@@ -158,17 +224,67 @@ exports.createProduct = async (req, res) => {
       (f) => `/uploads/products/${f.filename}`
     );
 
+    const normalizedSupplierId = String(supplier_id).trim();
+    const normalizedName = normalizeText(name);
+    const normalizedModel = normalizeText(model);
+    const normalizedColor = normalizeText(color);
+    const normalizedCategory = normalizeText(category);
+    const normalizedUnit = String(unit).trim();
+    const normalizedCurrency = String(warehouse_currency).trim();
+    const incomingQty = qty !== undefined ? safeNumber(qty, 0) : 0;
+    const incomingBuyPrice = safeNumber(buy_price, 0);
+    const incomingSellPrice = safeNumber(sell_price, 0);
+
+    const existing = await Product.findOne({
+      supplier_id: normalizedSupplierId,
+      name: normalizedName,
+      model: normalizedModel,
+      color: normalizedColor,
+      unit: normalizedUnit,
+      warehouse_currency: normalizedCurrency,
+      isActive: true,
+    }).sort({ updatedAt: -1 });
+
+    if (existing) {
+      existing.qty = Number(existing.qty || 0) + incomingQty;
+      existing.buy_price = incomingBuyPrice;
+      existing.sell_price = incomingSellPrice;
+      existing.category = normalizedCategory;
+      existing.images = Array.isArray(existing.images) ? existing.images : [];
+      existing.images = [...new Set([...existing.images, ...images])];
+      existing.history = Array.isArray(existing.history) ? existing.history : [];
+      existing.history.push({
+        type: "MANUAL_UPDATE",
+        date: new Date(),
+        note: "Mahsulot qayta kirim qilindi",
+        qtyDelta: incomingQty,
+        payload: {
+          source: "CREATE_PRODUCT",
+          next_buy_price: incomingBuyPrice,
+          next_sell_price: incomingSellPrice,
+        },
+      });
+      await existing.save();
+      existing.images = withImageUrl(req, existing.images);
+
+      return res.status(200).json({
+        ok: true,
+        message: "Mahsulot yangilandi",
+        product: existing,
+      });
+    }
+
     const product = await Product.create({
-      supplier_id,
-      name: normalizeText(name),
-      model: normalizeText(model),
-      color: normalizeText(color),
-      category: normalizeText(category),
-      unit,
-      warehouse_currency,
-      qty: qty !== undefined ? safeNumber(qty, 0) : 0,
-      buy_price: safeNumber(buy_price, 0),
-      sell_price: safeNumber(sell_price, 0),
+      supplier_id: normalizedSupplierId,
+      name: normalizedName,
+      model: normalizedModel,
+      color: normalizedColor,
+      category: normalizedCategory,
+      unit: normalizedUnit,
+      warehouse_currency: normalizedCurrency,
+      qty: incomingQty,
+      buy_price: incomingBuyPrice,
+      sell_price: incomingSellPrice,
       images,
     });
 
@@ -235,10 +351,12 @@ exports.getProducts = async (req, res) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    const mapped = items.map((p) => ({
-      ...p,
-      images: withImageUrl(req, p.images),
-    }));
+    const mapped = mergeProductRows(
+      items.map((p) => ({
+        ...p,
+        images: withImageUrl(req, p.images),
+      })),
+    );
 
     return res.json({
       ok: true,
@@ -264,13 +382,17 @@ exports.getArchivedProducts = async (req, res) => {
       .sort({ updatedAt: -1 })
       .lean();
 
-    return res.json({
-      ok: true,
-      total: items.length,
-      items: items.map((p) => ({
+    const mapped = mergeProductRows(
+      items.map((p) => ({
         ...p,
         images: withImageUrl(req, p.images),
       })),
+    );
+
+    return res.json({
+      ok: true,
+      total: mapped.length,
+      items: mapped,
     });
   } catch (error) {
     return res.status(500).json({
