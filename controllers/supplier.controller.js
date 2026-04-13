@@ -5,6 +5,25 @@ const CashIn = require("../modules/cashIn/CashIn");
 const CUR = ["UZS", "USD"];
 const Product = require("../modules/products/Product");
 
+function buildFlexibleIdFilter(id, field = "_id") {
+  const raw = String(id || "").trim();
+  if (!raw) return null;
+
+  const or = [{ [field]: raw }];
+  if (mongoose.isValidObjectId(raw)) {
+    or.push({ [field]: new mongoose.Types.ObjectId(raw) });
+  }
+
+  return { $or: or };
+}
+
+async function findSupplierByIdFlexible(id) {
+  const filter = buildFlexibleIdFilter(id);
+  if (!filter) return null;
+
+  return Supplier.findOne(filter);
+}
+
 function maybeInitOpeningBalance(entity, currency, prevBalance, nextBalance) {
   if (!entity.opening_balance) entity.opening_balance = { UZS: 0, USD: 0 };
 
@@ -223,7 +242,7 @@ exports.getSuppliers = async (req, res) => {
 
 exports.getSupplierById = async (req, res) => {
   try {
-    const supplier = await Supplier.findById(req.params.id);
+    const supplier = await findSupplierByIdFlexible(req.params.id);
     if (!supplier)
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
 
@@ -238,7 +257,7 @@ exports.updateSupplier = async (req, res) => {
   try {
     const { name, phone } = req.body;
 
-    const supplier = await Supplier.findById(req.params.id);
+    const supplier = await findSupplierByIdFlexible(req.params.id);
     if (!supplier)
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
 
@@ -268,7 +287,8 @@ exports.deleteSupplierHard = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(id)) {
+    const filter = buildFlexibleIdFilter(id);
+    if (!filter) {
       return res.status(400).json({
         ok: false,
         message: "supplier id noto‘g‘ri",
@@ -276,7 +296,7 @@ exports.deleteSupplierHard = async (req, res) => {
     }
 
     // 1️⃣ ZAVOD BORLIGINI TEKSHIRAMIZ
-    const supplier = await Supplier.findById(id);
+    const supplier = await Supplier.findOne(filter);
     if (!supplier) {
       return res.status(404).json({
         ok: false,
@@ -285,13 +305,13 @@ exports.deleteSupplierHard = async (req, res) => {
     }
 
     // 2️⃣ SHU ZAVODGA TEGISHLI PRODUCTLARNI O‘CHIRAMIZ
-    await Product.deleteMany({ supplier_id: id });
+    await Product.deleteMany(buildFlexibleIdFilter(id, "supplier_id"));
 
     // 3️⃣ AGAR TEST BO‘LSA — PURCHASELARNI HAM O‘CHIRAMIZ
-    await Purchase.deleteMany({ supplier_id: id });
+    await Purchase.deleteMany(buildFlexibleIdFilter(id, "supplier_id"));
 
     // 4️⃣ OXIRIDA ZAVODNI O‘CHIRAMIZ
-    await Supplier.findByIdAndDelete(id);
+    await Supplier.deleteOne(filter);
 
     return res.json({
       ok: true,
@@ -425,7 +445,8 @@ exports.getSupplierDetail = async (req, res) => {
     /* =========================
        VALIDATION
     ========================= */
-    if (!mongoose.isValidObjectId(id)) {
+    const supplierFilter = buildFlexibleIdFilter(id);
+    if (!supplierFilter) {
       return res.status(400).json({
         ok: false,
         message: "supplier id noto‘g‘ri",
@@ -435,7 +456,7 @@ exports.getSupplierDetail = async (req, res) => {
     /* =========================
        SUPPLIER
     ========================= */
-    const supplier = await Supplier.findById(id)
+    const supplier = await Supplier.findOne(supplierFilter)
       .select("_id name phone balance createdAt")
       .lean();
 
@@ -458,7 +479,7 @@ exports.getSupplierDetail = async (req, res) => {
     const toDate = parseDate(req.query.to, true) || defaultTo;
 
     const purchaseFilter = {
-      supplier_id: new mongoose.Types.ObjectId(id),
+      ...buildFlexibleIdFilter(id, "supplier_id"),
       purchase_date: {
         $gte: fromDate,
         $lte: toDate,
@@ -522,7 +543,8 @@ exports.paySupplierDebt = async (req, res) => {
     const { id } = req.params;
     const { amount, currency = "UZS", note } = req.body || {};
 
-    if (!mongoose.isValidObjectId(id)) {
+    const supplierFilter = buildFlexibleIdFilter(id);
+    if (!supplierFilter) {
       return res.status(400).json({
         ok: false,
         message: "supplier id noto‘g‘ri",
@@ -546,7 +568,7 @@ exports.paySupplierDebt = async (req, res) => {
       });
     }
 
-    const supplier = await Supplier.findById(id);
+    const supplier = await findSupplierByIdFlexible(id);
     if (!supplier) {
       return res.status(404).json({
         ok: false,
@@ -624,20 +646,19 @@ exports.getSupplierPurchases = async (req, res) => {
     const { id } = req.params;
     const { from, to } = req.query;
 
-    if (!mongoose.isValidObjectId(id)) {
+    const supplierFilter = buildFlexibleIdFilter(id);
+    if (!supplierFilter) {
       return res.status(400).json({
         ok: false,
         message: "supplier id noto‘g‘ri",
       });
     }
 
-    const supplierId = new mongoose.Types.ObjectId(id);
-
     const fromDate = parseDate(from, false);
     const toDate = parseDate(to, true);
 
     const filter = {
-      supplier_id: supplierId, // 🔒 NULL LAR O‘TMAYDI
+      ...buildFlexibleIdFilter(id, "supplier_id"), // 🔒 NULL LAR O‘TMAYDI
       status: { $ne: "PAID" },
       $or: [{ "remaining.UZS": { $gt: 0 } }, { "remaining.USD": { $gt: 0 } }],
     };
@@ -684,7 +705,12 @@ exports.updateSupplierBalance = async (req, res) => {
       return res.status(400).json({ message: "amount noto‘g‘ri" });
     }
 
-    const supplier = await Supplier.findById(id);
+    const supplierFilter = buildFlexibleIdFilter(id);
+    if (!supplierFilter) {
+      return res.status(400).json({ message: "supplier id noto‘g‘ri" });
+    }
+
+    const supplier = await Supplier.findOne(supplierFilter);
     if (!supplier) {
       return res.status(404).json({ message: "Zavod topilmadi" });
     }
@@ -730,7 +756,8 @@ exports.updateSupplierOpeningBalance = async (req, res) => {
     const { id } = req.params;
     const { opening_balance = {}, note, set_as_baseline = false } = req.body || {};
 
-    if (!mongoose.isValidObjectId(id)) {
+    const supplierFilter = buildFlexibleIdFilter(id);
+    if (!supplierFilter) {
       return res.status(400).json({
         ok: false,
         message: "supplier id noto‘g‘ri",
@@ -747,7 +774,7 @@ exports.updateSupplierOpeningBalance = async (req, res) => {
       });
     }
 
-    const supplier = await Supplier.findById(id);
+    const supplier = await Supplier.findOne(supplierFilter);
     if (!supplier) {
       return res.status(404).json({
         ok: false,
@@ -824,7 +851,8 @@ exports.getSupplierTimeline = async (req, res) => {
   try {
     const { id } = req.params;
 
-    if (!mongoose.isValidObjectId(id)) {
+    const supplierFilter = buildFlexibleIdFilter(id);
+    if (!supplierFilter) {
       return res.status(400).json({
         ok: false,
         message: "supplier id noto‘g‘ri",
@@ -834,7 +862,7 @@ exports.getSupplierTimeline = async (req, res) => {
     /* =========================
        1️⃣ PURCHASES (YUKLAR)
     ========================= */
-    const purchases = await Purchase.find({ supplier_id: id })
+    const purchases = await Purchase.find(buildFlexibleIdFilter(id, "supplier_id"))
       .select("batch_no totals remaining status createdAt")
       .lean();
 
@@ -856,7 +884,7 @@ exports.getSupplierTimeline = async (req, res) => {
     ========================= */
     const cashIns = await CashIn.find({
       target_type: "SUPPLIER",
-      supplier_id: id,
+      ...buildFlexibleIdFilter(id, "supplier_id"),
     })
       .select("amount currency payment_method note createdAt")
       .lean();
