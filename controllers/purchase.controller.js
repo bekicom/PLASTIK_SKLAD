@@ -14,6 +14,99 @@ function getCurrentUserId(req) {
   return req.user?._id || req.user?.id || null;
 }
 
+function buildProductMatchFilter({ supplierId, name, model, color, unit, currency }) {
+  return {
+    supplier_id: supplierId,
+    name,
+    model,
+    color,
+    warehouse_currency: currency,
+    unit,
+    isActive: true,
+  };
+}
+
+async function findLatestMatchingProduct(session, supplierId, item) {
+  return Product.findOne(
+    buildProductMatchFilter({
+      supplierId,
+      name: item.name,
+      model: item.model,
+      color: item.color,
+      unit: item.unit,
+      currency: item.currency,
+    }),
+  )
+    .sort({ createdAt: -1 })
+    .session(session);
+}
+
+async function upsertPurchaseProduct({
+  session,
+  supplierId,
+  item,
+  qty,
+  buyPrice,
+  sellPrice,
+  category,
+  currentUserId = null,
+}) {
+  const existing = await findLatestMatchingProduct(session, supplierId, item);
+
+  if (existing) {
+    const prevBuyPrice = Number(existing.buy_price || 0);
+    const prevSellPrice = Number(existing.sell_price || 0);
+
+    existing.qty = Number(existing.qty || 0) + qty;
+    existing.buy_price = buyPrice;
+    existing.sell_price = sellPrice;
+    const nextCategory = String(category || "").trim();
+    if (nextCategory) {
+      existing.category = nextCategory;
+    }
+
+    existing.history = Array.isArray(existing.history) ? existing.history : [];
+    existing.history.push({
+      type: "MANUAL_UPDATE",
+      date: new Date(),
+      by: currentUserId || null,
+      note: "Kirim narxi yangilandi",
+      qtyDelta: qty,
+      payload: {
+        source: "PURCHASE",
+        previous_buy_price: prevBuyPrice,
+        previous_sell_price: prevSellPrice,
+        next_buy_price: buyPrice,
+        next_sell_price: sellPrice,
+      },
+    });
+
+    await existing.save({ session });
+    return existing;
+  }
+
+  const created = await Product.create(
+    [
+      {
+        supplier_id: supplierId,
+        name: item.name,
+        model: item.model,
+        color: item.color,
+        category: String(category || "").trim(),
+        unit: item.unit,
+        warehouse_currency: item.currency,
+        qty,
+        buy_price: buyPrice,
+        sell_price: sellPrice,
+        images: [],
+      },
+    ],
+    { session },
+  );
+
+  return created[0];
+}
+
 async function restorePurchaseStock(session, items) {
   for (const it of items || []) {
     if (!it?.product_id || !mongoose.isValidObjectId(it.product_id)) continue;
@@ -52,7 +145,12 @@ async function reapplyExistingPurchaseItems(session, items) {
   }
 }
 
-async function buildPurchaseItemsFromInput(session, supplierId, items) {
+async function buildPurchaseItemsFromInput(
+  session,
+  supplierId,
+  items,
+  currentUserId = null,
+) {
   const totals = { UZS: 0, USD: 0 };
   const purchaseItems = [];
   const affectedProducts = [];
@@ -88,61 +186,25 @@ async function buildPurchaseItemsFromInput(session, supplierId, items) {
     const rowTotal = qty * buy_price;
     totals[currency] += rowTotal;
 
-    const key = [
-      String(supplierId),
-      name,
-      model || "",
-      color,
-      currency,
-      buy_price,
-      sell_price,
-      unit,
-    ].join("|");
+    const key = [String(supplierId), name, model || "", color, currency, unit].join(
+      "|",
+    );
 
     if (seen.has(key)) {
       throw new Error("Bir xil purchase item takrorlanmasin");
     }
     seen.add(key);
 
-    let product = await Product.findOne(
-      {
-        supplier_id: supplierId,
-        name,
-        model,
-        color,
-        warehouse_currency: currency,
-        buy_price,
-        sell_price,
-        unit,
-      },
-      null,
-      { session },
-    );
-
-    if (product) {
-      product.qty += qty;
-      await product.save({ session });
-    } else {
-      const created = await Product.create(
-        [
-          {
-            supplier_id: supplierId,
-            name,
-            model,
-            color,
-            category,
-            unit,
-            warehouse_currency: currency,
-            buy_price,
-            sell_price,
-            qty,
-            images: [],
-          },
-        ],
-        { session },
-      );
-      product = created[0];
-    }
+    const product = await upsertPurchaseProduct({
+      session,
+      supplierId,
+      item: { name, model, color, unit, currency },
+      qty,
+      buyPrice: buy_price,
+      sellPrice: sell_price,
+      category,
+      currentUserId,
+    });
 
     affectedProducts.push(product);
 
@@ -325,49 +387,18 @@ exports.createPurchase = async (req, res) => {
       /* =====================
          🔍 EXACT MATCH QIDIRAMIZ
       ===================== */
-      let product = await Product.findOne(
-        {
-          supplier_id,
-          name,
-          model,
-          color,
-          warehouse_currency: currency,
-          buy_price,
-          sell_price,
-          unit,
-        },
-        null,
-        { session },
-      );
+      const product = await upsertPurchaseProduct({
+        session,
+        supplierId: supplier_id,
+        item: { name, model, color, unit, currency },
+        qty,
+        buyPrice: buy_price,
+        sellPrice: sell_price,
+        category,
+        currentUserId,
+      });
 
-      if (product) {
-        // ✅ HAMMASI BIR XIL → QTY OSHIRAMIZ
-        product.qty += qty;
-        await product.save({ session });
-      } else {
-        // ✅ BIROR NARSA FARQ QILDI → YANGI PRODUCT
-        product = await Product.create(
-          [
-            {
-              supplier_id,
-              name,
-              model,
-              color,
-              category,
-              unit,
-              warehouse_currency: currency,
-              buy_price,
-              sell_price,
-              qty,
-              images: [],
-            },
-          ],
-          { session },
-        );
-        product = product[0];
-      }
-
-      affectedProducts.push(product);
+    affectedProducts.push(product);
 
       purchaseItems.push({
         product_id: product._id,
@@ -552,6 +583,7 @@ exports.editPurchase = async (req, res) => {
         session,
         nextSupplier._id,
         req.body.items,
+        currentUserId,
       );
       nextItems = built.purchaseItems;
       nextTotals = built.totals;
