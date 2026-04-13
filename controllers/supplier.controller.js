@@ -24,6 +24,20 @@ async function findSupplierByIdFlexible(id) {
   return Supplier.findOne(filter);
 }
 
+function serializeSupplierBase(supplier) {
+  if (!supplier) return supplier;
+
+  const plain =
+    typeof supplier.toObject === "function" ? supplier.toObject() : { ...supplier };
+  const id = String(plain._id || plain.id || "");
+
+  return {
+    ...plain,
+    _id: plain._id ?? id,
+    id,
+  };
+}
+
 function maybeInitOpeningBalance(entity, currency, prevBalance, nextBalance) {
   if (!entity.opening_balance) entity.opening_balance = { UZS: 0, USD: 0 };
 
@@ -191,6 +205,7 @@ exports.getSuppliers = async (req, res) => {
       const usd = Number(s.balance?.USD || 0);
 
       return {
+        id: String(s._id),
         _id: s._id,
         name: s.name,
         phone: s.phone,
@@ -246,7 +261,7 @@ exports.getSupplierById = async (req, res) => {
     if (!supplier)
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
 
-    return res.json({ ok: true, supplier });
+    return res.json({ ok: true, supplier: serializeSupplierBase(supplier) });
   } catch (error) {
     return res
       .status(500)
@@ -275,7 +290,11 @@ exports.updateSupplier = async (req, res) => {
 
     await supplier.save();
 
-    return res.json({ ok: true, message: "Zavod yangilandi", supplier });
+    return res.json({
+      ok: true,
+      message: "Zavod yangilandi",
+      supplier: serializeSupplierBase(supplier),
+    });
   } catch (error) {
     return res
       .status(500)
@@ -391,7 +410,8 @@ exports.getSuppliersDashboard = async (req, res) => {
       const usd = Number(s.balance?.USD || 0);
 
       return {
-        id: s._id,
+        id: String(s._id),
+        _id: s._id,
         name: s.name,
         phone: s.phone,
 
@@ -513,7 +533,8 @@ exports.getSupplierDetail = async (req, res) => {
       ok: true,
 
       supplier: {
-        id: supplier._id,
+        id: String(supplier._id),
+        _id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
         balance: supplier.balance, // ⚠️ faqat advance / prepayment
@@ -616,7 +637,8 @@ exports.paySupplierDebt = async (req, res) => {
       ok: true,
       message: "Supplier balance yangilandi",
       supplier: {
-        id: supplier._id,
+        id: String(supplier._id),
+        _id: supplier._id,
         name: supplier.name,
         phone: supplier.phone,
         balance: supplier.balance,
@@ -831,7 +853,8 @@ exports.updateSupplierOpeningBalance = async (req, res) => {
       ok: true,
       message: "Zavod boshlang‘ich balansi yangilandi",
       supplier: {
-        id: supplier._id,
+        id: String(supplier._id),
+        _id: supplier._id,
         name: supplier.name,
         opening_balance: supplier.opening_balance,
         balance: supplier.balance,
