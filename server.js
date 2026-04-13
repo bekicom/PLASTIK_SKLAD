@@ -11,6 +11,13 @@ const skladRoutes = require("./routes");
 
 const app = express();
 
+function isLocalMongoUri(uri) {
+  if (!uri) return false;
+  return /mongodb:\/\/(?:127\.0\.0\.1|localhost)|mongodb\+srv:\/\/(?:127\.0\.0\.1|localhost)/i.test(
+    uri,
+  );
+}
+
 /* ======================
    CORS
 ====================== */
@@ -72,6 +79,16 @@ io.on("connection", (socket) => {
 /* ======================
    MONGODB + START
 ====================== */
+if (!process.env.MONGO_URI) {
+  throw new Error("MONGO_URI topilmadi");
+}
+
+if (isLocalMongoUri(process.env.MONGO_URI)) {
+  throw new Error(
+    "Local MongoDB URI taqiqlangan. Faqat Atlas/global MONGO_URI ishlating.",
+  );
+}
+
 mongoose
   .connect(process.env.MONGO_URI)
   .then(async () => {
