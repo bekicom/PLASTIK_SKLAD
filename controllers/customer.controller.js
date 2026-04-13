@@ -955,6 +955,12 @@ exports.getCustomerStatement = async (req, res) => {
 exports.getCustomerSummary = async (req, res) => {
   try {
     const { id } = req.params;
+    const fromQuery = req.query.dateFrom || req.query.from || null;
+    const toQuery = req.query.dateTo || req.query.to || null;
+    const summaryLimit = Math.min(
+      Math.max(parseInt(req.query.limit || "200", 10), 1),
+      1000,
+    );
 
     if (!mongoose.isValidObjectId(id)) {
       return res
@@ -963,6 +969,33 @@ exports.getCustomerSummary = async (req, res) => {
     }
 
     const customerId = new mongoose.Types.ObjectId(id);
+    const orderMatch = { customerId };
+    const saleMatch = { customerId, status: "COMPLETED" };
+
+    if (fromQuery || toQuery) {
+      const orderDate = {};
+      const saleDate = {};
+
+      if (fromQuery) {
+        const fromDate = new Date(fromQuery);
+        if (!Number.isNaN(fromDate.getTime())) {
+          orderDate.$gte = fromDate;
+          saleDate.$gte = fromDate;
+        }
+      }
+
+      if (toQuery) {
+        const toDate = new Date(toQuery);
+        if (!Number.isNaN(toDate.getTime())) {
+          toDate.setHours(23, 59, 59, 999);
+          orderDate.$lte = toDate;
+          saleDate.$lte = toDate;
+        }
+      }
+
+      if (Object.keys(orderDate).length) orderMatch.createdAt = orderDate;
+      if (Object.keys(saleDate).length) saleMatch.saleDate = saleDate;
+    }
 
     /* =========================
        1. CUSTOMER
@@ -979,7 +1012,7 @@ exports.getCustomerSummary = async (req, res) => {
        2. ORDERS SUMMARY
     ========================= */
     const [orderAgg] = await Order.aggregate([
-      { $match: { customerId } },
+      { $match: orderMatch },
       {
         $group: {
           _id: "$customerId",
@@ -1004,7 +1037,7 @@ exports.getCustomerSummary = async (req, res) => {
        3. SALES AGGREGATION 🔥
     ========================= */
     const [salesAgg] = await Sale.aggregate([
-      { $match: { customerId, status: "COMPLETED" } },
+      { $match: saleMatch },
       {
         $group: {
           _id: "$customerId",
@@ -1040,12 +1073,9 @@ exports.getCustomerSummary = async (req, res) => {
     /* =========================
        4. LAST SALES (DETAIL)
     ========================= */
-    const lastSalesRaw = await Sale.find({
-      customerId,
-      status: "COMPLETED",
-    })
+    const lastSalesRaw = await Sale.find(saleMatch)
       .sort({ saleDate: -1 }) // 🔥 ASOSIY SANA
-      .limit(10)
+      .limit(summaryLimit)
       .select("invoiceNo saleDate createdAt items totals currencyTotals note history")
       .lean();
 
@@ -1107,6 +1137,11 @@ exports.getCustomerSummary = async (req, res) => {
     return res.json({
       ok: true,
       data: {
+        filters: {
+          dateFrom: fromQuery || null,
+          dateTo: toQuery || null,
+          limit: summaryLimit,
+        },
         customer: {
           ...customer,
           balance: customer.balance || { UZS: 0, USD: 0 },
