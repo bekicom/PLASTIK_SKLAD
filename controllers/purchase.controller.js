@@ -168,16 +168,48 @@ async function buildPurchaseItemsFromInput(
   const seen = new Set();
 
   for (const it of items) {
-    const name = String(it.name || "").trim();
-    const model = String(it.model || "").trim() || null;
-    const color = String(it.color || "").trim();
-    const category = String(it.category || "").trim();
-    const unit = String(it.unit || "").trim();
-    const currency = String(it.currency || "").trim();
+    const productRef = it.product_id || it.productId || null;
+    let sourceProduct = null;
 
-    const qty = Number(it.qty);
-    const buy_price = Number(it.buy_price);
-    const sell_price = Number(it.sell_price || 0);
+    if (productRef && mongoose.isValidObjectId(productRef)) {
+      sourceProduct = await Product.findById(productRef)
+        .select(
+          "name model color category unit warehouse_currency buy_price sell_price",
+        )
+        .session(session)
+        .lean();
+    }
+
+    const name = String(
+      it.name || it.product_name || sourceProduct?.name || "",
+    ).trim();
+    const model =
+      String(
+        it.model ??
+          it.product_model ??
+          sourceProduct?.model ??
+          "",
+      ).trim() || null;
+    const color = String(
+      it.color || it.product_color || sourceProduct?.color || "",
+    ).trim();
+    const category = String(
+      it.category || it.product_category || sourceProduct?.category || "",
+    ).trim();
+    const unit = String(
+      it.unit || it.product_unit || sourceProduct?.unit || "",
+    ).trim();
+    const currency = String(
+      it.currency || it.warehouse_currency || sourceProduct?.warehouse_currency || "",
+    ).trim();
+
+    const qty = Number(it.qty ?? it.quantity);
+    const buy_price = Number(
+      it.buy_price ?? it.buyPrice ?? sourceProduct?.buy_price,
+    );
+    const sell_price = Number(
+      it.sell_price ?? it.sellPrice ?? sourceProduct?.sell_price ?? 0,
+    );
 
     if (
       !name ||
