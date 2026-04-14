@@ -14,6 +14,31 @@ function getCurrentUserId(req) {
   return req.user?._id || req.user?.id || null;
 }
 
+function normalizePurchaseEditBody(rawBody) {
+  const base =
+    (rawBody && typeof rawBody === "object" && (rawBody.data || rawBody.purchase)) ||
+    rawBody ||
+    {};
+
+  const normalized = { ...base };
+
+  if (!Object.prototype.hasOwnProperty.call(normalized, "items")) {
+    if (Array.isArray(base.items)) normalized.items = base.items;
+    else if (Array.isArray(base.products)) normalized.items = base.products;
+    else if (Array.isArray(base.product_items)) normalized.items = base.product_items;
+  }
+
+  if (
+    !Object.prototype.hasOwnProperty.call(normalized, "supplier_id") &&
+    base.supplier &&
+    typeof base.supplier === "object"
+  ) {
+    normalized.supplier_id = base.supplier._id || base.supplier.id || null;
+  }
+
+  return normalized;
+}
+
 function buildFlexibleSupplierFilter(id) {
   const raw = String(id || "").trim();
   if (!raw) return null;
@@ -209,7 +234,7 @@ async function buildPurchaseItemsFromInput(
         it.product_color ||
         previous?.color ||
         sourceProduct?.color ||
-        "",
+        "-",
     ).trim();
     const category = String(
       it.category ||
@@ -220,14 +245,18 @@ async function buildPurchaseItemsFromInput(
     ).trim();
     const unit = String(
       it.unit || it.product_unit || previous?.unit || sourceProduct?.unit || "",
-    ).trim();
+    )
+      .trim()
+      .toUpperCase();
     const currency = String(
       it.currency ||
         it.warehouse_currency ||
         previous?.currency ||
         sourceProduct?.warehouse_currency ||
         "",
-    ).trim();
+    )
+      .trim()
+      .toUpperCase();
 
     const qty = Number(it.qty ?? it.quantity);
     const buy_price = Number(
@@ -243,7 +272,6 @@ async function buildPurchaseItemsFromInput(
 
     if (
       !name ||
-      !color ||
       !unit ||
       !["UZS", "USD"].includes(currency) ||
       !Number.isFinite(qty) ||
@@ -563,39 +591,35 @@ exports.editPurchase = async (req, res) => {
     };
     const currentUserId = getCurrentUserId(req);
 
+    const body = normalizePurchaseEditBody(req.body || {});
+
     const hasSupplierPatch = Object.prototype.hasOwnProperty.call(
-      req.body || {},
+      body,
       "supplier_id",
     );
-    const hasItemsPatch = Object.prototype.hasOwnProperty.call(
-      req.body || {},
-      "items",
-    );
+    const hasItemsPatch = Object.prototype.hasOwnProperty.call(body, "items");
     const hasDatePatch = Object.prototype.hasOwnProperty.call(
-      req.body || {},
+      body,
       "purchase_date",
     );
-    const hasBatchPatch = Object.prototype.hasOwnProperty.call(
-      req.body || {},
-      "batch_no",
-    );
+    const hasBatchPatch = Object.prototype.hasOwnProperty.call(body, "batch_no");
 
     const nextPurchaseDate = hasDatePatch
-      ? parseMaybeDate(req.body.purchase_date)
+      ? parseMaybeDate(body.purchase_date)
       : purchase.purchase_date;
     if (hasDatePatch && !nextPurchaseDate) {
       throw new Error("purchase_date noto‘g‘ri");
     }
 
     const nextBatchNo = hasBatchPatch
-      ? String(req.body.batch_no || "").trim()
+      ? String(body.batch_no || "").trim()
       : purchase.batch_no;
     if (hasBatchPatch && !nextBatchNo) {
       throw new Error("batch_no bo‘sh bo‘lishi mumkin emas");
     }
 
     const nextSupplierId = hasSupplierPatch
-      ? req.body.supplier_id
+      ? body.supplier_id
       : purchase.supplier_id;
     if (!mongoose.isValidObjectId(nextSupplierId)) {
       throw new Error("supplier_id noto‘g‘ri");
@@ -607,8 +631,8 @@ exports.editPurchase = async (req, res) => {
     if (!nextSupplier) throw new Error("Supplier topilmadi");
 
     const nextNote =
-      Object.prototype.hasOwnProperty.call(req.body || {}, "note")
-        ? String(req.body.note || "")
+      Object.prototype.hasOwnProperty.call(body, "note")
+        ? String(body.note || "")
         : purchase.note || "";
 
     // eski qayta-baholash yozuvlari qayta hisoblanadi
@@ -641,14 +665,14 @@ exports.editPurchase = async (req, res) => {
     };
 
     if (hasItemsPatch) {
-      if (!Array.isArray(req.body.items) || req.body.items.length === 0) {
+      if (!Array.isArray(body.items) || body.items.length === 0) {
         throw new Error("items bo‘sh bo‘lishi mumkin emas");
       }
 
       var pendingRevaluations = await buildRevaluationEntriesForItems({
         session,
         supplierId: nextSupplier._id,
-        rawItems: req.body.items,
+        rawItems: body.items,
         purchaseDate: nextPurchaseDate,
         userId: currentUserId,
       });
@@ -656,7 +680,7 @@ exports.editPurchase = async (req, res) => {
       const built = await buildPurchaseItemsFromInput(
         session,
         nextSupplier._id,
-        req.body.items,
+        body.items,
         currentUserId,
         { previousItems: oldItems },
       );
@@ -726,7 +750,7 @@ exports.editPurchase = async (req, res) => {
     purchase.editedAt = new Date();
     purchase.editedBy = getCurrentUserId(req);
     purchase.editReason = String(
-      req.body.editReason || req.body.reason || "",
+      body.editReason || body.reason || "",
     ).slice(0, 500);
     purchase.revision = Number(purchase.revision || 0) + 1;
     purchase.note = nextNote;
