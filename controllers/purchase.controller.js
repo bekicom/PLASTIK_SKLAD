@@ -161,7 +161,17 @@ async function buildPurchaseItemsFromInput(
   supplierId,
   items,
   currentUserId = null,
+  options = {},
 ) {
+  const previousItems = Array.isArray(options.previousItems)
+    ? options.previousItems
+    : [];
+  const previousByProductId = new Map(
+    previousItems
+      .filter((x) => x?.product_id)
+      .map((x) => [String(x.product_id), x]),
+  );
+
   const totals = { UZS: 0, USD: 0 };
   const purchaseItems = [];
   const affectedProducts = [];
@@ -179,36 +189,56 @@ async function buildPurchaseItemsFromInput(
         .session(session)
         .lean();
     }
+    const previous = productRef
+      ? previousByProductId.get(String(productRef)) || null
+      : null;
 
     const name = String(
-      it.name || it.product_name || sourceProduct?.name || "",
+      it.name || it.product_name || previous?.name || sourceProduct?.name || "",
     ).trim();
     const model =
       String(
         it.model ??
           it.product_model ??
+          previous?.model ??
           sourceProduct?.model ??
           "",
       ).trim() || null;
     const color = String(
-      it.color || it.product_color || sourceProduct?.color || "",
+      it.color ||
+        it.product_color ||
+        previous?.color ||
+        sourceProduct?.color ||
+        "",
     ).trim();
     const category = String(
-      it.category || it.product_category || sourceProduct?.category || "",
+      it.category ||
+        it.product_category ||
+        previous?.category ||
+        sourceProduct?.category ||
+        "",
     ).trim();
     const unit = String(
-      it.unit || it.product_unit || sourceProduct?.unit || "",
+      it.unit || it.product_unit || previous?.unit || sourceProduct?.unit || "",
     ).trim();
     const currency = String(
-      it.currency || it.warehouse_currency || sourceProduct?.warehouse_currency || "",
+      it.currency ||
+        it.warehouse_currency ||
+        previous?.currency ||
+        sourceProduct?.warehouse_currency ||
+        "",
     ).trim();
 
     const qty = Number(it.qty ?? it.quantity);
     const buy_price = Number(
-      it.buy_price ?? it.buyPrice ?? sourceProduct?.buy_price,
+      it.buy_price ?? it.buyPrice ?? previous?.buy_price ?? sourceProduct?.buy_price,
     );
     const sell_price = Number(
-      it.sell_price ?? it.sellPrice ?? sourceProduct?.sell_price ?? 0,
+      it.sell_price ??
+        it.sellPrice ??
+        previous?.sell_price ??
+        sourceProduct?.sell_price ??
+        0,
     );
 
     if (
@@ -628,6 +658,7 @@ exports.editPurchase = async (req, res) => {
         nextSupplier._id,
         req.body.items,
         currentUserId,
+        { previousItems: oldItems },
       );
       nextItems = built.purchaseItems;
       nextTotals = built.totals;
