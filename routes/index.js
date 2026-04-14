@@ -155,6 +155,12 @@ router.put(
   rRole("ADMIN"),
   supplierController.updateSupplier,
 );
+router.patch(
+  "/suppliers/:id",
+  rAuth,
+  rRole("ADMIN"),
+  supplierController.updateSupplier,
+);
 
 // supplierni delete qilish
 router.delete(

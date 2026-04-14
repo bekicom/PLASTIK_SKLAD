@@ -38,6 +38,15 @@ function serializeSupplierBase(supplier) {
   };
 }
 
+function normalizeSupplierUpdateBody(body) {
+  if (!body || typeof body !== "object") return {};
+
+  const nested = body.supplier && typeof body.supplier === "object" ? body.supplier : null;
+  const data = body.data && typeof body.data === "object" ? body.data : null;
+
+  return nested || data || body;
+}
+
 function maybeInitOpeningBalance(entity, currency, prevBalance, nextBalance) {
   if (!entity.opening_balance) entity.opening_balance = { UZS: 0, USD: 0 };
 
@@ -270,23 +279,30 @@ exports.getSupplierById = async (req, res) => {
 };
 exports.updateSupplier = async (req, res) => {
   try {
-    const { name, phone } = req.body;
+    const payload = normalizeSupplierUpdateBody(req.body);
+    const name = payload?.name;
+    const phone = payload?.phone;
+    const address = payload?.address;
+    const note = payload?.note;
 
     const supplier = await findSupplierByIdFlexible(req.params.id);
     if (!supplier)
       return res.status(404).json({ ok: false, message: "Zavod topilmadi" });
 
-    if (phone && phone !== supplier.phone) {
+    if (phone !== undefined && String(phone).trim() && String(phone).trim() !== supplier.phone) {
+      const nextPhone = String(phone).trim();
       const phoneExists = await Supplier.findOne({
-        phone,
+        phone: nextPhone,
         _id: { $ne: supplier._id },
       });
       if (phoneExists)
         return res.status(409).json({ ok: false, message: "Bu telefon band" });
-      supplier.phone = String(phone).trim();
+      supplier.phone = nextPhone;
     }
 
     if (name !== undefined) supplier.name = String(name).trim();
+    if (address !== undefined) supplier.address = String(address).trim();
+    if (note !== undefined) supplier.note = String(note).trim();
 
     await supplier.save();
 
