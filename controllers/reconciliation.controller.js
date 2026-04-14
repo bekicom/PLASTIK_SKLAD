@@ -252,7 +252,7 @@ async function buildSupplierEvents(supplierId) {
   return events;
 }
 
-function buildActResponse({ events, fromDate, toDate, currency }) {
+function buildActResponse({ events, fromDate, toDate, currency, openingBalance }) {
   const sorted = [...events].sort((a, b) => {
     const ta = new Date(a.date).getTime();
     const tb = new Date(b.date).getTime();
@@ -260,7 +260,10 @@ function buildActResponse({ events, fromDate, toDate, currency }) {
     return ta - tb;
   });
 
-  let running = { UZS: 0, USD: 0 };
+  let running = {
+    UZS: safeNum(openingBalance?.UZS),
+    USD: safeNum(openingBalance?.USD),
+  };
   const summary = {
     openingDebt: { UZS: 0, USD: 0 },
     increaseDebt: { UZS: 0, USD: 0 },
@@ -427,26 +430,35 @@ exports.getActSverka = async (req, res) => {
 
     let counterparty = null;
     let events = [];
+    let openingBalance = { UZS: 0, USD: 0 };
 
     if (type === "CUSTOMER") {
       counterparty = await Customer.findById(id)
-        .select("name phone address note balance")
+        .select("name phone address note balance opening_balance")
         .lean();
       if (!counterparty) {
         return res
           .status(404)
           .json({ ok: false, message: "Mijoz topilmadi" });
       }
+      openingBalance = {
+        UZS: safeNum(counterparty?.opening_balance?.UZS),
+        USD: safeNum(counterparty?.opening_balance?.USD),
+      };
       events = await buildCustomerEvents(id);
     } else {
       counterparty = await Supplier.findById(id)
-        .select("name phone address note balance")
+        .select("name phone address note balance opening_balance")
         .lean();
       if (!counterparty) {
         return res
           .status(404)
           .json({ ok: false, message: "Zavod topilmadi" });
       }
+      openingBalance = {
+        UZS: safeNum(counterparty?.opening_balance?.UZS),
+        USD: safeNum(counterparty?.opening_balance?.USD),
+      };
       events = await buildSupplierEvents(id);
     }
 
@@ -455,6 +467,7 @@ exports.getActSverka = async (req, res) => {
       fromDate,
       toDate,
       currency,
+      openingBalance,
     });
 
     return res.json({
@@ -470,6 +483,7 @@ exports.getActSverka = async (req, res) => {
           UZS: safeNum(counterparty?.balance?.UZS),
           USD: safeNum(counterparty?.balance?.USD),
         },
+        openingBalance,
       },
       period: {
         from: fromDate,
