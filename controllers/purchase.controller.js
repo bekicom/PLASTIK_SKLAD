@@ -625,7 +625,7 @@ exports.editPurchase = async (req, res) => {
       throw new Error("supplier_id noto‘g‘ri");
     }
 
-    const nextSupplier = await Supplier.findOne(
+    let nextSupplier = await Supplier.findOne(
       buildFlexibleSupplierFilter(nextSupplierId),
     ).session(session);
     if (!nextSupplier) throw new Error("Supplier topilmadi");
@@ -650,6 +650,13 @@ exports.editPurchase = async (req, res) => {
       oldSupplier.balance.USD =
         Number(oldSupplier.balance?.USD || 0) - oldRemaining.USD;
       await oldSupplier.save({ session });
+    }
+
+    // Agar supplier o'zgarmagan bo'lsa, nextSupplier hali eski balans bilan turadi.
+    // Uni qayta yuklamasak, edit paytida qarz ikki marta qo'shilib qoladi.
+    if (String(nextSupplier._id) === oldSupplierId) {
+      nextSupplier = await Supplier.findById(oldSupplierId).session(session);
+      if (!nextSupplier) throw new Error("Supplier topilmadi");
     }
 
     await restorePurchaseStock(session, oldItems);
