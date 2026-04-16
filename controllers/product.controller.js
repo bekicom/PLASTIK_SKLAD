@@ -166,6 +166,26 @@ function isSameProductSnapshot(snapshot, product) {
   );
 }
 
+function buildUniqueProductFilter(productLike, excludeId = null) {
+  const filter = {
+    supplier_id: productLike.supplier_id,
+    name: normalizeText(productLike.name),
+    model: normalizeText(productLike.model),
+    color: normalizeText(productLike.color),
+    warehouse_currency: String(productLike.warehouse_currency || "").trim(),
+    buy_price: safeNumber(productLike.buy_price, 0),
+    sell_price: safeNumber(productLike.sell_price, 0),
+    unit: String(productLike.unit || "").trim(),
+    isActive: true,
+  };
+
+  if (excludeId) {
+    filter._id = { $ne: excludeId };
+  }
+
+  return filter;
+}
+
 // ✅ IMAGE URL BUILDER (MUHIM)
 function withImageUrl(req, images = []) {
   const base = `${req.protocol}://${req.get("host")}`;
@@ -439,11 +459,15 @@ exports.getProductById = async (req, res) => {
    UPDATE PRODUCT
 ======================= */
 exports.updateProduct = async (req, res) => {
+  const session = await mongoose.startSession();
+  session.startTransaction();
+
   try {
     const { id } = req.params;
 
-    const product = await Product.findById(id);
+    const product = await Product.findById(id).session(session);
     if (!product) {
+      await session.abortTransaction();
       return res.status(404).json({
         ok: false,
         message: "Mahsulot topilmadi",
@@ -499,7 +523,55 @@ exports.updateProduct = async (req, res) => {
       product.images = [...new Set([...product.images, ...nextImages])];
     }
 
-    await product.save();
+    const duplicate = await Product.findOne(
+      buildUniqueProductFilter(product, product._id),
+    ).session(session);
+
+    if (duplicate) {
+      duplicate.qty = Number(duplicate.qty || 0) + Number(product.qty || 0);
+      duplicate.archive_qty =
+        Number(duplicate.archive_qty || 0) + Number(product.archive_qty || 0);
+      duplicate.category = product.category;
+      duplicate.images = [
+        ...new Set([
+          ...(Array.isArray(duplicate.images) ? duplicate.images : []),
+          ...(Array.isArray(product.images) ? product.images : []),
+        ]),
+      ];
+      duplicate.history = Array.isArray(duplicate.history) ? duplicate.history : [];
+      duplicate.history.push({
+        type: "MANUAL_UPDATE",
+        date: new Date(),
+        by: req.user?._id || req.user?.id || null,
+        note: "Duplicate mahsulot edit paytida birlashtirildi",
+        qtyDelta: Number(product.qty || 0),
+        archiveQtyDelta: Number(product.archive_qty || 0),
+        payload: {
+          merged_from_product_id: product._id,
+        },
+      });
+      syncArchiveState(duplicate);
+
+      product.isActive = false;
+      product.qty = 0;
+      product.archive_qty = 0;
+      product.archiveReason = "Duplicate product ga birlashtirildi";
+      syncArchiveState(product);
+
+      await duplicate.save({ session });
+      await product.save({ session });
+      await session.commitTransaction();
+
+      return res.json({
+        ok: true,
+        message: "Mahsulot mavjud product bilan birlashtirildi",
+        product: duplicate,
+        mergedFromId: id,
+      });
+    }
+
+    await product.save({ session });
+    await session.commitTransaction();
 
     return res.json({
       ok: true,
@@ -507,11 +579,20 @@ exports.updateProduct = async (req, res) => {
       product,
     });
   } catch (error) {
+    await session.abortTransaction();
+    if (error.code === 11000) {
+      return res.status(409).json({
+        ok: false,
+        message: "Shu parametrlardagi mahsulot allaqachon mavjud",
+      });
+    }
     return res.status(500).json({
       ok: false,
       message: "Server xatoligi",
       error: error.message,
     });
+  } finally {
+    session.endSession();
   }
 };
 
