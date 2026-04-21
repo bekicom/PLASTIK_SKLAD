@@ -24,6 +24,17 @@ function safeNum(n, def = 0) {
   return Number.isFinite(x) ? x : def;
 }
 
+function formatProductLabel(product, fallback = {}) {
+  const snapshot = fallback.product_snapshot || {};
+  return [
+    product?.name || snapshot.name || "Noma'lum mahsulot",
+    product?.model || snapshot.model || "",
+    product?.color || snapshot.color || "",
+  ]
+    .filter(Boolean)
+    .join(" - ");
+}
+
 // ✅ MANA SHU YERGA
 function parseDate(value, endOfDay = false) {
   if (!value) return null;
@@ -72,14 +83,67 @@ exports.confirmOrder = async (req, res) => {
     /* =========================
        2️⃣ STOCK KAMAYTIRISH
     ========================= */
-    for (const it of order.items) {
+    const productIds = (order.items || []).map((it) => it.product_id);
+    const stockProducts = await Product.find({ _id: { $in: productIds } })
+      .select("_id name model color category unit qty")
+      .session(session)
+      .lean();
+    const stockMap = new Map(stockProducts.map((p) => [String(p._id), p]));
+
+    const shortages = [];
+    for (const it of order.items || []) {
+      const product = stockMap.get(String(it.product_id));
+      const requestedQty = safeNum(it.qty);
+      const availableQty = product ? safeNum(product.qty) : 0;
+
+      if (!product || availableQty < requestedQty) {
+        shortages.push({
+          product_id: it.product_id,
+          name: formatProductLabel(product, it),
+          requested_qty: requestedQty,
+          available_qty: availableQty,
+          shortage_qty: Math.max(0, requestedQty - availableQty),
+          unit: product?.unit || it.product_snapshot?.unit || "",
+        });
+      }
+    }
+
+    if (shortages.length > 0) {
+      await session.abortTransaction();
+      return res.status(400).json({
+        ok: false,
+        message: `Omborda yetarli mahsulot yo'q: ${shortages
+          .map((x) => `${x.name} (${x.available_qty}/${x.requested_qty})`)
+          .join(", ")}`,
+        shortages,
+      });
+    }
+
+    for (const it of order.items || []) {
       const ok = await Product.updateOne(
         { _id: it.product_id, qty: { $gte: it.qty } },
         { $inc: { qty: -it.qty } },
         { session }
       );
       if (ok.modifiedCount === 0) {
-        throw new Error("Omborda yetarli mahsulot yo‘q");
+        const product = stockMap.get(String(it.product_id));
+        await session.abortTransaction();
+        return res.status(409).json({
+          ok: false,
+          message: `Omborda yetarli mahsulot yo'q: ${formatProductLabel(product, it)}`,
+          shortages: [
+            {
+              product_id: it.product_id,
+              name: formatProductLabel(product, it),
+              requested_qty: safeNum(it.qty),
+              available_qty: product ? safeNum(product.qty) : 0,
+              shortage_qty: product
+                ? Math.max(0, safeNum(it.qty) - safeNum(product.qty))
+                : safeNum(it.qty),
+              unit: product?.unit || it.product_snapshot?.unit || "",
+            },
+          ],
+        });
       }
     }
 
