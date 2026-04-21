@@ -335,19 +335,22 @@ exports.createProduct = async (req, res) => {
 ======================= */
 exports.getProducts = async (req, res) => {
   try {
-    const { q, currency, category, supplier_id, view, includeArchived } =
+    const { q, currency, category, supplier_id, view, includeArchived, includeZero } =
       req.query;
 
     const showArchived =
       String(view || "").toLowerCase() === "archive" ||
       includeArchived === "true";
+    const showZeroQty = includeZero === "true";
 
     const filter = showArchived
       ? { isActive: true }
-      : {
-          isActive: true, // 🔥 MUHIM
-          qty: { $gt: 0 },
-        };
+      : showZeroQty
+        ? { isActive: true }
+        : {
+            isActive: true, // 🔥 MUHIM
+            qty: { $gt: 0 },
+          };
 
     if (supplier_id && mongoose.isValidObjectId(supplier_id)) {
       filter.supplier_id = supplier_id;
