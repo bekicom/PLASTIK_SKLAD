@@ -104,6 +104,18 @@ function buildItemBrief(items = []) {
   }));
 }
 
+function buildCustomerBalanceImpact(currencyTotals = {}) {
+  const uzsGrand = Number(currencyTotals.UZS?.grandTotal || 0);
+  const usdGrand = Number(currencyTotals.USD?.grandTotal || 0);
+  const uzsPaid = Number(currencyTotals.UZS?.paidAmount || 0);
+  const usdPaid = Number(currencyTotals.USD?.paidAmount || 0);
+
+  return {
+    UZS: Number((uzsGrand - uzsPaid).toFixed(2)),
+    USD: Number((usdGrand - usdPaid).toFixed(2)),
+  };
+}
+
 async function buildSaleItemsFromInput(session, items) {
   const normalizedItems = [];
   const productIds = [];
@@ -577,6 +589,7 @@ exports.editSale = async (req, res) => {
       UZS: Number(oldCurrencyTotals.UZS?.debtAmount || 0),
       USD: Number(oldCurrencyTotals.USD?.debtAmount || 0),
     };
+    const oldBalanceImpact = buildCustomerBalanceImpact(oldCurrencyTotals);
 
     const hasCustomerPatch =
       Object.prototype.hasOwnProperty.call(req.body || {}, "customerId") ||
@@ -619,9 +632,9 @@ exports.editSale = async (req, res) => {
       );
       if (oldCustomer) {
         oldCustomer.balance.UZS =
-          Number(oldCustomer.balance?.UZS || 0) - oldDebt.UZS;
+          Number(oldCustomer.balance?.UZS || 0) - oldBalanceImpact.UZS;
         oldCustomer.balance.USD =
-          Number(oldCustomer.balance?.USD || 0) - oldDebt.USD;
+          Number(oldCustomer.balance?.USD || 0) - oldBalanceImpact.USD;
         await oldCustomer.save({ session });
       }
     }
@@ -724,6 +737,7 @@ exports.editSale = async (req, res) => {
       UZS: Number(nextCurrencyTotals.UZS.debtAmount || 0),
       USD: Number(nextCurrencyTotals.USD.debtAmount || 0),
     };
+    const newBalanceImpact = buildCustomerBalanceImpact(nextCurrencyTotals);
 
     /* =========================
        5. BALANCE TRANSFER
@@ -733,14 +747,14 @@ exports.editSale = async (req, res) => {
     if (nextCustomerDoc) {
       if (oldCustomerId && String(nextCustomerDoc._id) === oldCustomerId) {
         nextCustomerDoc.balance.UZS =
-          Number(nextCustomerDoc.balance?.UZS || 0) + newDebt.UZS;
+          Number(nextCustomerDoc.balance?.UZS || 0) + newBalanceImpact.UZS;
         nextCustomerDoc.balance.USD =
-          Number(nextCustomerDoc.balance?.USD || 0) + newDebt.USD;
+          Number(nextCustomerDoc.balance?.USD || 0) + newBalanceImpact.USD;
       } else {
         nextCustomerDoc.balance.UZS =
-          Number(nextCustomerDoc.balance?.UZS || 0) + newDebt.UZS;
+          Number(nextCustomerDoc.balance?.UZS || 0) + newBalanceImpact.UZS;
         nextCustomerDoc.balance.USD =
-          Number(nextCustomerDoc.balance?.USD || 0) + newDebt.USD;
+          Number(nextCustomerDoc.balance?.USD || 0) + newBalanceImpact.USD;
       }
       await nextCustomerDoc.save({ session });
     }
@@ -840,6 +854,11 @@ exports.editSale = async (req, res) => {
         newTotals: {
           UZS: newDebt.UZS,
           USD: newDebt.USD,
+        },
+        oldBalanceImpact,
+        newBalanceImpact: {
+          UZS: newBalanceImpact.UZS,
+          USD: newBalanceImpact.USD,
         },
       },
     });
