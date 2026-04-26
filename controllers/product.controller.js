@@ -40,7 +40,10 @@ function syncArchiveState(product) {
 
   if (archiveQty > 0 && activeQty > 0) {
     product.archive_status = "PARTIAL";
-  } else if (archiveQty > 0 && activeQty <= 0) {
+  } else if (
+    activeQty <= 0 &&
+    (archiveQty > 0 || product.archivedAt || product.archiveReason)
+  ) {
     product.archive_status = "ARCHIVED";
   } else {
     product.archive_status = "ACTIVE";
@@ -346,9 +349,10 @@ exports.getProducts = async (req, res) => {
     const filter = showArchived
       ? { isActive: true }
       : showZeroQty
-        ? { isActive: true }
+        ? { isActive: true, archive_status: { $ne: "ARCHIVED" } }
         : {
             isActive: true, // 🔥 MUHIM
+            archive_status: { $ne: "ARCHIVED" },
             qty: { $gt: 0 },
           };
 
@@ -399,7 +403,7 @@ exports.getArchivedProducts = async (req, res) => {
   try {
     const items = await Product.find({
       isActive: true,
-      archive_qty: { $gt: 0 },
+      $or: [{ archive_qty: { $gt: 0 } }, { archive_status: "ARCHIVED" }],
     })
       .populate("supplier_id", "name phone")
       .sort({ updatedAt: -1 })
@@ -969,6 +973,35 @@ exports.archiveProductStock = async (req, res) => {
         : Number(req.body.qty);
 
     const moveQty = archiveQtyInput === null ? currentQty : archiveQtyInput;
+
+    if (currentQty <= 0 && (archiveQtyInput === null || archiveQtyInput === 0)) {
+      product.archivedAt = new Date();
+      product.archivedBy = req.user?._id || req.user?.id || null;
+      product.archiveReason = reason;
+      product.history = Array.isArray(product.history) ? product.history : [];
+      product.history.push({
+        type: "ARCHIVE_OUT",
+        date: new Date(),
+        by: req.user?._id || req.user?.id || null,
+        note: reason || "0 qoldiqdagi mahsulot archive qilindi",
+        qtyDelta: 0,
+        archiveQtyDelta: 0,
+        payload: {
+          activeQtyAfter: product.qty,
+          archiveQtyAfter: product.archive_qty,
+        },
+      });
+      syncArchiveState(product);
+
+      await product.save({ session });
+      await session.commitTransaction();
+
+      return res.json({
+        ok: true,
+        message: "0 qoldiqdagi mahsulot archive qilindi",
+        product,
+      });
+    }
 
     if (!Number.isFinite(moveQty) || moveQty <= 0) {
       throw new Error("qty noto‘g‘ri");
