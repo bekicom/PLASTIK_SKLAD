@@ -102,10 +102,8 @@ async function buildCustomerEvents(customerId) {
         const type = String(h.type || "");
         const mapType = {
           SALE_CREATED: "SALE",
-          SALE_EDITED: "SALE_EDIT",
           RETURN_CREATED: "RETURN",
           CANCELED: "SALE_CANCEL",
-          DELETED: "SALE_DELETE",
         };
 
         if (!mapType[type]) continue;
@@ -157,15 +155,10 @@ async function buildCustomerEvents(customerId) {
     const direction = String(p.direction || "");
     let sign = 0;
 
-    if (direction === "DEBT" || direction === "PAYMENT_CANCEL") sign = 1;
-    if (
-      direction === "PAYMENT" ||
-      direction === "PREPAYMENT" ||
-      direction === "PREPAID"
-    ) {
+    if (direction === "DEBT") sign = 1;
+    if (direction === "PAYMENT" || direction === "PREPAYMENT") {
       sign = -1;
     }
-    if (direction === "ROLLBACK") sign = 1;
 
     if (sign === 0) continue;
 

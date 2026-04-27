@@ -374,14 +374,11 @@ exports.getCustomers = async (req, res) => {
         USD: Number(c.opening_balance?.USD || 0),
       },
 
-      /* === PAYMENT HISTORY (PAYMENT + RETURN/ROLLBACK ham ko‘rinsin) === */
+      /* === PAYMENT HISTORY (faqat real to'lov/qarz qolsin) === */
       payment_history: Array.isArray(c.payment_history)
         ? c.payment_history.filter((h) =>
             [
               "PAYMENT",
-              "ROLLBACK",
-              "PAYMENT_CANCEL",
-              "PREPAID",
               "PREPAYMENT",
               "DEBT",
             ].includes(h.direction),
@@ -401,12 +398,9 @@ exports.getCustomers = async (req, res) => {
           const amt = Number(h.amount || 0);
           if (!["UZS", "USD"].includes(cur) || amt <= 0) continue;
 
-          if (h.direction === "PAYMENT" || h.direction === "PREPAID" || h.direction === "PREPAYMENT") {
+          if (h.direction === "PAYMENT" || h.direction === "PREPAYMENT") {
             summary.paid[cur] += amt;
             summary.net_paid[cur] += amt;
-          } else if (h.direction === "ROLLBACK" || h.direction === "PAYMENT_CANCEL") {
-            summary.rollback[cur] += amt;
-            summary.net_paid[cur] -= amt;
           }
         }
 
@@ -1468,18 +1462,6 @@ exports.getCustomerTimeline = async (req, res) => {
             });
           }
 
-          if (h.type === "SALE_EDITED") {
-            saleEvents.push({
-              type: "SALE_EDIT",
-              date: h.date || s.saleDate,
-              ref: s.invoiceNo,
-              note: h.note || "Sotuv tahrirlandi",
-              UZS: Number(h.amountDelta?.UZS || 0),
-              USD: Number(h.amountDelta?.USD || 0),
-              kind: "ADJUST",
-            });
-          }
-
           if (h.type === "RETURN_CREATED") {
             saleEvents.push({
               type: "RETURN",
@@ -1514,7 +1496,7 @@ exports.getCustomerTimeline = async (req, res) => {
 
     const paymentEvents = (customer.payment_history || [])
       .filter((p) =>
-        ["PAYMENT", "DEBT", "ROLLBACK", "PREPAID", "PAYMENT_CANCEL"].includes(
+        ["PAYMENT", "DEBT", "PREPAYMENT"].includes(
           p.direction,
         ),
       )
@@ -1527,9 +1509,7 @@ exports.getCustomerTimeline = async (req, res) => {
             ? "Qarz yozildi"
             : p.direction === "PAYMENT"
               ? "To‘lov"
-              : p.direction === "PAYMENT_CANCEL"
-                ? "To‘lov bekor qilindi"
-                : "Qaytarish / rollback",
+              : "Oldindan to‘lov",
         UZS:
           p.currency === "UZS"
             ? Number(p.amount || 0)
@@ -1541,7 +1521,7 @@ exports.getCustomerTimeline = async (req, res) => {
         kind:
           p.direction === "DEBT"
             ? "DEBT"
-            : ["PAYMENT", "ROLLBACK", "PAYMENT_CANCEL", "PREPAID"].includes(
+            : ["PAYMENT", "PREPAYMENT"].includes(
                 p.direction,
               )
               ? "PAYMENT"

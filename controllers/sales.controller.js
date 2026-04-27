@@ -764,46 +764,10 @@ exports.editSale = async (req, res) => {
         session,
       );
       if (oldCustomer) {
-        if (oldDebt.UZS > 0) {
-          oldCustomer.payment_history.push({
-            currency: "UZS",
-            amount: oldDebt.UZS,
-            direction: "PAYMENT_CANCEL",
-            note: `Sale ${sale.invoiceNo} boshqa mijozga o‘tkazildi`,
-            date: new Date(),
-          });
-        }
-        if (oldDebt.USD > 0) {
-          oldCustomer.payment_history.push({
-            currency: "USD",
-            amount: oldDebt.USD,
-            direction: "PAYMENT_CANCEL",
-            note: `Sale ${sale.invoiceNo} boshqa mijozga o‘tkazildi`,
-            date: new Date(),
-          });
-        }
         await oldCustomer.save({ session });
       }
 
       if (nextCustomerDoc) {
-        if (newDebt.UZS > 0) {
-          nextCustomerDoc.payment_history.push({
-            currency: "UZS",
-            amount: newDebt.UZS,
-            direction: "DEBT",
-            note: `Sale ${sale.invoiceNo} mijozga biriktirildi`,
-            date: new Date(),
-          });
-        }
-        if (newDebt.USD > 0) {
-          nextCustomerDoc.payment_history.push({
-            currency: "USD",
-            amount: newDebt.USD,
-            direction: "DEBT",
-            note: `Sale ${sale.invoiceNo} mijozga biriktirildi`,
-            date: new Date(),
-          });
-        }
         await nextCustomerDoc.save({ session });
       }
     }
@@ -1501,26 +1465,7 @@ exports.deleteSale = async (req, res) => {
          }
 
          // tarixga yozamiz
-         if (debt > 0) {
-           customer.payment_history.push({
-             currency: cur,
-             amount: debt,
-             direction: "ROLLBACK",
-             note: `Sale ${sale.invoiceNo} debt rollback`,
-             date: new Date(),
-           });
-         }
-
-         if (paid > 0) {
-           customer.payment_history.push({
-             currency: cur,
-             amount: paid,
-             direction: "PREPAID",
-             note: `Sale ${sale.invoiceNo} prepaid after delete`,
-             date: new Date(),
-           });
-         }
-       }
+      }
 
        await customer.save({ session });
      }
