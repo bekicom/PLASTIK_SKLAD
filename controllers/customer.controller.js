@@ -374,13 +374,12 @@ exports.getCustomers = async (req, res) => {
         USD: Number(c.opening_balance?.USD || 0),
       },
 
-      /* === PAYMENT HISTORY (faqat real to'lov/qarz qolsin) === */
+      /* === PAYMENT HISTORY (faqat real to'lov qolsin) === */
       payment_history: Array.isArray(c.payment_history)
         ? c.payment_history.filter((h) =>
             [
               "PAYMENT",
               "PREPAYMENT",
-              "DEBT",
             ].includes(h.direction),
           )
         : [],
@@ -1495,21 +1494,13 @@ exports.getCustomerTimeline = async (req, res) => {
       .lean();
 
     const paymentEvents = (customer.payment_history || [])
-      .filter((p) =>
-        ["PAYMENT", "DEBT", "PREPAYMENT"].includes(
-          p.direction,
-        ),
-      )
+      .filter((p) => ["PAYMENT", "PREPAYMENT"].includes(p.direction))
       .map((p) => ({
         type: p.direction,
         date: p.date,
         ref: p.note || "",
         note:
-          p.direction === "DEBT"
-            ? "Qarz yozildi"
-            : p.direction === "PAYMENT"
-              ? "To‘lov"
-              : "Oldindan to‘lov",
+          p.direction === "PAYMENT" ? "To‘lov" : "Oldindan to‘lov",
         UZS:
           p.currency === "UZS"
             ? Number(p.amount || 0)
@@ -1518,14 +1509,7 @@ exports.getCustomerTimeline = async (req, res) => {
           p.currency === "USD"
             ? Number(p.amount || 0)
             : 0,
-        kind:
-          p.direction === "DEBT"
-            ? "DEBT"
-            : ["PAYMENT", "PREPAYMENT"].includes(
-                p.direction,
-              )
-              ? "PAYMENT"
-              : "PAYMENT",
+        kind: "PAYMENT",
       }));
 
     /* =====================
