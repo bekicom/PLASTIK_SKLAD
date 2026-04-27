@@ -30,11 +30,17 @@ function serializeSupplierBase(supplier) {
   const plain =
     typeof supplier.toObject === "function" ? supplier.toObject() : { ...supplier };
   const id = String(plain._id || plain.id || "");
+  const paymentHistory = Array.isArray(plain.payment_history)
+    ? plain.payment_history.filter((p) =>
+        ["PAYMENT", "PREPAYMENT"].includes(String(p.direction || "")),
+      )
+    : [];
 
   return {
     ...plain,
     _id: plain._id ?? id,
     id,
+    payment_history: paymentHistory,
   };
 }
 
@@ -236,10 +242,14 @@ exports.getSuppliers = async (req, res) => {
         },
 
         // 🔥 MUHIM — TO‘LOVLAR TARIXI
-        payment_history: (s.payment_history || []).map((p) => ({
+        payment_history: (s.payment_history || [])
+          .filter((p) =>
+            ["PAYMENT", "PREPAYMENT"].includes(String(p.direction || "")),
+          )
+          .map((p) => ({
           currency: p.currency,
           amount: Number(p.amount),
-          direction: p.direction, // DEBT | PAYMENT | PREPAYMENT
+          direction: p.direction,
           method: p.method || null,
           note: p.note || "",
           date: p.date,

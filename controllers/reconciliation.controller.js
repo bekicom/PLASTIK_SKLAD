@@ -224,7 +224,6 @@ async function buildSupplierEvents(supplierId) {
     const direction = String(p.direction || "");
     let sign = 0;
 
-    if (direction === "DEBT" || direction === "ROLLBACK") sign = 1;
     if (direction === "PAYMENT" || direction === "PREPAYMENT") sign = -1;
 
     if (sign === 0) continue;
