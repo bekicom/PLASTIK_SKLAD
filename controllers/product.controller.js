@@ -1070,8 +1070,50 @@ exports.restoreArchivedProductStock = async (req, res) => {
         : Number(req.body.qty);
     const reason = String(req.body?.reason || req.body?.restoreReason || "").trim();
 
+    const archiveQty = Number(product.archive_qty || 0);
+
+    // archive_qty = 0 bo'lsa ham mahsulot ARCHIVED flag bilan turishi mumkin.
+    // Bu holatda foydalanuvchi 0 yoki istalgan musbat qty bilan uni aktivga qaytara oladi.
+    if (archiveQty <= 0 && product.archive_status === "ARCHIVED") {
+      const nextActiveQty =
+        restoreQtyInput === null ? Number(product.qty || 0) : Number(restoreQtyInput);
+
+      if (!Number.isFinite(nextActiveQty) || nextActiveQty < 0) {
+        throw new Error("qty noto‘g‘ri");
+      }
+
+      product.qty = nextActiveQty;
+      product.archive_qty = 0;
+      product.archivedAt = null;
+      product.archiveReason = "";
+      product.history = Array.isArray(product.history) ? product.history : [];
+      product.history.push({
+        type: "ARCHIVE_IN",
+        date: new Date(),
+        by: req.user?._id || req.user?.id || null,
+        note: reason || "Archive dan qaytarildi",
+        qtyDelta: nextActiveQty,
+        archiveQtyDelta: 0,
+        payload: {
+          activeQtyAfter: product.qty,
+          archiveQtyAfter: product.archive_qty,
+          manualRestore: true,
+        },
+      });
+      syncArchiveState(product);
+
+      await product.save({ session });
+      await session.commitTransaction();
+
+      return res.json({
+        ok: true,
+        message: "Archive mahsulot aktiv holatga qaytarildi",
+        product,
+      });
+    }
+
     const moveQty =
-      restoreQtyInput === null ? Number(product.archive_qty || 0) : restoreQtyInput;
+      restoreQtyInput === null ? archiveQty : restoreQtyInput;
 
     if (!Number.isFinite(moveQty) || moveQty <= 0) {
       throw new Error("qty noto‘g‘ri");
