@@ -97,21 +97,33 @@ async function buildCustomerEvents(customerId) {
       subtotal: safeNum(it.subtotal),
     }));
 
+    // Akt sverkada edit tarixidagi brutto delta emas, hujjatning hozirgi
+    // yakuniy summasi asosiy sotuv sifatida ko'rsatiladi. Return/cancel esa
+    // tarixdan alohida qo'shiladi.
+    events.push(
+      normalizeEvent({
+        date: saleDate,
+        docType: "SALE",
+        docNo: saleDocNo,
+        refId: s._id,
+        description: "Sotuv yaratildi",
+        items,
+        delta: {
+          UZS: safeNum(s?.currencyTotals?.UZS?.grandTotal),
+          USD: safeNum(s?.currencyTotals?.USD?.grandTotal),
+        },
+      }),
+    );
+
     if (Array.isArray(s.history) && s.history.length) {
       for (const h of s.history) {
         const type = String(h.type || "");
         const mapType = {
-          SALE_CREATED: "SALE",
           RETURN_CREATED: "RETURN",
           CANCELED: "SALE_CANCEL",
         };
 
         if (!mapType[type]) continue;
-
-        const delta = {
-          UZS: safeNum(h?.amountDelta?.UZS),
-          USD: safeNum(h?.amountDelta?.USD),
-        };
 
         events.push(
           normalizeEvent({
@@ -121,25 +133,13 @@ async function buildCustomerEvents(customerId) {
             refId: s._id,
             description: h.note || "",
             items,
-            delta,
+            delta: {
+              UZS: safeNum(h?.amountDelta?.UZS),
+              USD: safeNum(h?.amountDelta?.USD),
+            },
           }),
         );
       }
-    } else {
-      events.push(
-        normalizeEvent({
-          date: saleDate,
-          docType: "SALE",
-          docNo: saleDocNo,
-          refId: s._id,
-          description: "Sotuv",
-          items,
-          delta: {
-            UZS: safeNum(s?.currencyTotals?.UZS?.grandTotal),
-            USD: safeNum(s?.currencyTotals?.USD?.grandTotal),
-          },
-        }),
-      );
     }
   }
 
