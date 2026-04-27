@@ -155,7 +155,6 @@ async function buildCustomerEvents(customerId) {
     const direction = String(p.direction || "");
     let sign = 0;
 
-    if (direction === "DEBT") sign = 1;
     if (direction === "PAYMENT" || direction === "PREPAYMENT") {
       sign = -1;
     }
