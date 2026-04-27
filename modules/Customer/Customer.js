@@ -97,6 +97,7 @@ const customerSchema = new mongoose.Schema(
         },
 
         note: { type: String, default: "" },
+        ref_id: { type: mongoose.Schema.Types.ObjectId, default: null },
         date: { type: Date, default: Date.now },
       },
     ],

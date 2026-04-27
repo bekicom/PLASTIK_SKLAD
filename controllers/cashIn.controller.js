@@ -4,6 +4,36 @@ const Customer = require("../modules/Customer/Customer");
 const Supplier = require("../modules/suppliers/Supplier");
 const Sale = require("../modules/sales/Sale");
 
+function removeHistoryEntry(entity, cashIn, fallbackDirection = "PAYMENT") {
+  const cashDate = new Date(cashIn.paymentDate || cashIn.createdAt).toISOString();
+  entity.payment_history = (entity.payment_history || []).filter((h) => {
+    if (h.ref_id) {
+      return String(h.ref_id) !== String(cashIn._id);
+    }
+
+    const sameCurrency = h.currency === cashIn.currency;
+    const sameAmount = Number(h.amount) === Number(cashIn.amount);
+    const sameDate = new Date(h.date).toISOString() === cashDate;
+    const sameDirection = h.direction === fallbackDirection;
+
+    return !(sameCurrency && sameAmount && sameDate && sameDirection);
+  });
+}
+
+function pushPaymentHistory(entity, cashIn, note) {
+  entity.payment_history = Array.isArray(entity.payment_history)
+    ? entity.payment_history
+    : [];
+  entity.payment_history.push({
+    currency: cashIn.currency,
+    amount: Number(cashIn.amount || 0),
+    direction: "PAYMENT",
+    note,
+    ref_id: cashIn._id,
+    date: cashIn.paymentDate || new Date(),
+  });
+}
+
 exports.createCashIn = async (req, res) => {
   const session = await mongoose.startSession();
   session.startTransaction();
@@ -82,14 +112,7 @@ exports.createCashIn = async (req, res) => {
         { session }
       );
 
-      customer.payment_history.push({
-        currency,
-        amount: payAmount,
-        direction: "PAYMENT",
-        note: note || "Mijoz to‘lovi",
-        ref_id: cashDocs[0]._id, // 🔥 MUHIM
-        date: payDate,
-      });
+      pushPaymentHistory(customer, cashDocs[0], note || "Mijoz to‘lovi");
 
       await customer.save({ session });
       await session.commitTransaction();
@@ -402,6 +425,8 @@ exports.editCashIn = async (req, res) => {
         await sale.save({ session });
       }
 
+      removeHistoryEntry(oldCustomer, cashIn, "PAYMENT");
+
       /* =========================
          2️⃣ NEW APPLY (balance + sale debt close)
       ========================= */
@@ -414,6 +439,7 @@ exports.editCashIn = async (req, res) => {
 
       oldSupplier.balance[oldCurrency] =
         Number(oldSupplier.balance?.[oldCurrency] || 0) + oldAmount;
+      removeHistoryEntry(oldSupplier, cashIn, "PAYMENT");
       await oldSupplier.save({ session });
     }
 
@@ -445,13 +471,16 @@ exports.editCashIn = async (req, res) => {
         await sale.save({ session });
       }
 
-      customer.payment_history.push({
-        currency,
-        amount: newAmount,
-        direction: "PAYMENT",
-        note: note || "Cash-in tahrirlandi",
-        date: newPayDate || new Date(),
-      });
+      cashIn.amount = newAmount;
+      cashIn.currency = currency;
+      cashIn.payment_method = payment_method;
+      cashIn.note = note || cashIn.note;
+      cashIn.paymentDate = newPayDate || cashIn.paymentDate;
+      cashIn.target_type = newTargetType;
+      cashIn.customer_id = newTargetType === "CUSTOMER" ? newCustomerId : null;
+      cashIn.supplier_id = newTargetType === "SUPPLIER" ? newSupplierId : null;
+
+      pushPaymentHistory(customer, cashIn, note || "Cash-in tahrirlandi");
 
       await customer.save({ session });
     } else {
@@ -461,26 +490,30 @@ exports.editCashIn = async (req, res) => {
       supplier.balance[currency] =
         Number(supplier.balance?.[currency] || 0) - newAmount;
 
+      cashIn.amount = newAmount;
+      cashIn.currency = currency;
+      cashIn.payment_method = payment_method;
+      cashIn.note = note || cashIn.note;
+      cashIn.paymentDate = newPayDate || cashIn.paymentDate;
+      cashIn.target_type = newTargetType;
+      cashIn.customer_id = newTargetType === "CUSTOMER" ? newCustomerId : null;
+      cashIn.supplier_id = newTargetType === "SUPPLIER" ? newSupplierId : null;
+
+      removeHistoryEntry(supplier, cashIn, "PAYMENT");
+      supplier.payment_history = Array.isArray(supplier.payment_history)
+        ? supplier.payment_history
+        : [];
       supplier.payment_history.push({
-        currency,
-        amount: newAmount,
+        currency: cashIn.currency,
+        amount: Number(cashIn.amount || 0),
         direction: "PAYMENT",
         note: note || "Supplier cash-in tahrirlandi",
         ref_id: cashIn._id,
-        date: newPayDate || new Date(),
+        date: cashIn.paymentDate || new Date(),
       });
 
       await supplier.save({ session });
     }
-
-    cashIn.amount = newAmount;
-    cashIn.currency = currency;
-    cashIn.payment_method = payment_method;
-    cashIn.note = note || cashIn.note;
-    cashIn.paymentDate = newPayDate || cashIn.paymentDate;
-    cashIn.target_type = newTargetType;
-    cashIn.customer_id = newTargetType === "CUSTOMER" ? newCustomerId : null;
-    cashIn.supplier_id = newTargetType === "SUPPLIER" ? newSupplierId : null;
 
     await cashIn.save({ session });
 
