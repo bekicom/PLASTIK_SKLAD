@@ -112,7 +112,7 @@ router.delete(
 router.get(
   "/suppliers/dashboard",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   supplierController.getSuppliersDashboard,
 );
 
@@ -120,7 +120,7 @@ router.get(
 router.get(
   "/suppliers/:id/detail",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   supplierController.getSupplierDetail,
 );
 
@@ -136,7 +136,7 @@ router.post(
 router.get(
   "/suppliers",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   supplierController.getSuppliers,
 );
 
@@ -144,7 +144,7 @@ router.get(
 router.get(
   "/suppliers/:id",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   supplierController.getSupplierById,
 );
 
@@ -200,14 +200,14 @@ router.patch(
 router.get(
   "/suppliers/:id/purchases",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   supplierController.getSupplierPurchases,
 );
 
 router.get(
   "/suppliers/:id/timeline",
   rAuth,
-  rRole("ADMIN"),
+  rRole("ADMIN", "CASHIER"),
   supplierController.getSupplierTimeline,
 );
 
