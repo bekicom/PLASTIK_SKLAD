@@ -107,8 +107,14 @@ function buildItemBrief(items = []) {
 function buildCustomerBalanceImpact(currencyTotals = {}) {
   const uzsGrand = Number(currencyTotals.UZS?.grandTotal || 0);
   const usdGrand = Number(currencyTotals.USD?.grandTotal || 0);
-  const uzsPaid = Number(currencyTotals.UZS?.paidAmount || 0);
-  const usdPaid = Number(currencyTotals.USD?.paidAmount || 0);
+  const uzsPaid = Math.min(
+    Number(currencyTotals.UZS?.paidAmount || 0),
+    uzsGrand,
+  );
+  const usdPaid = Math.min(
+    Number(currencyTotals.USD?.paidAmount || 0),
+    usdGrand,
+  );
 
   return {
     UZS: Number((uzsGrand - uzsPaid).toFixed(2)),
@@ -718,11 +724,13 @@ exports.editSale = async (req, res) => {
        4. TOTALS
     ========================= */
     const nextCurrencyTotals = buildCurrencyTotals(nextItems, nextDiscount);
-    nextCurrencyTotals.UZS.paidAmount = Number(
-      oldCurrencyTotals.UZS?.paidAmount || 0,
+    nextCurrencyTotals.UZS.paidAmount = Math.min(
+      Number(oldCurrencyTotals.UZS?.paidAmount || 0),
+      Number(nextCurrencyTotals.UZS.grandTotal || 0),
     );
-    nextCurrencyTotals.USD.paidAmount = Number(
-      oldCurrencyTotals.USD?.paidAmount || 0,
+    nextCurrencyTotals.USD.paidAmount = Math.min(
+      Number(oldCurrencyTotals.USD?.paidAmount || 0),
+      Number(nextCurrencyTotals.USD.grandTotal || 0),
     );
     nextCurrencyTotals.UZS.debtAmount = Math.max(
       0,
