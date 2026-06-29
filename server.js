@@ -8,6 +8,7 @@ const path = require("path");
 const { bootstrapAdmin } = require("./utils/bootstrapAdmin");
 
 const skladRoutes = require("./routes");
+const marketplaceRoutes = require("./routes/marketplace.routes");
 
 const app = express();
 
@@ -60,6 +61,8 @@ app.use((req, res, next) => {
 /* ======================
    ROUTES
 ====================== */
+app.use("/api/marketplace", marketplaceRoutes);
+app.use("/api/agent/app", marketplaceRoutes);
 app.use("/api", skladRoutes);
 
 /* ======================

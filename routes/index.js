@@ -7,7 +7,9 @@ const authController = require("../controllers/auth.controller");
 const userController = require("../controllers/user.controller");
 const warehouseController = require("../controllers/warehouse.controller");
 const supplierController = require("../controllers/supplier.controller");
+const supplierReturnController = require("../controllers/supplierReturn.controller");
 const productController = require("../controllers/product.controller");
+const productActSverkaController = require("../controllers/productActSverka.controller");
 const purchaseController = require("../controllers/purchase.controller");
 const salesController = require("../controllers/sales.controller");
 const customerController = require("../controllers/customer.controller"); // ✅ NEW
@@ -16,6 +18,7 @@ const cashierOrderController = require("../controllers/cashierOrder.controller")
 const returnController = require("../controllers/return.controller");
 const expenseController = require("../controllers/expense.controller");
 const moneyEntryController = require("../controllers/moneyEntry.controller");
+const financeController = require("../controllers/finance.controller");
 const analyticsRoutes = require("../modules/analytics/analytics.routes");
 const uploadProductImages = require("../middlewares/uploadProductImage");
 const withdrawalController = require("../controllers/withdrawal.controller");
@@ -24,6 +27,7 @@ const reconciliationController = require("../controllers/reconciliation.controll
 const agentDebtPaymentController = require("../controllers/agentDebtPayment.controller");
 const {
   createProductWriteOff,
+  getProductWriteOffById,
 } = require("../controllers/productWriteOff.controller");
 
 // Middlewares
@@ -33,6 +37,8 @@ const { rAuth, rRole } = require("../middlewares/auth.middleware");
  * AUTH
  */
 router.use("/customers", require("./customers.routes"));
+router.use("/marketplace", require("./marketplace.routes"));
+router.use("/agent/app", require("./marketplace.routes"));
 
 // register
 router.post("/auth/register", authController.register);
@@ -211,6 +217,20 @@ router.get(
   supplierController.getSupplierTimeline,
 );
 
+router.post(
+  "/supplier-returns",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  supplierReturnController.createSupplierReturn,
+);
+
+router.get(
+  "/supplier-returns",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  supplierReturnController.getSupplierReturns,
+);
+
 /**
  * PRODUCTS (ADMIN only)
  */
@@ -252,6 +272,27 @@ router.get(
   rAuth,
   rRole("ADMIN", "CASHIER", "WAREHOUSE"),
   productController.getProductHistory,
+);
+
+router.get(
+  "/products/:id/reconciliation",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "WAREHOUSE"),
+  productController.getProductReconciliation,
+);
+
+router.get(
+  "/reports/products/act-sverka",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "WAREHOUSE"),
+  productActSverkaController.getProductsActSverkaReport,
+);
+
+router.get(
+  "/reports/products/act-sverka/export",
+  rAuth,
+  rRole("ADMIN", "CASHIER", "WAREHOUSE"),
+  productActSverkaController.exportProductsActSverkaReport,
 );
 
 // productni update qilish
@@ -307,6 +348,12 @@ router.get(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   purchaseController.getPurchases,
+);
+router.get(
+  "/purchases/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  purchaseController.getPurchaseById,
 );
 router.post(
   "/products/:id/image",
@@ -544,11 +591,29 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   agentDebtPaymentController.getAgentDebtPaymentRequests,
 );
+router.get(
+  "/agent-debt-payments/export",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentDebtPaymentController.exportAgentDebtPaymentRequests,
+);
 router.patch(
   "/agent-debt-payments/:id/approve",
   rAuth,
   rRole("ADMIN", "CASHIER"),
   agentDebtPaymentController.approveAgentDebtPaymentRequest,
+);
+router.patch(
+  "/agent-debt-payments/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentDebtPaymentController.editAgentDebtPaymentRequest,
+);
+router.put(
+  "/agent-debt-payments/:id/edit",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  agentDebtPaymentController.editAgentDebtPaymentRequest,
 );
 router.patch(
   "/agent-debt-payments/:id/reject",
@@ -619,6 +684,12 @@ router.post(
   returnController.createReturn,
 );
 router.get("/returns", returnController.getReturns);
+router.get(
+  "/returns/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  returnController.getReturnById,
+);
 
 // CREATE
 router.post("/expenses", rAuth, expenseController.createExpense);
@@ -763,6 +834,12 @@ router.get(
   rRole("ADMIN", "CASHIER"),
   cashInController.getCashInReportAll,
 );
+router.get(
+  "/cash-in/:id",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  cashInController.getCashInById,
+);
 
 router.get(
   "/reconciliation/counterparties",
@@ -776,6 +853,19 @@ router.get(
   rAuth,
   rRole("ADMIN", "CASHIER"),
   reconciliationController.getActSverka,
+);
+
+router.get(
+  "/admin/finance/reconciliation",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  financeController.reconciliation,
+);
+router.post(
+  "/admin/finance/backfill-real-cash",
+  rAuth,
+  rRole("ADMIN", "CASHIER"),
+  financeController.backfillRealCash,
 );
 
 router.put(
@@ -797,6 +887,12 @@ router.post(
   rAuth,
   rRole("ADMIN", "WAREHOUSE"),
   createProductWriteOff,
+);
+router.get(
+  "/products/write-off/:id",
+  rAuth,
+  rRole("ADMIN", "WAREHOUSE", "CASHIER"),
+  getProductWriteOffById,
 );
 
 router.patch(
