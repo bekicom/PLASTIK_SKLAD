@@ -441,8 +441,10 @@ exports.getMobileProductCategories = async (req, res) => {
       .lean();
 
     const counts = new Map();
+    const currencySummary = new Map();
     for (const row of rows) {
       const key = String(row.category || "").trim() || "Boshqa";
+      const currency = String(row.warehouse_currency || "UZS").toUpperCase();
       if (!counts.has(key)) {
         counts.set(key, {
           category: key,
@@ -452,7 +454,8 @@ exports.getMobileProductCategories = async (req, res) => {
       }
       const bucket = counts.get(key);
       bucket.count += 1;
-      bucket.currencies.add(String(row.warehouse_currency || "UZS").toUpperCase());
+      bucket.currencies.add(currency);
+      currencySummary.set(currency, (currencySummary.get(currency) || 0) + 1);
     }
 
     const items = [...counts.entries()]
@@ -470,6 +473,11 @@ exports.getMobileProductCategories = async (req, res) => {
     return res.json({
       ok: true,
       total: items.length,
+      currency_summary: {
+        UZS: currencySummary.get("UZS") || 0,
+        USD: currencySummary.get("USD") || 0,
+        total: (currencySummary.get("UZS") || 0) + (currencySummary.get("USD") || 0),
+      },
       items,
       data: items,
     });
