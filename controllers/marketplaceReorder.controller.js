@@ -128,6 +128,53 @@ async function getActiveCart(accountId, customerId) {
   );
 }
 
+function resolveCartItemFromRequest(cart, req) {
+  const variantId =
+    toObjectId(req.body?.variant_id) ||
+    toObjectId(req.body?.variantId) ||
+    toObjectId(req.query?.variant_id) ||
+    toObjectId(req.query?.variantId) ||
+    null;
+
+  const directIds = [
+    req.params?.item_id,
+    req.body?.item_id,
+    req.body?.id,
+    req.body?.itemId,
+    req.body?.cart_item_id,
+    req.body?.cartItemId,
+    req.query?.item_id,
+    req.query?.id,
+    req.query?.itemId,
+  ]
+    .map((value) => toObjectId(value))
+    .filter(Boolean);
+
+  for (const id of directIds) {
+    const byId = cart.items.id(id);
+    if (byId) return byId;
+  }
+
+  const productId =
+    toObjectId(req.body?.product_id) ||
+    toObjectId(req.body?.productId) ||
+    toObjectId(req.query?.product_id) ||
+    toObjectId(req.query?.productId);
+
+  if (productId) {
+    const byProduct = (cart.items || []).find((row) => {
+      if (String(row.product_id || "") !== String(productId)) return false;
+      if (!variantId) return true;
+      return String(row.variant_id || "") === String(variantId);
+    });
+    if (byProduct) return byProduct;
+  }
+
+  if ((cart.items || []).length === 1) return cart.items[0];
+
+  return null;
+}
+
 async function addProductsToCart({ req, items, sourceType = "PREVIOUS_PURCHASE_LIST", sourceId = null }) {
   const identity = await ensureAccount(req);
   const warnings = [];
@@ -864,22 +911,17 @@ exports.updateCartItem = async (req, res) => {
     if (!identity.accountId) return res.status(401).json({ ok: false, message: "Qayta kirishingiz kerak." });
     if (!activeStatusAllowed(req)) return res.status(403).json({ ok: false, message: "Profilingiz vaqtincha cheklangan." });
 
-    const itemId =
-      toObjectId(req.params.item_id) ||
-      toObjectId(req.body?.item_id) ||
-      toObjectId(req.body?.id) ||
-      toObjectId(req.query?.item_id) ||
-      toObjectId(req.query?.id);
     const quantity = req.body?.quantity !== undefined ? Number(req.body.quantity) : null;
     const note = req.body?.note !== undefined ? cleanText(req.body.note) : undefined;
-    if (!itemId) return res.status(400).json({ ok: false, message: "item_id noto‘g‘ri." });
     if (quantity !== null && (!Number.isFinite(quantity) || quantity <= 0)) {
       return res.status(400).json({ ok: false, message: "Quantity noto‘g‘ri." });
     }
 
     const cart = await getActiveCart(identity.accountId, identity.customerId);
-    const item = cart.items.id(itemId);
-    if (!item) return res.status(404).json({ ok: false, message: "Cart item topilmadi." });
+    const item = resolveCartItemFromRequest(cart, req);
+    if (!item) {
+      return res.status(400).json({ ok: false, message: "item_id yoki product_id kerak." });
+    }
 
     const product = await Product.findById(item.product_id).lean();
     if (!product || !productVisible(product)) {
@@ -921,17 +963,12 @@ exports.deleteCartItem = async (req, res) => {
   try {
     const identity = await ensureAccount(req);
     if (!identity.accountId) return res.status(401).json({ ok: false, message: "Qayta kirishingiz kerak." });
-    const itemId =
-      toObjectId(req.params.item_id) ||
-      toObjectId(req.body?.item_id) ||
-      toObjectId(req.body?.id) ||
-      toObjectId(req.query?.item_id) ||
-      toObjectId(req.query?.id);
-    if (!itemId) return res.status(400).json({ ok: false, message: "item_id noto‘g‘ri." });
 
     const cart = await getActiveCart(identity.accountId, identity.customerId);
-    const item = cart.items.id(itemId);
-    if (!item) return res.status(404).json({ ok: false, message: "Cart item topilmadi." });
+    const item = resolveCartItemFromRequest(cart, req);
+    if (!item) {
+      return res.status(400).json({ ok: false, message: "item_id yoki product_id kerak." });
+    }
 
     item.deleteOne();
     cart.recalculateTotals();
