@@ -45,6 +45,7 @@ router.get("/settings/availability", marketplaceSettingsController.availability)
 router.get("/settings/regions", marketplaceSettingsController.regions);
 router.get("/settings/delivery", marketplaceSettingsController.delivery);
 router.get("/settings/payment-methods", marketplaceSettingsController.paymentMethods);
+router.get("/checkout/payment-methods", marketplaceSettingsController.paymentMethods);
 router.get("/settings/app-config", marketplaceSettingsController.appConfig);
 router.get("/settings/support", marketplaceSettingsController.support);
 router.get("/settings/access-check", marketplaceSettingsController.accessCheck);
