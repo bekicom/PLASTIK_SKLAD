@@ -1,10 +1,35 @@
 const Customer = require("../../modules/Customer/Customer");
+const MarketplaceAccount = require("../../modules/marketplace/MarketplaceAccount");
 const mongoose = require("mongoose");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
 
 const Product = require("../../modules/products/Product");
 const { normalizePhone } = require("../../utils/phone");
+
+function currentUserId(req) {
+  return req.user?._id || req.user?.id || req.userId || null;
+}
+
+function buildCustomerFromMarketplaceAccount(account) {
+  return {
+    name: account.name || `Marketplace ${account.phone}`,
+    phone: account.phone_normalized || account.phone || "",
+    additionalPhones: account.additional_phone ? [account.additional_phone] : [],
+    address: account.address || "",
+    region: account.region || "",
+    district: account.district || "",
+    note: account.note || "",
+    agent_id: account.agent_id || null,
+    role: "MOBILE",
+    status: "ACTIVE",
+    registered_from: "MOBILE",
+    balance: { UZS: 0, USD: 0 },
+    opening_balance: { UZS: 0, USD: 0 },
+    payment_history: [],
+    isActive: true,
+  };
+}
 
 
 /* =========================
@@ -156,45 +181,79 @@ exports.activateMobileCustomer = async (req, res) => {
       });
     }
 
-    const customer = await Customer.findById(id);
+    let customer = await Customer.findById(id);
+    let account = null;
+    let source = "CUSTOMER";
 
     if (!customer) {
-      return res.status(404).json({
-        ok: false,
-        message: "Customer topilmadi",
-      });
+      account = await MarketplaceAccount.findById(id);
+
+      if (!account) {
+        return res.status(404).json({
+          ok: false,
+          message: "Customer topilmadi",
+        });
+      }
+
+      if (account.status === "REJECTED") {
+        return res.status(400).json({
+          ok: false,
+          message: "Bu marketplace account rejected holatda",
+        });
+      }
+
+      if (account.status === "BLOCKED") {
+        return res.status(400).json({
+          ok: false,
+          message: "Bu marketplace account blocked holatda",
+        });
+      }
+
+      if (account.customer_id) {
+        customer = await Customer.findById(account.customer_id);
+      }
+
+      if (!customer) {
+        customer = await Customer.create(buildCustomerFromMarketplaceAccount(account));
+      }
+
+      source = "MARKETPLACE";
     }
 
-    if (customer.status === "ACTIVE") {
-      return res.status(400).json({
-        ok: false,
-        message: "Customer allaqachon ACTIVE",
-      });
-    }
-
-    // 🔥 faqat MOBILE bo‘lsa
-    if (customer.role !== "MOBILE") {
+    if (customer.role !== "MOBILE" && source === "CUSTOMER") {
       return res.status(400).json({
         ok: false,
         message: "Bu mobile customer emas",
       });
     }
 
-    customer.status = "ACTIVE";
-    customer.isActive = true;
-    await customer.save();
+    if (customer.status !== "ACTIVE" || customer.isActive !== true) {
+      customer.status = "ACTIVE";
+      customer.isActive = true;
+      await customer.save();
+    }
 
-    // 🔔 SOCKET (ixtiyoriy)
+    if (account) {
+      account.customer_id = customer._id;
+      account.status = "ACTIVE";
+      account.approvedAt = new Date();
+      account.approvedBy = currentUserId(req);
+      account.linkedAt = new Date();
+      account.linkedBy = currentUserId(req);
+      await account.save();
+    }
+
     if (req.io) {
       req.io.emit("mobile:activated", {
         customer_id: customer._id,
         name: customer.name,
+        source,
       });
     }
 
     return res.json({
       ok: true,
-      message: "Customer ACTIVE qilindi",
+      message: source === "MARKETPLACE" ? "Marketplace mijoz ACTIVE qilindi" : "Customer ACTIVE qilindi",
       customer: {
         _id: customer._id,
         name: customer.name,
@@ -203,6 +262,8 @@ exports.activateMobileCustomer = async (req, res) => {
         district: customer.district || "",
         status: customer.status,
       },
+      source,
+      marketplace_account_id: account?._id || null,
     });
   } catch (error) {
     return res.status(500).json({

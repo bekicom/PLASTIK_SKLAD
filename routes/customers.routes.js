@@ -29,12 +29,8 @@ router.get("/products", rMobileAuth, mobileAuthController.getMobileProducts);
 ========================= */
 
 // ACTIVATE MOBILE CUSTOMER
-router.post(
-  "/customers/:id/activate",
-  rAuth,
-  rRole("ADMIN"),
-  mobileAuthController.activateMobileCustomer,
-);
+router.route("/:id/activate").get(rAuth, rRole("ADMIN"), mobileAuthController.activateMobileCustomer).post(rAuth, rRole("ADMIN"), mobileAuthController.activateMobileCustomer);
+router.route("/customers/:id/activate").get(rAuth, rRole("ADMIN"), mobileAuthController.activateMobileCustomer).post(rAuth, rRole("ADMIN"), mobileAuthController.activateMobileCustomer);
 
 // 🗑️ ADMIN → DELETE (SOFT)
 router.delete(
