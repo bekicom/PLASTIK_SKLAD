@@ -72,7 +72,9 @@ router.post("/reorders/order/:order_id/add-to-cart", rMobileAuth, marketplaceReo
 router.get("/reorders/suggestions", rMobileAuth, marketplaceReorderController.getSuggestions);
 router.get("/cart", rMobileAuthNoVersion, marketplaceReorderController.getCart);
 router.post("/cart/items", rMobileAuthNoVersion, marketplaceReorderController.addCartItem);
+router.patch("/cart/items", rMobileAuthNoVersion, marketplaceReorderController.updateCartItem);
 router.patch("/cart/items/:item_id", rMobileAuthNoVersion, marketplaceReorderController.updateCartItem);
+router.delete("/cart/items", rMobileAuthNoVersion, marketplaceReorderController.deleteCartItem);
 router.delete("/cart/items/:item_id", rMobileAuthNoVersion, marketplaceReorderController.deleteCartItem);
 router.delete("/cart/clear", rMobileAuthNoVersion, marketplaceReorderController.clearCart);
 router.post("/cart/validate", rMobileAuthNoVersion, marketplaceReorderController.validateCart);
